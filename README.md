@@ -127,7 +127,7 @@ npm test
 
 ```
 src/
-├── index.ts                    # 主進入點：cron 排程、服務協調
+├── index.ts                    # 主進入點：cron 排程、服務協調、狀態存取
 ├── dryrun.ts                   # 乾跑測試用（不啟動 Telegram）
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
@@ -139,7 +139,8 @@ src/
 │   ├── BBEngine.ts             # 動態布林通道（20 SMA + 30D 波動率）
 │   ├── PositionScanner.ts      # LP NFT 倉位監測（On-chain RPC）
 │   ├── RiskManager.ts          # 風險評估（Health Score、IL Breakeven、EOQ 複利訊號）
-│   ├── ILCalculator.ts         # 絕對 PNL 計算（相對初始本金）
+│   ├── PnlCalculator.ts        # 絕對 PNL、開倉資訊、組合總覽計算
+│   ├── OpenTimestampService.ts # 批次查詢 NFT 建倉時間戳（per NPM 單次 getLogs）
 │   └── rebalance.ts            # 再平衡建議（純計算，不執行交易）
 ├── bot/
 │   └── TelegramBot.ts          # Telegram 推播格式化
@@ -150,7 +151,13 @@ src/
 └── utils/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
     ├── math.ts                 # BigInt 固定精度數學工具
-    └── rpcProvider.ts          # FallbackProvider + rpcRetry
+    ├── rpcProvider.ts          # FallbackProvider + rpcRetry + fetchGasCostUSD()
+    ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore 工具
+    └── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）
+
+data/
+├── state.json                  # Bot 跨重啟快取（自動生成，首次 cron 週期後建立）
+└── historical_weth_cbbtc_1H.json  # 回測用歷史 OHLCV K 棒（手動放入）
 ```
 
 日誌輸出至 `logs/`（自動建立）：
@@ -182,7 +189,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 1. **PoolScanner**：從 DexScreener 取得 TVL；The Graph（Uniswap/PancakeSwap）或 GeckoTerminal（Aerodrome）取得成交量；計算各池 APR
 2. **BBEngine**：先行計算所有池的布林通道（避免 PositionScanner 重複呼叫 GeckoTerminal），維護 in-memory 小時價格緩衝區，計算 20 SMA + 動態 k 值，產出建議 Tick 區間
 3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `TRACKED_TOKEN_<tokenId>` 鎖倉倉位），注意 Aerodrome NPM `positions()` 回傳 `tickSpacing` 而非 `fee`；使用預計算 BB；以 sqrtPrice 數學計算倉位現值；首次發現倉位時自動查鏈取得建倉時間戳
-4. **RiskManager**：計算 Health Score、IL Breakeven Days、EOQ Compound Signal、drift 警告
+4. **RiskManager**：取得即時 Gas 費用（`fetchGasCostUSD`）；計算 Health Score、IL Breakeven Days、動態 EOQ Compound Threshold、drift 警告
 5. **TelegramBot**：合併所有倉位為單一報告推播，支援 `/sort` 排序切換
 
 ---
@@ -192,26 +199,33 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 每 5 分鐘推播單一合併報告，所有倉位依選定排序鍵由大到小排列：
 
 ```
-[2026-03-06 17:05] 倉位監控報告 (2 個倉位 | 排序: 倉位大小 ↓)
+[2026-03-07 10:00] 倉位監控報告 (2 個倉位 | 排序: 倉位大小 ↓)
+
+📊 總覽  2 倉位 · 2 錢包
+💼 總倉位 $20,200  |  Unclaimed $6.7
+💰 總獲利 +$276.8 (+1.38%) 🟢
 
 ━━ #1 PancakeSwap 0.01% ━━
-APR 67.2% | 倉位 $12,400 | 健康 94/100
-淨APR 51.3% (IL年化 -15.9%)
+倉位 $12,400 | 本金 $10,000 | 健康 94/100
+⏳ 開倉 4天3小時 · 獲利 +1.82%
 👛 0xaBcD...1234 · #1675918
 💹 當前 0.02921 | Low Vol (震盪市)
-  你的: 0.02803 ~ 0.03054
-  BB:   0.02628 ~ 0.03213
+  ├ 你的 0.02803 ~ 0.03054
+  └ BB   0.02628 ~ 0.03213
 💸 Unclaimed $4.6 | IL +$18.2 🟢
-⏱ Breakeven 0天 · Compound ✅ $4.6 > $0.1
+⏱ Breakeven 盈利中
+🔄 Compound ✅ $4.6 > $0.1
 
 ━━ #2 Aerodrome 0.0085% ━━
-APR 29.4% | 倉位 $7,800 | 健康 61/100
+倉位 $7,800 | 本金 $8,000 | 健康 61/100
+⏳ 開倉 1天0小時 · 獲利 -1.22%
 👛 0xdEfA...5678 · #56328282
 💹 當前 0.02905 | High Vol (趨勢市)
-  你的: 0.02700 ~ 0.03100
-  BB:   0.02550 ~ 0.03300
+  ├ 你的 0.02700 ~ 0.03100
+  └ BB   0.02550 ~ 0.03300
 💸 Unclaimed $2.1 | IL -$95.0 🔴
-⏱ Breakeven 22天 · Compound ❌ $2.1 < $5.8
+⏱ Breakeven 22天
+🔄 Compound ❌ $2.1 < $5.8
 ⚠️ DRIFT 重疊 71.3% (建議依 BB 重建倉)
 
 📊 各池收益排行:
@@ -220,12 +234,12 @@ APR 29.4% | 倉位 $7,800 | 健康 61/100
 🥉 Uniswap 0.05% — APR 18.6% | TVL $543K
 
 ⏱ 資料更新時間:
-- Pool: 17:05 | Position: 17:05
-- BB Engine: 17:05 | Risk: 17:05
+- Pool: 10:00 | Position: 10:00
+- BB Engine: 10:00 | Risk: 10:00
 ```
 
 **選用欄位（有條件才顯示）：**
-- `淨APR`：需設定 `INITIAL_INVESTMENT_<tokenId>` 且倉位有建倉時間戳
+- `⏳ 開倉 ... · 獲利`：需設定 `INITIAL_INVESTMENT_<tokenId>` 且倉位有建倉時間戳
 - `⚠️ RED_ALERT`：IL Breakeven Days > 30 天，建議減倉
 - `⚠️ HIGH_VOLATILITY_AVOID`：當前頻寬 > 2× 30D 平均頻寬，建議觀望
 - `⚠️ DRIFT`：BB 重疊度 < 80%，附再平衡策略名稱與 Gas 估算
@@ -251,9 +265,70 @@ APR 29.4% | 倉位 $7,800 | 健康 61/100
 1. `RPC_URL`（環境變數，主節點）
 2. `https://base-rpc.publicnode.com`
 3. `https://1rpc.io/base`
-4. `https://base.meowrpc.com`
 
-所有 RPC 呼叫透過 `rpcRetry()` 包裝，支援指數退避自動重試（最多 3 次）。
+所有 RPC 呼叫透過 `rpcRetry()` 包裝，支援自動重試（最多 3 次，線性退避）。除 rate-limit（429）外，亦對 `SERVER_ERROR`（502/503 公共節點瞬斷）進行重試。
+
+同模組亦提供 `fetchGasCostUSD()`：即時取得 `maxFeePerGas × 300k gas × ETH_USD`，結果快取 5 分鐘，失敗時 fallback $1.5。
+
+---
+
+## 狀態持久化
+
+Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/state.json`（首次執行後自動建立，無需手動設定）。
+
+### JSON 結構示意
+
+```json
+{
+  "volCacheBB":   { "0xpool...": { "vol30D": 0.52, "expiresAt": 1700000000000 } },
+  "volCachePool": { "0xpool...": { "daily": 123456, "avg7d": 100000, "source": "GeckoTerminal", "expiresAt": 1700000000000 } },
+  "priceBuffer":  { "0xpool...": { "1700000000": 0.02921, "1700003600": 0.02935 } },
+  "openTimestamps": { "123456_PancakeSwap": 1699000000000 },
+  "sortBy": "size",
+  "discoveredPositions": [
+    { "tokenId": "123456", "dex": "PancakeSwap", "ownerWallet": "0x..." }
+  ],
+  "syncedWallets": ["0x..."]
+}
+```
+
+### 各欄位 TTL 與來源
+
+| 欄位 | TTL | 寫入時機 | 負責模組 |
+|------|-----|----------|----------|
+| `volCacheBB` | 6 小時 | BBEngine 每次計算後 | `BBEngine.ts` |
+| `volCachePool` | 30 分鐘 | PoolScanner 每次計算後 | `PoolScanner.ts` |
+| `priceBuffer` | 永久（滾動保留最近 24 筆） | 每次 tick 更新時 | `BBEngine.ts` |
+| `openTimestamps` | 永久 | 首次發現倉位時 | `OpenTimestampService.ts` |
+| `sortBy` | 永久 | `/sort` 指令觸發時 | `TelegramBot.ts` |
+| `discoveredPositions` | 永久 | 每次 5 分鐘週期 | `PositionScanner.ts` |
+| `syncedWallets` | 永久 | 每次 5 分鐘週期 | `index.ts` |
+
+### 啟動恢復決策流程
+
+```
+啟動
+  └── loadState()
+        ├── state.json 不存在 ──→ 全新啟動，執行 syncFromChain()
+        └── 存在
+              ├── 恢復 volCacheBB / volCachePool（LRU cache，過期項自動跳過）
+              ├── 恢復 priceBuffer（BBEngine 直接使用，無需重新累積）
+              ├── 恢復 openTimestamps（避免重複查 getLogs）
+              ├── 恢復 sortBy（Telegram 排序偏好）
+              └── 判斷是否跳過 syncFromChain：
+                    條件：walletsUnchanged AND discoveredPositions.length > 0
+                    ├── 兩者皆是 ──→ restoreDiscoveredPositions()（秒級恢復）
+                    └── 任一否    ──→ syncFromChain()（完整掃描，20–50s）
+```
+
+### 首次 vs 重啟行為對照
+
+| 情境 | 執行 syncFromChain | 啟動耗時 |
+|------|--------------------|----------|
+| 首次啟動（無 state.json） | 是 | ~20–50s |
+| 重啟（wallet 配置相同） | **否** | <1s |
+| 重啟（新增 / 移除錢包） | 是 | ~20–50s |
+| state.json 損毀或讀取失敗 | 是 | ~20–50s |
 
 ---
 
@@ -270,8 +345,8 @@ APR 29.4% | 倉位 $7,800 | 健康 61/100
 2. 預設 50% 年化波動率
 
 **BB 小時價格**
-1. In-memory `PriceBuffer`（每次掃描更新）
-2. GeckoTerminal OHLCV Hour（初始 backfill，每次掃描少於 20 筆時觸發）
+1. In-memory `PriceBuffer`（每次掃描以 `Math.pow(1.0001, tick)` tick-ratio 更新）
+2. 冷啟動時若資料 < 5 筆，返回 fallback BB（±1000 ticks），標記「資料累積中」
 
 ---
 
@@ -301,7 +376,7 @@ INITIAL_INVESTMENT_123456=1000.0
 INITIAL_INVESTMENT_789012=500.0
 ```
 
-未設定的 Token ID 顯示「未設定歷史本金」，IL 與淨 APR 計算為 0。
+未設定的 Token ID 不顯示獲利率與開倉資訊，ilUSD 為 null，不計入組合總獲利。
 
 ---
 
@@ -315,7 +390,7 @@ TRACKED_TOKEN_789012=Aerodrome
 ```
 
 系統會在錢包掃描完成後，額外從鏈上讀取這些 Token ID 並加入監測清單。
-開倉時間戳會自動透過查詢 NFT `Transfer` 事件（from=0x0）從鏈上取得並快取。
+開倉時間戳透過 `OpenTimestampService` 批次查詢 NFT `Transfer(from=0x0)` 事件。同一 NPM 合約的所有 tokenId 合併成單次 `getLogs`（`topics[3]` OR filter），大幅減少 RPC 呼叫次數。結果快取並存入 `data/state.json`。
 
 ---
 
@@ -326,7 +401,7 @@ Threshold = sqrt(2 × 本金 × Gas費用 × 24h費率)
 當 Unclaimed Fees > Threshold 時，發送 COMPOUND_SIGNAL
 ```
 
-注意：目前 Gas 費用為硬編碼 `$1.5`（待改為動態 Oracle）。
+Gas 費用由 `fetchGasCostUSD()` 即時取得（`maxFeePerGas × 300k gas × ETH_USD`），5 分鐘快取，失敗時 fallback `$1.5`。
 
 ---
 

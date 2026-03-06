@@ -1,10 +1,13 @@
 import cron from 'node-cron';
 import { PoolScanner, PoolStats } from './services/PoolScanner';
-import { BBEngine, BBResult } from './services/BBEngine';
+import { BBEngine, BBResult, getPriceBufferSnapshot, restorePriceBuffer } from './services/BBEngine';
 import { RiskManager, PositionState, RiskAnalysis } from './services/RiskManager';
 import { TelegramBotService } from './bot/TelegramBot';
-import { PositionScanner, PositionRecord } from './services/PositionScanner';
+import { PositionScanner, PositionRecord, getOpenTimestampSnapshot, restoreOpenTimestamps } from './services/PositionScanner';
 import { createServiceLogger } from './utils/logger';
+import { fetchGasCostUSD } from './utils/rpcProvider';
+import { loadState, saveState, restoreState, DiscoveredPosition } from './utils/stateManager';
+import { config } from './config';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
@@ -76,8 +79,8 @@ async function runBBEngine() {
 
     for (const [poolAddress, poolData] of poolsToProcess.entries()) {
       let posTickSpacing = 10;
-      if (poolData.feeTier === 0.0001)   posTickSpacing = 1;
-      else if (poolData.feeTier === 0.003)    posTickSpacing = 60;
+      if (poolData.feeTier === 0.0001) posTickSpacing = 1;
+      else if (poolData.feeTier === 0.003) posTickSpacing = 60;
       else if (poolData.feeTier === 0.000085) posTickSpacing = 1; // Aerodrome 0.0085%
 
       const bb = await BBEngine.computeDynamicBB(poolData.id, poolData.dex, posTickSpacing, poolData.tick);
@@ -94,6 +97,7 @@ async function runBBEngine() {
 async function runRiskManager() {
   activeTasks++;
   try {
+    const gasCostUSD = await fetchGasCostUSD().catch(() => 1.5);
     for (const pos of activePositions) {
       const poolData = latestPools.find(
         (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
@@ -123,7 +127,8 @@ async function runRiskManager() {
         bb,
         poolData.dailyFeesUSD,
         avg30DBandwidth,
-        currentBandwidth
+        currentBandwidth,
+        gasCostUSD
       );
 
       latestRisks[pos.tokenId] = risk;
@@ -184,17 +189,44 @@ async function main() {
   // Start bot webhook or polling
   botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
 
-  // Initial sync: fetch positions from chain first
-  await PositionScanner.syncFromChain();
+  // Restore persisted state from previous session
+  const savedState = await loadState();
+  if (savedState) {
+    restoreState(savedState);
+    restorePriceBuffer(savedState.priceBuffer ?? {});
+    restoreOpenTimestamps(savedState.openTimestamps ?? {});
+    if (savedState.sortBy) botService.setSortBy(savedState.sortBy);
+    log.info('✅ state restored from previous session');
+  }
 
-  // Initial runs to populate state
-  // BBEngine 必須在 PositionScanner 之前，讓 latestBBs 暖好 cache
+  // Initial sync: 若 state 有 positions 且 wallet 配置未變，直接從 state 恢復，跳過 chain scan
+  const savedWallets = savedState?.syncedWallets ?? [];
+  const currentWallets = config.WALLET_ADDRESSES;
+  const walletsUnchanged = savedWallets.length === currentWallets.length &&
+      savedWallets.every(w => currentWallets.includes(w));
+  const cachedPositions = savedState?.discoveredPositions ?? [];
+
+  if (walletsUnchanged && cachedPositions.length > 0) {
+      PositionScanner.restoreDiscoveredPositions(
+          cachedPositions,
+          savedWallets,
+          savedState?.openTimestamps ?? {}
+      );
+  } else {
+      await PositionScanner.syncFromChain();
+  }
+
+  // 啟動順序：PositionScanner 先跑（inline 呼叫 BBEngine 計算各池 BB），
+  // 再跑 BBEngine 把結果寫入 latestBBs，讓 RiskManager 有資料可用。
+  // （5 分鐘 cron 維持 BBEngine → PositionScanner 順序，避免重複 API 呼叫）
   await runPoolScanner();
-  await runBBEngine();
   await runPositionScanner();
+  await runBBEngine();
   await runRiskManager();
 
   isStartupComplete = true;
+  await saveState(getPriceBufferSnapshot(), getOpenTimestampSnapshot(), botService.getSortBy(), PositionScanner.getDiscoveredSnapshot(), config.WALLET_ADDRESSES);
+  await runBotService().catch((e) => log.error(`Startup report: ${e}`));
   log.info('startup complete — scheduler enabled');
   log.section('ready');
 
@@ -205,6 +237,8 @@ async function main() {
     await runPositionScanner().catch((e) => log.error(`Cron PositionScanner: ${e}`));
     await runRiskManager().catch((e) => log.error(`Cron RiskManager: ${e}`));
     await runBotService().catch((e) => log.error(`Cron BotService: ${e}`));
+    await saveState(getPriceBufferSnapshot(), getOpenTimestampSnapshot(), botService.getSortBy(), PositionScanner.getDiscoveredSnapshot(), config.WALLET_ADDRESSES)
+      .catch((e) => log.error(`State save: ${e}`));
     log.section('cycle end');
   });
 }

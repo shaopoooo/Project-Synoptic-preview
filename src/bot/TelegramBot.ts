@@ -5,6 +5,7 @@ import { RiskAnalysis, RiskManager } from '../services/RiskManager';
 import { BBResult } from '../services/BBEngine';
 import { PositionRecord } from '../services/PositionScanner';
 import { createServiceLogger } from '../utils/logger';
+import { PnlCalculator } from '../services/PnlCalculator';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -67,9 +68,15 @@ export class TelegramBotService {
                 `需設定建倉本金才會顯示\n\n` +
                 `<b>DRIFT 警告</b>\n` +
                 `重疊度 = 倉位落在 BB 內的比例\n` +
-                `< 80% 時觸發，建議重建倉`;
+                `&lt; 80% 時觸發，建議重建倉`;
             ctx.reply(msg, { parse_mode: 'HTML' });
         });
+    }
+
+    public getSortBy(): string { return this.sortBy; }
+    public setSortBy(key: string) {
+        const valid = Object.keys(SORT_LABELS) as SortBy[];
+        if (valid.includes(key as SortBy)) this.sortBy = key as SortBy;
     }
 
     public async startBot() {
@@ -102,7 +109,6 @@ export class TelegramBotService {
         bb: BBResult | null,
         risk: RiskAnalysis
     ): string {
-        const aprStr = (pool.apr * 100).toFixed(1);
         const label = `${pool.dex} ${(pool.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
         const walletShort = position.ownerWallet
             ? `${position.ownerWallet.slice(0, 6)}...${position.ownerWallet.slice(-4)}`
@@ -110,6 +116,8 @@ export class TelegramBotService {
         const posValue = position.positionValueUSD > 0
             ? `$${position.positionValueUSD.toFixed(0)}`
             : 'N/A';
+        const initialCapital = PnlCalculator.getInitialCapital(position.tokenId);
+        const capitalStr = initialCapital !== null ? `$${initialCapital.toFixed(0)}` : 'N/A';
         const ilDisplay = position.ilUSD === null
             ? '未設定'
             : position.ilUSD >= 0
@@ -120,26 +128,31 @@ export class TelegramBotService {
             : '無數據';
         const cmp = risk.compoundSignal ? '✅' : '❌';
 
-        // 淨 APR：費用APR + IL年化率（需有建倉時間與初始本金）
-        const capital = config.INITIAL_INVESTMENT_USD[position.tokenId] ?? 0;
-        let netAprRow = '';
-        if (position.openTimestampMs && position.ilUSD !== null && capital > 0) {
-            const daysOpen = Math.max(1, (Date.now() - position.openTimestampMs) / 86400000);
-            const ilAnnualRate = (position.ilUSD / capital) / daysOpen * 365;
-            const netApr = pool.apr + ilAnnualRate;
-            const sign = ilAnnualRate >= 0 ? '+' : '';
-            netAprRow = `淨APR <b>${(netApr * 100).toFixed(1)}%</b> (IL年化 ${sign}${(ilAnnualRate * 100).toFixed(1)}%)\n`;
+        // 開倉時間 + 獲利率（由 PnlCalculator 計算）
+        const openInfo = PnlCalculator.calculateOpenInfo(position.tokenId, position.openTimestampMs, position.ilUSD);
+        let openInfoRow = '';
+        if (openInfo) {
+            if (openInfo.profitRate !== null) {
+                const sign = openInfo.profitRate >= 0 ? '+' : '';
+                openInfoRow = `⏳ 開倉 ${openInfo.timeStr} · 獲利 <b>${sign}${openInfo.profitRate.toFixed(2)}%</b>\n`;
+            } else {
+                openInfoRow = `⏳ 開倉 ${openInfo.timeStr}\n`;
+            }
         }
 
         let block = `\n━━ #${index} ${label} ━━\n`;
-        block += `APR <b>${aprStr}%</b> | 倉位 ${posValue} | 健康 ${risk.healthScore}/100\n`;
-        if (netAprRow) block += netAprRow;
+        block += `倉位 ${posValue} | 本金 ${capitalStr} | 健康 ${risk.healthScore}/100\n`;
+        if (openInfoRow) block += openInfoRow;
         block += `👛 ${walletShort} · #${position.tokenId}\n`;
         block += `💹 當前 ${position.currentPriceStr} | ${position.regime}\n`;
-        block += `  你的: ${position.minPrice} ~ ${position.maxPrice}\n`;
-        block += `  BB:   ${bbBound}\n`;
+        block += `  ├ 你的 ${position.minPrice} ~ ${position.maxPrice}\n`;
+        block += `  └ BB   ${bbBound}\n`;
         block += `💸 Unclaimed $${position.unclaimedFeesUSD.toFixed(1)} | IL ${ilDisplay}\n`;
-        block += `⏱ Breakeven ${risk.ilBreakevenDays}天 · Compound ${cmp} $${position.unclaimedFeesUSD.toFixed(1)} ${risk.compoundSignal ? '>' : '<'} $${risk.compoundThreshold.toFixed(1)}\n`;
+        const breakevenStr = (position.ilUSD !== null && position.ilUSD >= 0)
+            ? '盈利中'
+            : `${risk.ilBreakevenDays}天`;
+        block += `⏱ Breakeven ${breakevenStr}\n`;
+        block += `🔄 Compound ${cmp} $${position.unclaimedFeesUSD.toFixed(1)} ${risk.compoundSignal ? '&gt;' : '&lt;'} $${risk.compoundThreshold.toFixed(1)}\n`;
 
         if (risk.redAlert) block += `🚨 <b>RED_ALERT</b>: Breakeven &gt;${RiskManager.RED_ALERT_BREAKEVEN_DAYS}天 (建議減倉)\n`;
         if (risk.highVolatilityAvoid) block += `⚠️ <b>HIGH_VOLATILITY_AVOID</b> (建議觀望)\n`;
@@ -183,7 +196,20 @@ export class TelegramBotService {
             }
         });
 
+        // ── 總覽區塊 ──────────────────────────────────────────────
+        const summary = PnlCalculator.calculatePortfolioSummary(entries.map(e => e.position));
+        const fmtUSD = (v: number) => v >= 0 ? `+$${v.toFixed(1)}` : `-$${Math.abs(v).toFixed(1)}`;
+
         let msg = `<b>[${timeStr}] 倉位監控報告 (${sorted.length} 個倉位 | 排序: ${SORT_LABELS[this.sortBy]} ↓)</b>`;
+        msg += `\n\n📊 <b>總覽</b>  ${summary.positionCount} 倉位 · ${summary.walletCount} 錢包`;
+        msg += `\n💼 總倉位 <b>$${summary.totalPositionUSD.toFixed(0)}</b>  |  本金 <b>$${summary.totalInitialCapital.toFixed(0)}</b>  |  Unclaimed <b>$${summary.totalUnclaimedUSD.toFixed(1)}</b>`;
+        if (summary.totalPnL !== null) {
+            const icon = summary.totalPnL >= 0 ? '🟢' : '🔴';
+            const pctStr = summary.totalPnLPct !== null
+                ? ` (${summary.totalPnLPct >= 0 ? '+' : ''}${summary.totalPnLPct.toFixed(2)}%)`
+                : '';
+            msg += `\n💰 總獲利 <b>${fmtUSD(summary.totalPnL)}${pctStr}</b> ${icon}`;
+        }
 
         sorted.forEach(({ position, pool, bb, risk }, i) => {
             msg += this.formatPositionBlock(i + 1, position, pool, bb, risk);

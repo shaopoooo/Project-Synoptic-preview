@@ -5,7 +5,6 @@ export const constants = {
     RPC_FALLBACKS: [
         'https://base-rpc.publicnode.com',
         'https://1rpc.io/base',
-        'https://base.meowrpc.com'
     ],
 
     // Subgraph Endpoints – free public endpoints (no API key)
@@ -35,6 +34,8 @@ export const constants = {
     CAPITAL: 20000,      // Total deployed capital in USD for scaling calculations
 
     // Contract Addresses on Base
+    AERO_VOTER_ADDRESS: '0x16613524e02ad97eDfeF371bC883F2F5d6C480A5', // Aerodrome Voter on Base
+
     NPM_ADDRESSES: {
         Uniswap: '0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1', // Uniswap V3 NPM on Base
         PancakeSwap: '0x46A15B0b27311cedF172AB29E4f4766fbE7F4364', // PancakeSwap V3 NPM on Base

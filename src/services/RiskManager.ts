@@ -57,7 +57,8 @@ export class RiskManager {
         bb: BBResult,
         dailyFeesUSD: number, // From the pool or proportional to position
         avg30DBandwidth: number,
-        currentBandwidth: number
+        currentBandwidth: number,
+        gasCostUSD?: number   // Dynamic gas cost; falls back to COMPOUND_GAS_COST_USD
     ): RiskAnalysis {
 
         // 1. Portfolio Drift Analysis
@@ -72,7 +73,8 @@ export class RiskManager {
         // To match actual units, it's typically sqrt(2 * P * G / R_Daily_yield) but the PROJECT_RULES says `sqrt(2 * P * G * Fee_Rate_24h)`
         // Assuming the rule implies:
         const tempFeeRate = state.feeRate24h > 0 ? state.feeRate24h : 0.0001; // Avoid divide by zero
-        const threshold = Math.sqrt(2 * state.capital * this.COMPOUND_GAS_COST_USD * tempFeeRate);
+        const gasCost = gasCostUSD ?? this.COMPOUND_GAS_COST_USD;
+        const threshold = Math.sqrt(2 * state.capital * gasCost * tempFeeRate);
         const compoundSignal = state.unclaimedFees > threshold;
 
         // 3. Health Score

@@ -1,4 +1,19 @@
 export const abis = {
+    // Aerodrome Voter — gauges(pool) → gauge address
+    AERO_VOTER_ABI: [
+        'function gauges(address pool) external view returns (address)',
+    ],
+
+    // Aerodrome Slipstream CLGauge
+    AERO_GAUGE_ABI: [
+        'function stakedContains(address depositor, uint256 id) external view returns (bool)',
+        'function earned(address account, uint256 tokenId) external view returns (uint256)',
+        'function pendingFees(uint256 tokenId) external view returns (uint256 amount0, uint256 amount1)',
+        'function fees0() external view returns (uint256)',
+        'function fees1() external view returns (uint256)',
+    ],
+
+
     // V3 NonfungiblePositionManager ABI (Basic needed parts)
     NPM_ABI: [
         'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
@@ -12,11 +27,17 @@ export const abis = {
 
     // Uniswap V3 / PancakeSwap V3 Pool ABI
     POOL_ABI: [
-        'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)'
+        'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
+        'function feeGrowthGlobal0X128() external view returns (uint256)',
+        'function feeGrowthGlobal1X128() external view returns (uint256)',
+        'function ticks(int24 tick) external view returns (uint128 liquidityGross, int128 liquidityNet, uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128, int56 tickCumulativeOutside, uint160 secondsPerLiquidityOutsideX128, uint32 secondsOutside, bool initialized)',
     ],
 
     // Aerodrome Slipstream Pool ABI — slot0 無 feeProtocol 欄位（6 個回傳值）
     AERO_POOL_ABI: [
-        'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)'
+        'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)',
+        'function feeGrowthGlobal0X128() external view returns (uint256)',
+        'function feeGrowthGlobal1X128() external view returns (uint256)',
+        'function ticks(int24 tick) external view returns (uint128 liquidityGross, int128 liquidityNet, uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128, int56 tickCumulativeOutside, uint160 secondsPerLiquidityOutsideX128, uint32 secondsOutside, bool initialized)',
     ],
 };

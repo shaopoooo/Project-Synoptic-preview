@@ -1,8 +1,9 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
+import { poolVolCache } from '../utils/cache';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
-import { rpcProvider, rpcRetry, delay } from '../utils/rpcProvider';
+import { rpcProvider, rpcRetry, delay, nextProvider } from '../utils/rpcProvider';
 
 const log = createServiceLogger('PoolScanner');
 
@@ -22,8 +23,6 @@ export interface PoolStats {
 const VOL_CACHE_TTL_MS = config.POOL_VOL_CACHE_TTL_MS;
 
 interface VolResult { daily: number; avg7d: number; source: string; }
-interface VolCacheEntry extends VolResult { expiresAt: number; }
-const volCache = new Map<string, VolCacheEntry>();
 
 /**
  * Fetch 7-day volume data for a pool.
@@ -31,13 +30,13 @@ const volCache = new Map<string, VolCacheEntry>();
  */
 async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<VolResult> {
     const key = poolAddress.toLowerCase();
-    const cached = volCache.get(key);
+    const cached = poolVolCache.get(key);
     if (cached && Date.now() < cached.expiresAt) return cached;
 
     const tag = poolAddress.slice(0, 10);
     const save = (daily: number, avg7d: number, src: string) => {
-        const entry: VolCacheEntry = { daily, avg7d, source: src, expiresAt: Date.now() + VOL_CACHE_TTL_MS };
-        volCache.set(key, entry);
+        const entry = { daily, avg7d, source: src, expiresAt: Date.now() + VOL_CACHE_TTL_MS };
+        poolVolCache.set(key, entry);
         log.info(`💾 vol  ${tag}  $${daily.toFixed(0)}/24h  [${src}]`);
         return entry;
     };
@@ -111,7 +110,7 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
     }
 
     // --- Fallback: stale cache or zeros ---
-    const stale = volCache.get(key);
+    const stale = poolVolCache.get(key);
     if (stale) {
         log.warn(`💾 stale vol cache  ${tag}`);
         return stale;
@@ -120,6 +119,8 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
     return { daily: 0, avg7d: 0, source: 'none' };
 }
 
+
+const POOL_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 export class PoolScanner {
     /**
@@ -130,11 +131,15 @@ export class PoolScanner {
         dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
         feeTierVal: number
     ): Promise<PoolStats | null> {
+        if (!POOL_ADDRESS_RE.test(poolAddress)) {
+            log.error(`Invalid pool address rejected: ${poolAddress}`);
+            return null;
+        }
         try {
             // 1. Fetch On-Chain Tick and SqrtPrice
             // Aerodrome Slipstream 的 slot0() 無 feeProtocol 欄位，需使用專屬 ABI
             const poolAbi = dex === 'Aerodrome' ? config.AERO_POOL_ABI : config.POOL_ABI;
-            const poolContract = new ethers.Contract(poolAddress, poolAbi, rpcProvider);
+            const poolContract = new ethers.Contract(poolAddress, poolAbi, nextProvider());
             const slot0 = await rpcRetry(
                 () => poolContract.slot0(),
                 `slot0(${poolAddress})`
