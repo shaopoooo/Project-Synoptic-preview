@@ -1,102 +1,109 @@
-import { PoolScanner } from './services/PoolScanner';
-import { BBEngine } from './services/BBEngine';
-import { RiskManager, PositionState } from './services/RiskManager';
+/**
+ * dryrun.ts — One-shot scan without starting the Telegram bot or cron scheduler.
+ * Useful for verifying config, RPC connectivity, and data pipeline output.
+ *
+ * Usage: npm run dryrun
+ */
+import { PoolScanner, PoolStats } from './services/PoolScanner';
+import { BBEngine, BBResult } from './services/BBEngine';
+import { RiskManager, PositionState, RiskAnalysis } from './services/RiskManager';
+import { PositionScanner, PositionRecord } from './services/PositionScanner';
+import { createServiceLogger } from './utils/logger';
 
-// Mock position state per rules to evaluate risk logic.
-let mockPositionState: PositionState = {
-    capital: 20000,
-    tickLower: -887270, // Example raw ticks that are within limits
-    tickUpper: 887270,
-    unclaimedFees: 12.4,
-    cumulativeIL: -8.7,
-    feeRate24h: 0.005, // 0.5% daily
-};
+const log = createServiceLogger('Dryrun');
 
-let previousBandwidth = 0; // simple mock for avg30DBandwidth
+async function main() {
+    log.section('DexBot dryrun — single-pass scan (no Telegram, no cron)');
 
-async function executeDryRun() {
-    console.log('Executing dry run...');
-    try {
-        const pools = await PoolScanner.scanAllCorePools();
-        if (pools.length === 0) {
-            console.warn('No pools found or subgraph error. Are endpoints reachable?');
-            return;
-        }
+    // 1. Sync positions from chain
+    log.info('Syncing positions from chain...');
+    await PositionScanner.syncFromChain();
 
-        console.log(`Successfully fetched data for ${pools.length} pools.`);
+    // 2. Pool Scanner
+    log.info('Running PoolScanner...');
+    const pools = await PoolScanner.scanAllCorePools();
+    pools.sort((a, b) => b.apr - a.apr);
+    log.info(`Pools (${pools.length}):`);
+    pools.forEach((p, i) => {
+        const label = `${p.dex} ${(p.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+        const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(0)}K` : `$${p.tvlUSD.toFixed(0)}`;
+        log.info(`  #${i + 1} ${label} — APR ${(p.apr * 100).toFixed(1)}%  TVL ${tvl}`);
+    });
 
-        // Find highest APR pool
-        pools.sort((a, b) => b.apr - a.apr);
-        console.log(`\n--- ALL POOLS (Sorted by APR) ---`);
-        pools.forEach((pool, index) => {
-            console.log(`${index + 1}. [${pool.dex}] ${pool.id} (Fee: ${(pool.feeTier * 100).toFixed(2)}%) -> APR: ${(pool.apr * 100).toFixed(2)}% | TVL: $${pool.tvlUSD.toFixed(0)}`);
-        });
-        console.log(`---------------------------------\n`);
+    // 3. BB Engine — compute for all active positions' pools
+    const latestBBs: Record<string, BBResult> = {};
+    const positions = PositionScanner.getTrackedPositions();
+    const activePositions: PositionRecord[] = positions.filter(p => Number(p.liquidity) > 0);
 
-        const highestPool = pools[0];
-
-        console.log(`>> Selected Highest APR Pool: ${highestPool.dex} ${highestPool.id} (Fee Tier: ${(highestPool.feeTier * 100).toFixed(2)}%)`);
-        console.log(`>> Estimated APR: ${(highestPool.apr * 100).toFixed(2)}% | TVL: $${highestPool.tvlUSD.toFixed(0)}`);
-        console.log(`----------------------------------------`);
-
-        // Compute dynamic BB for the highest pool
+    log.info(`Running BBEngine for ${activePositions.length} active position(s)...`);
+    const poolsToProcess = new Map<string, PoolStats>();
+    for (const pos of activePositions) {
+        const poolData = pools.find(
+            p => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
+        );
+        if (poolData) poolsToProcess.set(poolData.id.toLowerCase(), poolData);
+    }
+    for (const [poolAddress, poolData] of poolsToProcess.entries()) {
         let tickSpacing = 10;
-        if (highestPool.feeTier === 0.0001) tickSpacing = 1; // 0.01%
-        else if (highestPool.feeTier === 0.003) tickSpacing = 60; // 0.3%
+        if (poolData.feeTier === 0.0001)   tickSpacing = 1;
+        else if (poolData.feeTier === 0.003)    tickSpacing = 60;
+        else if (poolData.feeTier === 0.000085) tickSpacing = 1;
+        const bb = await BBEngine.computeDynamicBB(poolData.id, poolData.dex, tickSpacing, poolData.tick);
+        if (bb) latestBBs[poolAddress] = bb;
+    }
 
-        const bb = await BBEngine.computeDynamicBB(highestPool.id, highestPool.dex, tickSpacing, highestPool.tick);
+    // 4. Position Scanner — update with BB data
+    log.info('Running PositionScanner...');
+    await PositionScanner.updateAllPositions(latestBBs);
+    const updatedPositions = PositionScanner.getTrackedPositions().filter(p => Number(p.liquidity) > 0);
 
-        if (!bb) {
-            console.warn('Failed to compute BB. Check GraphQL logs.');
-            return;
-        }
+    // 5. Risk Manager + print results
+    log.info('Running RiskManager and printing results:');
+    const previousBandwidths: Record<string, number> = {};
+    for (const pos of updatedPositions) {
+        const poolData = pools.find(
+            p => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
+        );
+        if (!poolData) { log.warn(`No pool data for tokenId ${pos.tokenId}`); continue; }
+        const bb = latestBBs[poolData.id.toLowerCase()];
+        if (!bb) { log.warn(`No BB for tokenId ${pos.tokenId}`); continue; }
 
-        // Bandwidth
+        const poolKey = poolData.id.toLowerCase();
         const currentBandwidth = (bb.upperPrice - bb.lowerPrice) / bb.sma;
-        const avg30DBandwidth = previousBandwidth || currentBandwidth;
-        previousBandwidth = currentBandwidth; // lazy update
+        const avg30DBandwidth = previousBandwidths[poolKey] || currentBandwidth;
+        previousBandwidths[poolKey] = currentBandwidth;
 
-        // Mock update to position fee rate based on highest pool APR
-        mockPositionState.feeRate24h = highestPool.apr / 365;
-
-        // Evaluate Risk
-        const risk = RiskManager.analyzePosition(
-            mockPositionState,
-            bb,
-            highestPool.dailyFeesUSD,
-            avg30DBandwidth,
-            currentBandwidth
+        const positionState: PositionState = {
+            capital: pos.positionValueUSD || 1000,
+            tickLower: pos.tickLower,
+            tickUpper: pos.tickUpper,
+            unclaimedFees: pos.unclaimedFeesUSD,
+            cumulativeIL: pos.ilUSD ?? 0,
+            feeRate24h: poolData.apr / 365,
+        };
+        const risk: RiskAnalysis = RiskManager.analyzePosition(
+            positionState, bb, poolData.dailyFeesUSD, avg30DBandwidth, currentBandwidth
         );
 
-        const regime = bb.k === 1.8 ? 'Low Vol (震盪市)' : 'High Vol (趨勢市)';
-
-        console.log(`BB Engine: `);
-        console.log(` 20 SMA (1H): ${bb.sma.toFixed(6)}`);
-        console.log(` Range: ${bb.lowerPrice.toFixed(6)} - ${bb.upperPrice.toFixed(6)} (k=${bb.k})`);
-        console.log(` Ticks: [${bb.tickLower}, ${bb.tickUpper}]`);
-        console.log(` Regime: ${regime} | Vol: ${(bb.volatility30D * 100).toFixed(2)}%`);
-        if (bb.ethPrice > 0) {
-            console.log(` ETH Price: $${bb.ethPrice.toFixed(2)}`);
-            console.log(` ETH/BTC Ratio Bounds:`);
-            console.log(`   Min Price Ratio: ${bb.minPriceRatio.toFixed(5)} (ETH Price / Upper BB)`);
-            console.log(`   Max Price Ratio: ${bb.maxPriceRatio.toFixed(5)} (ETH Price / Lower BB)`);
-        }
-
-        console.log(`\nRisk Analysis:`);
-        console.log(` Health Score: ${risk.healthScore}/100`);
-        console.log(` IL Breakeven Days: ${risk.ilBreakevenDays} Days`);
-        console.log(` Compound Signal: ${risk.compoundSignal ? 'YES' : 'NO'} (Threshold: $${risk.compoundThreshold.toFixed(2)})`);
-
-        if (risk.redAlert) console.log(` [ALERT] RED ALERT: High IL Breakeven`);
-        if (risk.highVolatilityAvoid) console.log(` [ALERT] HIGH VOLATILITY AVOID: High bandwidth`);
-        if (risk.driftWarning) console.log(` [ALERT] DRIFT WARNING: Overlap ${risk.driftOverlapPct.toFixed(1)}%`);
-
-        console.log(`----------------------------------------`);
-        console.log('Dry run complete.');
-
-    } catch (error) {
-        console.error('Error in dry run cycle:', error);
+        const label = `${poolData.dex} ${(poolData.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+        const walletShort = pos.ownerWallet
+            ? `${pos.ownerWallet.slice(0, 6)}...${pos.ownerWallet.slice(-4)}`
+            : '?';
+        log.info(
+            `[#${pos.tokenId}] ${label} | ${walletShort}\n` +
+            `  Value $${pos.positionValueUSD.toFixed(0)} | APR ${(poolData.apr * 100).toFixed(1)}% | Health ${risk.healthScore}/100\n` +
+            `  Price ${pos.currentPriceStr} | Range ${pos.minPrice}~${pos.maxPrice}\n` +
+            `  BB    ${pos.bbMinPrice ?? '?'}~${pos.bbMaxPrice ?? '?'} (${bb.regime})\n` +
+            `  Unclaimed $${pos.unclaimedFeesUSD.toFixed(1)} | IL ${pos.ilUSD === null ? 'N/A' : `$${pos.ilUSD.toFixed(1)}`}\n` +
+            `  Breakeven ${risk.ilBreakevenDays}d | Compound ${risk.compoundSignal ? 'YES' : 'no'} ($${pos.unclaimedFeesUSD.toFixed(1)} vs $${risk.compoundThreshold.toFixed(1)})\n` +
+            `  Drift ${risk.driftWarning ? `WARNING ${risk.driftOverlapPct.toFixed(1)}%` : 'ok'} | RedAlert ${risk.redAlert} | HighVol ${risk.highVolatilityAvoid}`
+        );
     }
+
+    log.section('dryrun complete');
 }
 
-executeDryRun().catch(console.error);
+main().catch(e => {
+    console.error('Dryrun failed:', e);
+    process.exit(1);
+});

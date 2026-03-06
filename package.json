@@ -4,24 +4,27 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "ts-node src/index.ts",
-    "dev": "ts-node src/index.ts",
-    "dryrun": "ts-node src/dryrun.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "dotenvx run -f .env -- ts-node src/index.ts",
+    "dev": "dotenvx run -f .env -- ts-node src/index.ts",
+    "dryrun": "dotenvx run -f .env -- ts-node src/dryrun.ts",
+    "test": "jest",
+    "backtest": "dotenvx run -f .env -- ts-node src/backtest/BacktestEngine.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@dotenvx/dotenvx": "^1.52.0",
     "@uniswap/v3-sdk": "^3.28.0",
     "axios": "^1.13.6",
     "dotenv": "^17.3.1",
     "ethers": "^6.16.0",
-    "fs-extra": "^11.3.3",
+    "fs-extra": "^11.3.4",
     "grammy": "^1.41.0",
     "graphql": "^16.13.0",
     "graphql-request": "^7.4.0",
+    "lru-cache": "^11.2.6",
     "node-cron": "^4.2.1",
     "winston": "^3.19.0"
   },

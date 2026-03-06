@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { nearestUsableTick } from '@uniswap/v3-sdk';
+import { bbVolCache, BBVolEntry } from '../utils/cache';
 import { createServiceLogger } from '../utils/logger';
 import { config } from '../config';
 
@@ -16,6 +17,7 @@ export interface BBResult {
   tickLower: number;
   tickUpper: number;
   ethPrice: number;
+  cbbtcPrice: number;
   minPriceRatio: number;
   maxPriceRatio: number;
   isFallback?: boolean;
@@ -23,13 +25,9 @@ export interface BBResult {
 }
 
 const VOL_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const PRICE_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes（短於 5m cron，確保每個週期拿新價格）
 
-interface CacheEntry {
-  vol: number;
-  expiresAt: number;
-}
-// In-memory cache: poolAddress -> annualized volatility
-const volCache = new Map<string, CacheEntry>();
+let tokenPriceCache: { ethPrice: number; cbbtcPrice: number; expiresAt: number } | null = null;
 
 /** Compute annualized vol from a list of prices (closes). */
 function calcVol(prices: number[]): number {
@@ -43,21 +41,21 @@ function calcVol(prices: number[]): number {
 /** Fetch 30-day annualized vol.
  *  Order: DEX-specific The Graph subgraph → GeckoTerminal → stale cache → 50% default
  *  Results are cached 2 hours to avoid hitting free-tier rate limits. */
-async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'): Promise<number> {
+async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<number> {
   const key = poolAddress.toLowerCase();
-  const cached = volCache.get(key);
+  const cached = bbVolCache.get(key);
   if (cached && Date.now() < cached.expiresAt) return cached.vol;
 
   const tag = poolAddress.slice(0, 10);
   const save = (vol: number) => {
-    volCache.set(key, { vol, expiresAt: Date.now() + VOL_CACHE_TTL_MS });
-    log.info(`[BBEngine] vol(${tag}) from GeckoTerminal: ${(vol * 100).toFixed(1)}% — cached 12h`);
+    bbVolCache.set(key, { vol, expiresAt: Date.now() + VOL_CACHE_TTL_MS });
+    log.info(`💾 30D vol  ${tag}  ${(vol * 100).toFixed(1)}%  (12h cache)`);
     return vol;
   };
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      log.info(`[BBEngine] Fetching 30D Volatility for ${tag} (Attempt ${attempt}/3)...`);
+      log.info(`🌐 30D vol  ${tag}  attempt ${attempt}/3`);
       const res = await axios.get(
         `https://api.geckoterminal.com/api/v2/networks/base/pools/${key}/ohlcv/day?limit=30`,
         { timeout: 8000 }
@@ -73,16 +71,15 @@ async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'
     } catch (e: any) {
       if (attempt < 3) {
         const is429 = e.response?.status === 429;
-        log.warn(`[BBEngine] GeckoTerminal ${is429 ? '429' : 'err'} for ${tag}. Retrying in 10s (attempt ${attempt}/3)...`);
-        await delay(10000); // Wait 10s before next attempt
+        log.warn(`GeckoTerminal ${is429 ? '429 rate-limit' : 'error'}  ${tag}  retry in 10s (${attempt}/3)`);
+        await delay(10000);
       } else {
-        log.error(`[BBEngine] Volatility fetch error for ${tag} after 3 attempts: ${e.message}`);
+        log.error(`30D vol fetch failed after 3 attempts  ${tag}: ${e.message}`);
       }
     }
   }
 
-  // 如果失敗，使用預設值，但不要快取，讓它下次有機會重試
-  log.warn(`[BBEngine] Using default annualizedVol=50% for ${tag}`);
+  log.warn(`vol fallback 50%  ${tag}`);
   return 0.5;
 }
 
@@ -94,8 +91,14 @@ class PriceBuffer {
   // poolAddress -> { hourTimestamp: price }
   private buffer: Map<string, Map<number, number>> = new Map();
 
-  // Add the current price for the current hour
+  // Add the current price for the current hour.
+  // Only accepts valid tick-ratio prices (i.e. Math.pow(1.0001, tick)); rejects near-zero or
+  // non-finite values that would corrupt SMA/variance calculations.
   public addPrice(poolAddress: string, price: number) {
+    if (!Number.isFinite(price) || price <= 0) {
+      log.warn(`addPrice: skipping invalid price ${price} for ${poolAddress.slice(0, 10)}`);
+      return;
+    }
     const key = poolAddress.toLowerCase();
     if (!this.buffer.has(key)) {
       this.buffer.set(key, new Map());
@@ -154,88 +157,91 @@ class PriceBuffer {
     const last20 = sortedHours.slice(-20).map(entry => entry[1]);
     return last20;
   }
+
+  /** Serialize to plain object for JSON persistence. */
+  public serialize(): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {};
+    for (const [pool, hours] of this.buffer.entries()) {
+      out[pool] = Object.fromEntries(hours.entries());
+    }
+    return out;
+  }
+
+  /** Restore from a plain object snapshot, skipping invalid prices. */
+  public restore(data: Record<string, Record<string, number>>) {
+    this.buffer.clear();
+    for (const [pool, hours] of Object.entries(data)) {
+      const m = new Map<number, number>();
+      for (const [ts, price] of Object.entries(hours)) {
+        if (Number.isFinite(price) && price > 0) {
+          m.set(Number(ts), price);
+        }
+      }
+      if (m.size > 0) this.buffer.set(pool, m);
+    }
+  }
 }
 
 const globalPriceBuffer = new PriceBuffer();
 
+
+export function getPriceBufferSnapshot(): Record<string, Record<string, number>> {
+  return globalPriceBuffer.serialize();
+}
+
+export function restorePriceBuffer(data: Record<string, Record<string, number>>) {
+  globalPriceBuffer.restore(data);
+}
 
 export class BBEngine {
   /**
    * Fetches historical OHLCV data from GeckoTerminal (Free API, requires no key)
    * Base Network ID is 'base'
    */
-  static async computeDynamicBB(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap', tickSpacing: number, currentTick: number): Promise<BBResult | null> {
+  static async computeDynamicBB(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome', tickSpacing: number, currentTick: number): Promise<BBResult | null> {
     try {
       const currentPrice = Math.pow(1.0001, currentTick);
 
       // 1. Update the price buffer with the current live price
       globalPriceBuffer.addPrice(poolAddress, currentPrice);
 
-      let prices1H = globalPriceBuffer.getPrices(poolAddress);
+      // 價格單位說明：priceBuffer 只存 Math.pow(1.0001, tick) 的 tick-ratio 值（例如 WETH/cbBTC ≈ 0.029）。
+      // GeckoTerminal hourly backfill 曾被移除，原因是它返回 USD 價格（例如 $70k），
+      // 與 tick-ratio 單位完全不同，混用會導致 SMA/方差計算失真。
+      const prices1H = globalPriceBuffer.getPrices(poolAddress);
 
-      // 2. If we don't have enough data (< 20 hours), fetch from GeckoTerminal to backfill
-      if (prices1H.length < 20) {
-        log.info(`[BBEngine] Price buffer for ${poolAddress} has only ${prices1H.length}/20 hours. Backfilling from GeckoTerminal...`);
-        let res: any = null;
-        let hourlyRetries = 3;
-        while (hourlyRetries > 0) {
-          try {
-            res = await axios.get(`https://api.geckoterminal.com/api/v2/networks/base/pools/${poolAddress}/ohlcv/hour?limit=30`);
-            break;
-          } catch (e: any) {
-            if (e.response && e.response.status === 429) {
-              const attempt = 4 - hourlyRetries; // 1, 2, 3
-              // Exponential backoff + jitter: (2^attempt)s + random(0-1)s
-              const backoffMs = 10000 + Math.pow(2, attempt) * 1000 + Math.random() * 1000;
-              hourlyRetries--;
-              log.warn(`GeckoTerminal 429 rate-limited (hourly OHLCV) for pool=${poolAddress}. Backing off ${(backoffMs / 1000).toFixed(1)}s... (${hourlyRetries} retries remaining)`);
-              await delay(backoffMs);
-            } else {
-              log.warn(`Failed to fetch hourly OHLCV for pool=${poolAddress}: ${e.message}`);
-              break;
-            }
-          }
-        }
-
-        if (res && res.data && res.data.data && res.data.data.attributes && res.data.data.attributes.ohlcv_list) {
-          const ohlcvList = res.data.data.attributes.ohlcv_list;
-          globalPriceBuffer.backfill(poolAddress, ohlcvList);
-          prices1H = globalPriceBuffer.getPrices(poolAddress);
-          log.info(`[BBEngine] Backfill complete. Buffer now has ${prices1H.length} hours of data.`);
-        } else {
-          log.warn(`[BBEngine] Failed to backfill OHLCV data from GeckoTerminal for ${poolAddress}. Proceeding with ${prices1H.length} hours.`);
-        }
-      }
-
-      // 3. Fallback if still no data
-      if (prices1H.length < 2) {
-        log.warn(`[BBEngine] Insufficient data for SMA (${prices1H.length} hours). Using fallback BB.`);
-        return BBEngine.createFallbackBB(currentTick, tickSpacing);
-      }
-
-      // Compute 20 SMA / 1H
-      const sma = prices1H.reduce((sum: number, p: number) => sum + p, 0) / (prices1H.length || 1);
-
-      // Use fetchDailyVol: tries The Graph (DEX-specific) → GeckoTerminal → stale cache → 50% default
+      // 2. 先取得 30D 年化波動率（k 值與 stdDev fallback 都需要）
       const annualizedVol = await fetchDailyVol(poolAddress, dex);
-
-      // Determine K
-      const k = annualizedVol < 0.50 ? 1.2 : 1.8; // 提高閾值，讓窄 k 更容易觸發
+      const k = annualizedVol < 0.50 ? 1.2 : 1.8;
       const regime = k <= 1.5 ? 'Low Vol (震盪市)' : 'High Vol (趨勢市)';
 
-      // 平滑 prices1H (alpha=0.3，最近權重高)
-      let smoothedPrices = [...prices1H];
-      for (let i = 1; i < smoothedPrices.length; i++) {
-        smoothedPrices[i] = 0.3 * smoothedPrices[i] + 0.7 * smoothedPrices[i - 1]; // EWMA
-      }
+      // 3. SMA：用現有資料計算，不足時以當前價格替代
+      const sma = prices1H.length > 0
+        ? prices1H.reduce((sum: number, p: number) => sum + p, 0) / prices1H.length
+        : currentPrice;
 
-      // 然後用 smoothedPrices 算 variance
-      const variance1H = smoothedPrices.reduce((sum: number, p: number) => sum + Math.pow(p - sma, 2), 0) / (smoothedPrices.length || 1);
-      const stdDev1H = Math.sqrt(variance1H);
+      // 4. stdDev：資料 >= 5 筆用 EWMA 平滑後計算；不足時從 30D 年化波動率換算 1H stdDev
+      //    annualizedVol = hourlyStdDev × √(365 × 24)  →  hourlyStdDev = sma × annualizedVol / √8760
+      let stdDev1H: number;
+      if (prices1H.length >= 5) {
+        let smoothedPrices = [...prices1H];
+        for (let i = 1; i < smoothedPrices.length; i++) {
+          smoothedPrices[i] = 0.3 * smoothedPrices[i] + 0.7 * smoothedPrices[i - 1];
+        }
+        const variance1H = smoothedPrices.reduce((sum: number, p: number) => sum + Math.pow(p - sma, 2), 0) / smoothedPrices.length;
+        stdDev1H = Math.sqrt(variance1H);
+      } else {
+        // 冷啟動：用 30D vol 換算 1H stdDev，regime 仍有效
+        stdDev1H = sma * annualizedVol / Math.sqrt(365 * 24);
+        log.info(`📊 vol-derived stdDev  ${poolAddress.slice(0, 10)}  candles=${prices1H.length}/20  stdDev=${stdDev1H.toExponential(3)}`);
+      }
 
       const maxOffset = sma * 0.10; // ±10% cap
       const upperPrice = Math.min(sma + maxOffset, sma + (k * stdDev1H));
-      const lowerPrice = Math.max(0.00000001, Math.max(sma - maxOffset, sma - (k * stdDev1H)));
+      // 不使用絕對最小值（如 0.00000001），避免 tick-ratio 極小的幣對（如 WETH/cbBTC ≈ 2.9e-12）
+      // 被 clamp 到遠大於 SMA 的下界，導致 tickOffsetLower 為負、tick 範圍倒置。
+      // sma - maxOffset = 0.9 × sma 恆正，無需額外保護。
+      const lowerPrice = Math.max(sma - maxOffset, sma - (k * stdDev1H));
 
       // Calculate the percentage offset of the bounds from the current price/SMA
       // Since price = 1.0001^tick, a % change in price corresponds to a constant tick offset
@@ -251,15 +257,28 @@ export class BBEngine {
       const tickLower = nearestUsableTick(tickLowerRaw, tickSpacing);
       const tickUpper = nearestUsableTick(tickUpperRaw, tickSpacing);
 
-      // Fetch current ETH price for ratio calculation
+      // Fetch current WETH and cbBTC prices from DexScreener（5分鐘快取，避免每個 pool 重複呼叫）
       let ethPrice = 0;
-      try {
-        const wethRes = await axios.get('https://api.dexscreener.com/latest/dex/tokens/0x4200000000000000000000000000000000000006');
-        if (wethRes.data && wethRes.data.pairs && wethRes.data.pairs.length > 0) {
-          ethPrice = parseFloat(wethRes.data.pairs[0].priceUsd);
+      let cbbtcPrice = 0;
+      if (tokenPriceCache && Date.now() < tokenPriceCache.expiresAt) {
+        ethPrice = tokenPriceCache.ethPrice;
+        cbbtcPrice = tokenPriceCache.cbbtcPrice;
+      } else {
+        try {
+          const [wethRes, cbbtcRes] = await Promise.all([
+            axios.get('https://api.dexscreener.com/latest/dex/tokens/0x4200000000000000000000000000000000000006', { timeout: 5000 }),
+            axios.get('https://api.dexscreener.com/latest/dex/tokens/0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf', { timeout: 5000 }),
+          ]);
+          if (wethRes.data?.pairs?.length > 0)
+            ethPrice = parseFloat(wethRes.data.pairs[0].priceUsd);
+          if (cbbtcRes.data?.pairs?.length > 0)
+            cbbtcPrice = parseFloat(cbbtcRes.data.pairs[0].priceUsd);
+          tokenPriceCache = { ethPrice, cbbtcPrice, expiresAt: Date.now() + PRICE_CACHE_TTL_MS };
+          log.info(`💹 WETH $${ethPrice.toFixed(0)}  cbBTC $${cbbtcPrice.toFixed(0)}`);
+        } catch (e: any) {
+          log.warn(`token price fetch failed: ${e.message}`);
+          if (tokenPriceCache) { ethPrice = tokenPriceCache.ethPrice; cbbtcPrice = tokenPriceCache.cbbtcPrice; }
         }
-      } catch (e: any) {
-        log.warn(`Failed to fetch ETH price from DexScreener (used for ratio calc): ${e.message}`);
       }
 
       const minPriceRatio = ethPrice > 0 ? ethPrice / upperPrice : 0;
@@ -274,13 +293,14 @@ export class BBEngine {
         tickLower,
         tickUpper,
         ethPrice,
+        cbbtcPrice,
         minPriceRatio,
         maxPriceRatio,
         regime
       };
 
     } catch (error) {
-      log.error(`Failed to compute Bollinger Bands for pool=${poolAddress} dex=${dex}: ${error}`);
+      log.error(`BB compute failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
       return BBEngine.createFallbackBB(currentTick, tickSpacing);
     }
   }
@@ -307,10 +327,11 @@ export class BBEngine {
       tickLower: nearestUsableTick(tickLowerRaw, tickSpacing),
       tickUpper: nearestUsableTick(tickUpperRaw, tickSpacing),
       ethPrice: 0,
+      cbbtcPrice: 0,
       minPriceRatio: 0,
       maxPriceRatio: 0,
       isFallback: true,
-      regime: 'Unknown'
+      regime: '資料累積中'
     };
   }
 }
