@@ -11,12 +11,11 @@ const botService = new TelegramBotService();
 
 // Shared In-Memory State across scheduled tasks
 let latestPools: PoolStats[] = [];
-let highestPool: PoolStats | null = null;
 let activePositions: PositionRecord[] = [];
 let latestBBs: Record<string, BBResult> = {}; // keyed by pool Address
 let latestRisks: Record<string, RiskAnalysis> = {}; // keyed by position tokenId
 
-let previousBandwidth = 0; // simple mock for avg30DBandwidth
+const previousBandwidths: Record<string, number> = {}; // keyed by poolAddress
 
 export const lastUpdates = {
   poolScanner: 0,
@@ -31,84 +30,69 @@ let isStartupComplete = false;
 // 1. Pool Scanner
 async function runPoolScanner() {
   activeTasks++;
-  log.info('PoolScanner started');
   try {
     const pools = await PoolScanner.scanAllCorePools();
     if (pools.length === 0) {
-      log.warn('No pools found or subgraph error.');
+      log.warn('no pools returned — subgraph or RPC error');
       return;
     }
     pools.sort((a, b) => b.apr - a.apr);
-
     latestPools = pools;
-    highestPool = pools[0];
     lastUpdates.poolScanner = Date.now();
-    log.info(`PoolScanner completed: ${latestPools.length} pools fetched. Highest APR: ${highestPool.dex} ${(highestPool.feeTier * 100).toFixed(2)}% fee → APR ${(highestPool.apr * 100).toFixed(2)}%, TVL $${highestPool.tvlUSD.toFixed(0)}`);
+    const top = latestPools[0];
+    const topTvl = top.tvlUSD >= 1000 ? `$${(top.tvlUSD / 1000).toFixed(0)}K` : `$${top.tvlUSD.toFixed(0)}`;
+    log.info(`✅ pools(${latestPools.length})  top: ${top.dex} ${(top.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}% — APR ${(top.apr * 100).toFixed(1)}%  TVL ${topTvl}`);
   } catch (error) {
-    log.error(`Error in PoolScanner task: ${error}`);
+    log.error(`PoolScanner: ${error}`);
   } finally { activeTasks--; }
 }
 
 // 2. Position Scanner
 async function runPositionScanner() {
   activeTasks++;
-  log.info('PositionScanner started');
   try {
-    await PositionScanner.updateAllPositions();
+    await PositionScanner.updateAllPositions(latestBBs);
     const positions = PositionScanner.getTrackedPositions();
     activePositions = positions.filter((p) => Number(p.liquidity) > 0);
     lastUpdates.positionScanner = Date.now();
-    log.info(`PositionScanner completed: ${activePositions.length} active position(s) out of ${positions.length} total tracked`);
+    log.info(`✅ positions  active ${activePositions.length}/${positions.length} tracked`);
   } catch (error) {
-    log.error(`Error in PositionScanner task: ${error}`);
+    log.error(`PositionScanner: ${error}`);
   } finally { activeTasks--; }
 }
 
 // 3. BBEngine
 async function runBBEngine() {
   activeTasks++;
-  log.info(`BBEngine started: processing ${activePositions.length} position pool(s) + highestPool`);
   try {
-    // Collect all relevant pools (highestPool + active position pools)
     const poolsToProcess = new Map<string, PoolStats>();
-    if (highestPool) poolsToProcess.set(highestPool.id.toLowerCase(), highestPool);
 
     for (const pos of activePositions) {
       const poolData = latestPools.find(
         (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
       );
-      if (poolData) {
-        poolsToProcess.set(poolData.id.toLowerCase(), poolData);
-      }
+      if (poolData) poolsToProcess.set(poolData.id.toLowerCase(), poolData);
     }
 
     for (const [poolAddress, poolData] of poolsToProcess.entries()) {
       let posTickSpacing = 10;
-      if (poolData.feeTier === 0.0001) posTickSpacing = 1;
-      else if (poolData.feeTier === 0.003) posTickSpacing = 60;
+      if (poolData.feeTier === 0.0001)   posTickSpacing = 1;
+      else if (poolData.feeTier === 0.003)    posTickSpacing = 60;
+      else if (poolData.feeTier === 0.000085) posTickSpacing = 1; // Aerodrome 0.0085%
 
-      const bb = await BBEngine.computeDynamicBB(
-        poolData.id,
-        poolData.dex,
-        posTickSpacing,
-        poolData.tick
-      );
-
-      if (bb) {
-        latestBBs[poolAddress] = bb;
-      }
+      const bb = await BBEngine.computeDynamicBB(poolData.id, poolData.dex, posTickSpacing, poolData.tick);
+      if (bb) latestBBs[poolAddress] = bb;
     }
     lastUpdates.bbEngine = Date.now();
-    log.info(`BBEngine completed: computed BB for ${poolsToProcess.size} pool(s)`);
+    log.info(`✅ BB bands computed for ${poolsToProcess.size} pool(s)`);
   } catch (error) {
-    log.error(`Error in BBEngine task: ${error}`);
+    log.error(`BBEngine: ${error}`);
   } finally { activeTasks--; }
 }
 
 // 4. RiskManager
 async function runRiskManager() {
   activeTasks++;
-  log.info(`RiskManager started: analyzing ${activePositions.length} position(s)`);
   try {
     for (const pos of activePositions) {
       const poolData = latestPools.find(
@@ -120,16 +104,17 @@ async function runRiskManager() {
       const bb = latestBBs[poolData.id.toLowerCase()];
       if (!bb) continue;
 
+      const poolKey = poolData.id.toLowerCase();
       const currentBandwidth = (bb.upperPrice - bb.lowerPrice) / bb.sma;
-      const avg30DBandwidth = previousBandwidth || currentBandwidth;
-      previousBandwidth = currentBandwidth;
+      const avg30DBandwidth = previousBandwidths[poolKey] || currentBandwidth;
+      previousBandwidths[poolKey] = currentBandwidth;
 
       const positionState: PositionState = {
         capital: pos.positionValueUSD || 1000,
         tickLower: pos.tickLower,
         tickUpper: pos.tickUpper,
         unclaimedFees: pos.unclaimedFeesUSD,
-        cumulativeIL: pos.ilUSD || 0,
+        cumulativeIL: pos.ilUSD ?? 0,
         feeRate24h: poolData.apr / 365,
       };
 
@@ -144,9 +129,9 @@ async function runRiskManager() {
       latestRisks[pos.tokenId] = risk;
     }
     lastUpdates.riskManager = Date.now();
-    log.info(`RiskManager completed: ${Object.keys(latestRisks).length} risk analysis record(s) updated`);
+    log.info(`✅ risk analysis updated for ${Object.keys(latestRisks).length} position(s)`);
   } catch (error) {
-    log.error(`Error in RiskManager task: ${error}`);
+    log.error(`RiskManager: ${error}`);
   } finally { activeTasks--; }
 }
 
@@ -163,38 +148,38 @@ async function runBotService() {
     await new Promise(r => setTimeout(r, 1000));
   }
 
-  log.info('BotService started: preparing Telegram reports');
   try {
     if (activePositions.length === 0) {
-      log.info('BotService skipped: no active tracked positions to report.');
+      log.info('BotService skipped: no active positions');
       return;
     }
 
-    if (!highestPool) return;
-
+    const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }> = [];
     for (const pos of activePositions) {
       const poolData = latestPools.find(
         (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
       );
-
       const bb = latestBBs[poolData?.id.toLowerCase() || ''];
       const risk = latestRisks[pos.tokenId];
 
       if (!poolData || !risk) {
-        log.warn(`Missing data for position ${pos.tokenId}, skipping report.`);
+        log.warn(`Missing data for position ${pos.tokenId}, skipping.`);
         continue;
       }
-
-      await botService.sendFormattedReport(pos, poolData, bb || null, risk, highestPool, lastUpdates);
-      log.info(`BotService: report sent for position tokenId=${pos.tokenId} pool=${poolData.dex} ${(poolData.feeTier * 100).toFixed(2)}%`);
+      entries.push({ position: pos, pool: poolData, bb: bb || null, risk });
     }
+
+    if (entries.length === 0) return;
+
+    await botService.sendConsolidatedReport(entries, latestPools, lastUpdates);
+    log.info(`✅ report sent  ${entries.length} position(s)`);
   } catch (error) {
-    log.error(`Error in Bot Service task: ${error}`);
+    log.error(`BotService: ${error}`);
   }
 }
 
 async function main() {
-  log.info('=== DexInfoBot starting up ===');
+  log.section('DexInfoBot startup');
 
   // Start bot webhook or polling
   botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
@@ -203,33 +188,24 @@ async function main() {
   await PositionScanner.syncFromChain();
 
   // Initial runs to populate state
+  // BBEngine 必須在 PositionScanner 之前，讓 latestBBs 暖好 cache
   await runPoolScanner();
-  await runPositionScanner();
   await runBBEngine();
+  await runPositionScanner();
   await runRiskManager();
 
   isStartupComplete = true;
-  log.info('Initial data sync complete. Enabling scheduled bot service.');
+  log.info('startup complete — scheduler enabled');
+  log.section('ready');
 
-  // Schedule distinct cron jobs based on intervals
-  // Execute sequentially every 5 minutes to guarantee data readiness before BotService
   cron.schedule('*/5 * * * *', async () => {
-    log.info('--- Starting scheduled 5-minute update cycle ---');
-
-    // 1. Fetch market data
-    await runPoolScanner().catch((e) => log.error(`Cron PoolScanner error: ${e}`));
-
-    // 2. Fetch user position data
-    await runPositionScanner().catch((e) => log.error(`Cron PositionScanner error: ${e}`));
-
-    // 3. Compute BB & Risks based on fresh data
-    await runBBEngine().catch((e) => log.error(`Cron BBEngine error: ${e}`));
-    await runRiskManager().catch((e) => log.error(`Cron RiskManager error: ${e}`));
-
-    // 4. Send report (will use newest data just computed)
-    await runBotService().catch((e) => log.error(`Cron BotService error: ${e}`));
-
-    log.info('--- Scheduled update cycle completed ---');
+    log.section('5m cycle');
+    await runPoolScanner().catch((e) => log.error(`Cron PoolScanner: ${e}`));
+    await runBBEngine().catch((e) => log.error(`Cron BBEngine: ${e}`));
+    await runPositionScanner().catch((e) => log.error(`Cron PositionScanner: ${e}`));
+    await runRiskManager().catch((e) => log.error(`Cron RiskManager: ${e}`));
+    await runBotService().catch((e) => log.error(`Cron BotService: ${e}`));
+    log.section('cycle end');
   });
 }
 

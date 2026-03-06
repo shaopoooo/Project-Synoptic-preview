@@ -58,6 +58,7 @@
 | Pancake V3 | 0.05% | `0xd974d59e30054cf1abeded0c9947b0d8baf90029` |
 | Uniswap V3 | 0.05% | `0x7aea2e8a3843516afa07293a10ac8e49906dabd1` |
 | Uniswap V3 | 0.30% | `0x8c7080564b5a792a33ef2fd473fba6364d5495e5` |
+| Aerodrome Slipstream | 0.0085% | `0x22aee3699b6a0fed71490c103bd4e5f3309891d5` |
 
 ### APR 計算公式
 
@@ -78,14 +79,14 @@ APR = (24h 手續費 / TVL) × 365
 
 | 市場狀態 | 條件 | k 值 |
 |----------|------|------|
-| 震盪市 | 30D 年化波動率 < 40% | `k = 1.8` |
-| 趨勢市 | 30D 年化波動率 ≥ 40% | `k = 2.5` |
+| 震盪市 | 30D 年化波動率 < 50% | `k = 1.2` |
+| 趨勢市 | 30D 年化波動率 ≥ 50% | `k = 1.8` |
 
 ---
 
 ## 5. 倉位監測與錢包掃描（Position Scanner）
 
-- **倉位結構**：$20k 全額投入單池，不設 Buffer 緩衝倉
+- **多錢包支援**：透過 `WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 環境變數設定，支援動態新增
 - **Drift 門檻**：實際區間與建議區間重合度 < 80% 時，推播 `STRATEGY_DRIFT_WARNING`
 - **RPC 優化**：消除 `PositionScanner.ts` 中多餘的重複 RPC 呼叫，提升效率
 
@@ -160,15 +161,27 @@ config/
 
 ## 9. Telegram 推播格式
 
-每 5 分鐘或觸發預警時發送：
+每 5 分鐘推播單一合併報告，支援 `/sort <key>` 指令切換排序：
 
 ```
-[2026-03-02 17:05] 最高 APR 池: Pancake 0.01% (APR 67.2%)
-建議 BB 區間: 0.0298 – 0.0312 cbBTC/WETH
-Unclaimed: $12.4 | IL: -$8.7 | Breakeven: 14 天
-Compound Signal: ✅ Unclaimed $12.4 > Threshold $7.1
-Health Score: 94/100 | Regime: Low Vol
+[2026-03-06 16:10] 倉位監控報告 (2 個倉位 | 排序: 倉位大小 ↓)
+
+─── #1 PancakeSwap 0.01% | APR 29.4% | 0xabc...1234 | #1675918 ───
+當前價格: 0.02921 | 你的區間: 0.02803 - 0.03054
+建議 BB 區間: 0.02628 - 0.03213
+Unclaimed: $4.6 | IL: -$8.7 🔴 | Breakeven: 14 天
+Compound: ✅ $4.6 > $0.1 | Health: 94/100 | Low Vol (震盪市)
+
+📊 各池收益排行:
+🥇 Aerodrome 0.0085% — APR 67.2% | TVL $1,234K
+🥈 PancakeSwap 0.01% — APR 29.4% | TVL $987K ◀ 你的倉位
+
+⏱ 資料更新時間:
+- Pool: 16:10 | Position: 16:10
+- BB Engine: 16:10 | Risk: 16:10
 ```
+
+排序指令：`/sort size`、`/sort apr`、`/sort unclaimed`、`/sort health`
 
 ---
 
@@ -184,31 +197,77 @@ Health Score: 94/100 | Regime: Low Vol
 
 ---
 
-## 11. 重構任務清單
+## 11. 任務清單
 
-### 🔴 高優先（系統安全與穩定性）
+### ✅ 階段一：基礎建設（已完成）
 
-- [ ] **狀態持久化**：將 `PriceBuffer`、`volCache` 存入 `data/state.json`（使用 `fs-extra`）
-- [ ] **記憶體管理**：將 `PoolScanner.ts` 與 `BBEngine.ts` 中的無上限 `Map` 替換為 `lru-cache`
-- [x] **RPC 備援**：`src/utils/rpcProvider.ts` 已實作 `FallbackProvider`（QuickNode → Alchemy → 公共節點）+ `rpcRetry` 重試機制
-- [ ] **API 防封鎖**：GeckoTerminal 請求缺少 `User-Agent` Header；已有 retry/backoff 但需補強
-- [ ] **動態 Gas Oracle**：`RiskManager.ts:25` 中 `COMPOUND_GAS_COST_USD = 1.5` 為硬編碼，需改為透過 Provider 即時取得 `maxFeePerGas`
-- [ ] **輸入清洗**：對外部傳入的 Pool Address 加入 `/^0x[0-9a-fA-F]{40}$/` 正則校驗
+- [x] **RPC 備援**：`src/utils/rpcProvider.ts` 實作 `FallbackProvider`（QuickNode → Alchemy → 公共節點）+ `rpcRetry`
+- [x] **config 拆分**：`env.ts` / `constants.ts` / `abis.ts` 分離，`index.ts` 統一匯出
+- [x] **README.md**：完整記錄環境變數、架構與啟動方式
 
-### 🟡 中優先（計算精度與測試）
+### ✅ 階段二：多池子 & 多錢包支援（已完成）
 
+- [x] **新增 Aerodrome WETH/cbBTC 池**：fee=85 (0.0085%)，tickSpacing=1，NPM `0x827922...`
+- [x] **池命名統一**：全部改為 `{DEX}_{交易對}_{費率}` 格式（如 `UNISWAP_WETH_CBBTC_0_05`）
+- [x] **多錢包支援**：`env.ts` 改為 `WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 編號變數
+- [x] **syncFromChain 多錢包迴圈**：外層錢包、內層 DEX，已同步錢包記錄於 `syncedWallets` Set
+- [x] **getPoolFromTokens 碰撞修正**：key 改為 `${dex}_${fee}`，避免同費率不同 DEX 衝突
+- [x] **dex 型別擴充**：全專案 `'Uniswap' | 'PancakeSwap'` 改為加入 `'Aerodrome'`
+
+### ✅ 階段三：Bug 修正（已完成）
+
+- [x] **IL 計算錯誤修正**：改用 Uniswap V3 sqrtPrice 數學計算 LP 倉位本金（`amount0 = L × (1/sqrtP_current - 1/sqrtP_upper)`）
+- [x] **Health Score 歸零修正**：連鎖修正（IL 正確後 ilRiskWeight 不再為 $1801）
+- [x] **ilUSD 型別修正**：改為 `number | null`，未設定初始本金時顯示「未設定歷史本金」
+- [x] **previousBandwidth 污染修正**：改為 `previousBandwidths: Record<string, number>`，各池獨立追蹤
+- [x] **initialized flag 改進**：改為 `syncedWallets: Set<string>`，支援熱新增錢包
+- [x] **Aerodrome slot0 ABI 修正**：新增 `AERO_POOL_ABI`（6 個回傳值，無 `feeProtocol`），`PoolScanner` 依 dex 動態選擇
+- [x] **BBEngine 重複查詢修正**：執行順序改為 BBEngine → PositionScanner，`updateAllPositions` 接收 `latestBBs` 避免重複呼叫 GeckoTerminal
+- [x] **鎖倉倉位支援**：`TRACKED_TOKEN_IDS` 結構（`tokenId → dex`），手動補入 Gauge 鎖倉的倉位
+- [x] **倉位大小顯示**：Telegram 報告新增 `倉位大小: $xxx` 欄位
+- [x] **Aerodrome Subgraph Invalid URL 修正**：`fetchPoolVolume` 加入 `if (!config.SUBGRAPHS[dex])` guard，無 subgraph 時直接跳至 GeckoTerminal
+- [x] **Aerodrome NPM fee 欄位語意修正**：Aerodrome `positions()` 第 5 欄回傳 `tickSpacing`（非 fee pips），`getPoolFromTokens` 加入 `'Aerodrome_1'` 對應，`feeTierForStats` 強制設為 `0.000085`
+- [x] **BBEngine Aerodrome tickSpacing 修正**：`runBBEngine()` 加入 `feeTier === 0.000085` → `tickSpacing = 1`
+
+### ✅ 階段四：Telegram 報告優化（已完成）
+
+- [x] **合併報告**：廢棄逐位置發送，改為 `sendConsolidatedReport` 單一訊息
+- [x] **各池收益排行**：顯示全部池子 APR 由高到低，標記所有有持倉的池子
+- [x] **排序指令**：`/sort size|apr|unclaimed|health`，狀態保存於 Bot 實例
+- [x] **倉位標頭識別**：顯示錢包尾碼（`0xabc...1234`）與 TokenId
+- [x] **手機排版優化**：`formatPositionBlock` 改為每行 ≤ 40 字元，分組顯示
+- [x] **淨 APR 顯示**：費用APR + IL年化率（需建倉本金與鏈上 open timestamp）
+- [x] **/explain 指令**：發送完整指標計算公式說明
+- [x] **建倉時間戳**：`syncFromChain` 自動查詢 NFT mint Transfer 事件，快取於 in-memory
+
+### 🔴 階段五：系統穩定性（待處理）
+
+- [ ] **狀態持久化**：`PriceBuffer`、`volCache`、`openTimestampCache`、Bot 排序偏好 存入 `data/state.json`
+- [ ] **記憶體管理**：`PoolScanner.ts` 與 `BBEngine.ts` 無上限 `Map` 改用 `lru-cache`
+- [ ] **API 防封鎖**：GeckoTerminal 請求補上 `User-Agent` Header
+- [ ] **動態 Gas Oracle**：`RiskManager.ts` `COMPOUND_GAS_COST_USD = 1.5` 改為即時 `maxFeePerGas`
+- [ ] **Pool Address 輸入校驗**：`/^0x[0-9a-fA-F]{40}$/` 正則驗證
+
+### 🟡 階段六：計算精度與測試（待處理）
+
+- [x] **INITIAL_INVESTMENT_USD 維護**：已改為 `.env` 編號變數（`INITIAL_INVESTMENT_<tokenId>`）
+- [x] **TRACKED_TOKEN_IDS 維護**：已改為 `.env` 編號變數（`TRACKED_TOKEN_<tokenId>=<DEX>`）
 - [ ] **重構 ILCalculator & RiskManager**：與 `@uniswap/v3-sdk` 原生數學對齊
-- [ ] **擴充 Jest 測試**：覆蓋動態 Gas 閾值與邊界情境（零 TVL、極端 Tick、最大波動率等）
+- [ ] **擴充 Jest 測試**：動態 Gas 閾值、零 TVL、極端 Tick、最大波動率等邊界情境
 
-### 🔵 核心重構
+### ✅ 階段五-B：Log 系統重構（已完成）
 
-- [x] **拆分 `config/index.ts`**：已完成分離 `env.ts` / `constants.ts` / `abis.ts`，`index.ts` 統一匯出
-- [ ] **整合共用型別**：`PoolStats`、`BBResult`、`PositionRecord`、`RiskAnalysis` 等介面分散各檔案，應移至 `src/types/index.ts`
-- [ ] **優化 PositionScanner.ts**：`scanPosition()` 內部同時呼叫 `PoolScanner.fetchPoolStats()` 與 `BBEngine.computeDynamicBB()`，在 `updateAllPositions()` 迴圈中造成重複 RPC 呼叫
+- [x] **logger.ts 強化**：新增 `section()` 分隔線方法、level icon（`·` / `!` / `✖`）、INFO 訊息套用 service 顏色
+- [x] **週期分隔線**：每 5 分鐘 cron 加入 `─── 5m cycle ───` / `─── ready ───` 視覺分隔
+- [x] **訊息類別 emoji**：`⛓` 鏈上、`🌐` API 請求、`💾` 快取、`📍` 倉位、`✅` 完成、`🔄` 重新觸發
+- [x] **去除重複前綴**：移除所有訊息內 `[ServiceName]` 冗餘前綴（tag 已標示）
 
-### 📄 部署與文件
+### 🔵 階段七：架構整理（待處理）
 
-- [x] **README.md**：已建立，完整記錄環境變數、架構與啟動方式
+- [ ] **整合共用型別**：`PoolStats`、`BBResult`、`PositionRecord`、`RiskAnalysis` 移至 `src/types/index.ts`
+
+### 📄 階段八：部署（待處理）
+
 - [ ] **新增 Dockerfile**：包含 Railway 部署指南
 
 ---
@@ -220,21 +279,30 @@ Health Score: 94/100 | Regime: Low Vol
 ```
 src/index.ts
   runPoolScanner()      → PoolScanner.scanAllCorePools()
-  runPositionScanner()  → PositionScanner.updateAllPositions()
-  runBBEngine()         → BBEngine.computeDynamicBB()
+  runBBEngine()         → BBEngine.computeDynamicBB()        ← 必須在 PositionScanner 之前
+  runPositionScanner()  → PositionScanner.updateAllPositions(latestBBs)
   runRiskManager()      → RiskManager.analyzePosition()
-  runBotService()       → TelegramBotService.sendFormattedReport()
+  runBotService()       → TelegramBotService.sendConsolidatedReport()
 ```
 
-### 已知問題定位
+### 環境變數（`.env`）
 
-| 問題 | 檔案 | 行號 |
+| 變數 | 說明 |
+|------|------|
+| `WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... | 監控錢包地址（逐號新增） |
+| `RPC_URL` | Base 主 RPC |
+| `SUBGRAPH_API_KEY` | The Graph API Key |
+| `BOT_TOKEN` | Telegram Bot Token |
+| `CHAT_ID` | Telegram Chat ID |
+
+### 待處理問題定位
+
+| 問題 | 檔案 | 位置 |
 |------|------|------|
 | 硬編碼 Gas $1.5 | `src/services/RiskManager.ts` | L25 |
 | 無上限 `Map` (volCache) | `src/services/PoolScanner.ts` | L26 |
 | 無上限 `Map` (volCache) | `src/services/BBEngine.ts` | L32 |
-| 缺少 User-Agent Header | `src/services/PoolScanner.ts` | L56, L88 |
-| 缺少 User-Agent Header | `src/services/BBEngine.ts` | L61, L183 |
+| 缺少 User-Agent Header | `src/services/PoolScanner.ts` | `fetchPoolVolume()` |
+| 缺少 User-Agent Header | `src/services/BBEngine.ts` | `fetchDailyVol()` |
 | 無 Pool Address 輸入校驗 | `src/services/PoolScanner.ts` | `fetchPoolStats()` 入口 |
-| `PriceBuffer` 重啟後消失 | `src/services/BBEngine.ts` | L159 |
-| 重複 RPC 呼叫 | `src/services/PositionScanner.ts` | `scanPosition()` L196–L199 |
+| `PriceBuffer` 重啟後消失 | `src/services/BBEngine.ts` | `globalPriceBuffer` |

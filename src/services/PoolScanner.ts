@@ -8,7 +8,7 @@ const log = createServiceLogger('PoolScanner');
 
 export interface PoolStats {
     id: string;
-    dex: 'Uniswap' | 'PancakeSwap';
+    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
     feeTier: number;
     apr: number;
     tvlUSD: number;
@@ -29,7 +29,7 @@ const volCache = new Map<string, VolCacheEntry>();
  * Fetch 7-day volume data for a pool.
  * Order: The Graph (DEX-specific) → GeckoTerminal → stale cache → zeros
  */
-async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'): Promise<VolResult> {
+async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<VolResult> {
     const key = poolAddress.toLowerCase();
     const cached = volCache.get(key);
     if (cached && Date.now() < cached.expiresAt) return cached;
@@ -38,11 +38,14 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
     const save = (daily: number, avg7d: number, src: string) => {
         const entry: VolCacheEntry = { daily, avg7d, source: src, expiresAt: Date.now() + VOL_CACHE_TTL_MS };
         volCache.set(key, entry);
-        log.info(`[PoolScanner] volume(${tag}) from ${src}: 24h=$${daily.toFixed(0)} (cached 30m)`);
+        log.info(`💾 vol  ${tag}  $${daily.toFixed(0)}/24h  [${src}]`);
         return entry;
     };
 
-    try {
+    // Aerodrome 等無 subgraph 端點的 DEX，直接跳至 GeckoTerminal
+    if (!config.SUBGRAPHS[dex]) {
+        log.info(`⏭  no subgraph for ${dex}, skip to GeckoTerminal`);
+    } else try {
         // 🔥 終極大招：同時查詢 Uniswap 舊格式與 Messari 新格式
         const query = `{
             uniswapFormat: poolDayDatas(first: 7, orderBy: date, orderDirection: desc, where: { pool: "${key}" }) {
@@ -76,10 +79,10 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
             const avg7d = vols.reduce((s, v) => s + v, 0) / vols.length;
             return save(daily, avg7d, sourceUsed);
         } else {
-            log.info(`[PoolScanner] The Graph (${dex}) returned 0 days for ${tag}. Falling back to DexScreener 24h volume.`);
+            log.warn(`subgraph 0 days for ${tag} (${dex}), falling back to GeckoTerminal`);
         }
     } catch (e: any) {
-        log.warn(`[PoolScanner] Subgraph error for ${tag}: ${e.message}`);
+        log.warn(`subgraph error  ${tag}: ${e.message}`);
     }
 
     // --- Try 2: GeckoTerminal OHLCV (with 3 retries, 10s delay) ---
@@ -99,10 +102,10 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
         } catch (e: any) {
             const status = e.response?.status ?? 'err';
             if (attempt < 3) {
-                log.warn(`[PoolScanner] GeckoTerminal ${status} for ${tag} (Attempt ${attempt}/3). Retrying in 10s...`);
+                log.warn(`GeckoTerminal ${status}  ${tag}  retry in 10s (${attempt}/3)`);
                 await delay(10000);
             } else {
-                log.error(`[PoolScanner] GeckoTerminal ${status} for ${tag} failed after 3 attempts: ${e.message}`);
+                log.error(`GeckoTerminal failed after 3 attempts  ${tag}: ${e.message}`);
             }
         }
     }
@@ -110,7 +113,7 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
     // --- Fallback: stale cache or zeros ---
     const stale = volCache.get(key);
     if (stale) {
-        log.warn(`[PoolScanner] Using stale cached volume for ${tag}`);
+        log.warn(`💾 stale vol cache  ${tag}`);
         return stale;
     }
 
@@ -124,12 +127,14 @@ export class PoolScanner {
      */
     static async fetchPoolStats(
         poolAddress: string,
-        dex: 'Uniswap' | 'PancakeSwap',
+        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
         feeTierVal: number
     ): Promise<PoolStats | null> {
         try {
             // 1. Fetch On-Chain Tick and SqrtPrice
-            const poolContract = new ethers.Contract(poolAddress, config.POOL_ABI, rpcProvider);
+            // Aerodrome Slipstream 的 slot0() 無 feeProtocol 欄位，需使用專屬 ABI
+            const poolAbi = dex === 'Aerodrome' ? config.AERO_POOL_ABI : config.POOL_ABI;
+            const poolContract = new ethers.Contract(poolAddress, poolAbi, rpcProvider);
             const slot0 = await rpcRetry(
                 () => poolContract.slot0(),
                 `slot0(${poolAddress})`
@@ -152,7 +157,7 @@ export class PoolScanner {
                 tvlUSD = parseFloat(pairData.liquidity?.usd || '0');
                 dailyVolumeUSD = parseFloat(pairData.volume?.h24 || '0');
             } else {
-                log.warn(`No DexScreener pair data found for pool=${poolAddress}. Setting volume/TVL to 0.`);
+                log.warn(`DexScreener no pair data  ${poolAddress.slice(0, 10)}`);
             }
 
             // 3. Fetch Volume from The Graph / GeckoTerminal with fallback and caching
@@ -183,7 +188,7 @@ export class PoolScanner {
             if (tvlUSD > 0) {
                 apr = (dailyFeesUSD / tvlUSD) * 365;
             } else {
-                log.warn(`TVL=0 from DexScreener for pool=${poolAddress}, APR cannot be calculated.`);
+                log.warn(`TVL=0  ${poolAddress.slice(0, 10)}  APR skipped`);
             }
 
             // log.dev(`[PoolScanner] Final Computed Stats for ${poolAddress}: avgDailyVolume=${avgDailyVolume}, dailyFeesUSD=${dailyFeesUSD}, apr=${apr}`);
@@ -200,7 +205,7 @@ export class PoolScanner {
                 volSource,
             };
         } catch (error) {
-            log.error(`Fatal error fetching pool=${poolAddress} dex=${dex}: ${error}`);
+            log.error(`fetchPoolStats failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
             return null;
         }
     }
@@ -210,10 +215,11 @@ export class PoolScanner {
      */
     static async scanAllCorePools(): Promise<PoolStats[]> {
         const poolTasks = [
-            { pool: config.POOLS.PANCAKE_0_01, dex: 'PancakeSwap' as const, fee: 0.0001 },
-            { pool: config.POOLS.PANCAKE_0_05, dex: 'PancakeSwap' as const, fee: 0.0005 },
-            { pool: config.POOLS.UNISWAP_0_05, dex: 'Uniswap' as const, fee: 0.0005 },
-            { pool: config.POOLS.UNISWAP_0_3, dex: 'Uniswap' as const, fee: 0.003 }
+            { pool: config.POOLS.PANCAKE_WETH_CBBTC_0_01, dex: 'PancakeSwap' as const, fee: 0.0001 },
+            { pool: config.POOLS.PANCAKE_WETH_CBBTC_0_05, dex: 'PancakeSwap' as const, fee: 0.0005 },
+            { pool: config.POOLS.UNISWAP_WETH_CBBTC_0_05, dex: 'Uniswap' as const, fee: 0.0005 },
+            { pool: config.POOLS.UNISWAP_WETH_CBBTC_0_3, dex: 'Uniswap' as const, fee: 0.003 },
+            { pool: config.POOLS.AERO_WETH_CBBTC_0_0085, dex: 'Aerodrome' as const, fee: 0.000085 },
         ];
 
         const results: (PoolStats | null)[] = [];

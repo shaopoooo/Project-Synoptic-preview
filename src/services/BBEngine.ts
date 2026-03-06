@@ -43,7 +43,7 @@ function calcVol(prices: number[]): number {
 /** Fetch 30-day annualized vol.
  *  Order: DEX-specific The Graph subgraph → GeckoTerminal → stale cache → 50% default
  *  Results are cached 2 hours to avoid hitting free-tier rate limits. */
-async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'): Promise<number> {
+async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<number> {
   const key = poolAddress.toLowerCase();
   const cached = volCache.get(key);
   if (cached && Date.now() < cached.expiresAt) return cached.vol;
@@ -51,13 +51,13 @@ async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'
   const tag = poolAddress.slice(0, 10);
   const save = (vol: number) => {
     volCache.set(key, { vol, expiresAt: Date.now() + VOL_CACHE_TTL_MS });
-    log.info(`[BBEngine] vol(${tag}) from GeckoTerminal: ${(vol * 100).toFixed(1)}% — cached 12h`);
+    log.info(`💾 30D vol  ${tag}  ${(vol * 100).toFixed(1)}%  (12h cache)`);
     return vol;
   };
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      log.info(`[BBEngine] Fetching 30D Volatility for ${tag} (Attempt ${attempt}/3)...`);
+      log.info(`🌐 30D vol  ${tag}  attempt ${attempt}/3`);
       const res = await axios.get(
         `https://api.geckoterminal.com/api/v2/networks/base/pools/${key}/ohlcv/day?limit=30`,
         { timeout: 8000 }
@@ -73,16 +73,15 @@ async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap'
     } catch (e: any) {
       if (attempt < 3) {
         const is429 = e.response?.status === 429;
-        log.warn(`[BBEngine] GeckoTerminal ${is429 ? '429' : 'err'} for ${tag}. Retrying in 10s (attempt ${attempt}/3)...`);
-        await delay(10000); // Wait 10s before next attempt
+        log.warn(`GeckoTerminal ${is429 ? '429 rate-limit' : 'error'}  ${tag}  retry in 10s (${attempt}/3)`);
+        await delay(10000);
       } else {
-        log.error(`[BBEngine] Volatility fetch error for ${tag} after 3 attempts: ${e.message}`);
+        log.error(`30D vol fetch failed after 3 attempts  ${tag}: ${e.message}`);
       }
     }
   }
 
-  // 如果失敗，使用預設值，但不要快取，讓它下次有機會重試
-  log.warn(`[BBEngine] Using default annualizedVol=50% for ${tag}`);
+  log.warn(`vol fallback 50%  ${tag}`);
   return 0.5;
 }
 
@@ -164,7 +163,7 @@ export class BBEngine {
    * Fetches historical OHLCV data from GeckoTerminal (Free API, requires no key)
    * Base Network ID is 'base'
    */
-  static async computeDynamicBB(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap', tickSpacing: number, currentTick: number): Promise<BBResult | null> {
+  static async computeDynamicBB(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome', tickSpacing: number, currentTick: number): Promise<BBResult | null> {
     try {
       const currentPrice = Math.pow(1.0001, currentTick);
 
@@ -175,7 +174,7 @@ export class BBEngine {
 
       // 2. If we don't have enough data (< 20 hours), fetch from GeckoTerminal to backfill
       if (prices1H.length < 20) {
-        log.info(`[BBEngine] Price buffer for ${poolAddress} has only ${prices1H.length}/20 hours. Backfilling from GeckoTerminal...`);
+        log.info(`🌐 backfill hourly OHLCV  ${poolAddress.slice(0, 10)}  (${prices1H.length}/20 candles)`);
         let res: any = null;
         let hourlyRetries = 3;
         while (hourlyRetries > 0) {
@@ -188,10 +187,10 @@ export class BBEngine {
               // Exponential backoff + jitter: (2^attempt)s + random(0-1)s
               const backoffMs = 10000 + Math.pow(2, attempt) * 1000 + Math.random() * 1000;
               hourlyRetries--;
-              log.warn(`GeckoTerminal 429 rate-limited (hourly OHLCV) for pool=${poolAddress}. Backing off ${(backoffMs / 1000).toFixed(1)}s... (${hourlyRetries} retries remaining)`);
+              log.warn(`GeckoTerminal 429 (hourly)  ${poolAddress.slice(0, 10)}  backoff ${(backoffMs / 1000).toFixed(1)}s (${hourlyRetries} left)`);
               await delay(backoffMs);
             } else {
-              log.warn(`Failed to fetch hourly OHLCV for pool=${poolAddress}: ${e.message}`);
+              log.warn(`hourly OHLCV error  ${poolAddress.slice(0, 10)}: ${e.message}`);
               break;
             }
           }
@@ -201,15 +200,15 @@ export class BBEngine {
           const ohlcvList = res.data.data.attributes.ohlcv_list;
           globalPriceBuffer.backfill(poolAddress, ohlcvList);
           prices1H = globalPriceBuffer.getPrices(poolAddress);
-          log.info(`[BBEngine] Backfill complete. Buffer now has ${prices1H.length} hours of data.`);
+          log.info(`💾 backfill done  ${prices1H.length}h data`);
         } else {
-          log.warn(`[BBEngine] Failed to backfill OHLCV data from GeckoTerminal for ${poolAddress}. Proceeding with ${prices1H.length} hours.`);
+          log.warn(`backfill failed  ${poolAddress.slice(0, 10)}  proceeding with ${prices1H.length}h`);
         }
       }
 
       // 3. Fallback if still no data
       if (prices1H.length < 2) {
-        log.warn(`[BBEngine] Insufficient data for SMA (${prices1H.length} hours). Using fallback BB.`);
+        log.warn(`SMA fallback  only ${prices1H.length}/20 candles available`);
         return BBEngine.createFallbackBB(currentTick, tickSpacing);
       }
 
@@ -259,7 +258,7 @@ export class BBEngine {
           ethPrice = parseFloat(wethRes.data.pairs[0].priceUsd);
         }
       } catch (e: any) {
-        log.warn(`Failed to fetch ETH price from DexScreener (used for ratio calc): ${e.message}`);
+        log.warn(`ETH price fetch failed (ratio calc): ${e.message}`);
       }
 
       const minPriceRatio = ethPrice > 0 ? ethPrice / upperPrice : 0;
@@ -280,7 +279,7 @@ export class BBEngine {
       };
 
     } catch (error) {
-      log.error(`Failed to compute Bollinger Bands for pool=${poolAddress} dex=${dex}: ${error}`);
+      log.error(`BB compute failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
       return BBEngine.createFallbackBB(currentTick, tickSpacing);
     }
   }

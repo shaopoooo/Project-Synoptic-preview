@@ -10,8 +10,13 @@ export const abis = {
         'event DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)'
     ],
 
-    // V3 Pool ABI (slot0 for tick & sqrtPriceX96)
+    // Uniswap V3 / PancakeSwap V3 Pool ABI
     POOL_ABI: [
         'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)'
+    ],
+
+    // Aerodrome Slipstream Pool ABI — slot0 無 feeProtocol 欄位（6 個回傳值）
+    AERO_POOL_ABI: [
+        'function slot0() external view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked)'
     ],
 };

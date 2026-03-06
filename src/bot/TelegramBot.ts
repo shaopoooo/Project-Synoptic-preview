@@ -8,9 +8,19 @@ import { createServiceLogger } from '../utils/logger';
 
 const log = createServiceLogger('TelegramBot');
 
+type SortBy = 'size' | 'apr' | 'unclaimed' | 'health';
+
+const SORT_LABELS: Record<SortBy, string> = {
+    size:      '倉位大小',
+    apr:       'APR',
+    unclaimed: 'Unclaimed',
+    health:    'Health Score',
+};
+
 export class TelegramBotService {
     private bot: Bot;
     private chatId: string;
+    private sortBy: SortBy = 'size';
 
     constructor() {
         this.bot = new Bot(config.BOT_TOKEN);
@@ -18,6 +28,47 @@ export class TelegramBotService {
 
         this.bot.command('start', (ctx) => {
             ctx.reply('DexInfoBot started! Monitoring Base network DEX pools...');
+        });
+
+        this.bot.command('sort', (ctx) => {
+            const key = (ctx.match?.trim() ?? '') as SortBy;
+            const valid = Object.keys(SORT_LABELS) as SortBy[];
+            if (valid.includes(key)) {
+                this.sortBy = key;
+                ctx.reply(`✅ 排序已設為: <b>${SORT_LABELS[key]}</b> ↓`, { parse_mode: 'HTML' });
+            } else {
+                ctx.reply(
+                    `排序選項:\n` +
+                    valid.map(k => `  /sort ${k} — ${SORT_LABELS[k]}`).join('\n') +
+                    `\n\n目前排序: <b>${SORT_LABELS[this.sortBy]}</b>`,
+                    { parse_mode: 'HTML' }
+                );
+            }
+        });
+
+        this.bot.command('explain', (ctx) => {
+            const msg =
+                `📖 <b>指標計算說明</b>\n\n` +
+                `<b>健康分數</b> (0–100)\n` +
+                `= 50 + (Unclaimed + IL) / 本金 × 1000\n` +
+                `50 = 損益兩平，100 = 盈利 ≥5%\n\n` +
+                `<b>IL（絕對 PNL）</b>\n` +
+                `= LP現值 + 累計手續費 - 初始本金\n` +
+                `正值 🟢 = 盈利，負值 🔴 = 虧損\n\n` +
+                `<b>Breakeven 天數</b>\n` +
+                `= |IL| / 每日手續費收入\n` +
+                `代表需幾天費用彌補目前 IL\n\n` +
+                `<b>Compound Threshold</b>\n` +
+                `= √(2 × 本金 × Gas費 × 24h費率)\n` +
+                `Unclaimed > Threshold → 建議複利\n\n` +
+                `<b>淨 APR</b>\n` +
+                `= 池子費用APR + IL年化率\n` +
+                `IL年化率 = IL / 本金 / 持倉天數 × 365\n` +
+                `需設定建倉本金才會顯示\n\n` +
+                `<b>DRIFT 警告</b>\n` +
+                `重疊度 = 倉位落在 BB 內的比例\n` +
+                `< 80% 時觸發，建議重建倉`;
+            ctx.reply(msg, { parse_mode: 'HTML' });
         });
     }
 
@@ -43,88 +94,120 @@ export class TelegramBotService {
         }
     }
 
-    /**
-     * Format message according to Phase 7 format.
-     * Example:
-     * > **[2026-03-02 17:05] 最高 APR 池: Pancake 0.01% (APR 67.2%)**
-     * > **建議 BB 區間**: 0.0298 – 0.0312 cbBTC/WETH
-     * > **Unclaimed**: $12.4 | **IL**: -$8.7 | **Breakeven**: 14 天
-     * > **Compound Signal**: ✅ Unclaimed $12.4 > Threshold $7.1
-     * > **Health Score**: 94/100 | **Regime**: Low Vol
-     */
-    public async sendFormattedReport(
+    /** 格式化單一倉位區塊（供 sendConsolidatedReport 使用） */
+    private formatPositionBlock(
+        index: number,
         position: PositionRecord,
         pool: PoolStats,
         bb: BBResult | null,
-        risk: RiskAnalysis,
-        highestPool: PoolStats,
+        risk: RiskAnalysis
+    ): string {
+        const aprStr = (pool.apr * 100).toFixed(1);
+        const label = `${pool.dex} ${(pool.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+        const walletShort = position.ownerWallet
+            ? `${position.ownerWallet.slice(0, 6)}...${position.ownerWallet.slice(-4)}`
+            : '未知';
+        const posValue = position.positionValueUSD > 0
+            ? `$${position.positionValueUSD.toFixed(0)}`
+            : 'N/A';
+        const ilDisplay = position.ilUSD === null
+            ? '未設定'
+            : position.ilUSD >= 0
+                ? `+$${position.ilUSD.toFixed(1)} 🟢`
+                : `-$${Math.abs(position.ilUSD).toFixed(1)} 🔴`;
+        const bbBound = (bb && position.bbMinPrice && position.bbMaxPrice)
+            ? `${position.bbMinPrice} ~ ${position.bbMaxPrice}${position.bbFallback ? ' ⚠️' : ''}`
+            : '無數據';
+        const cmp = risk.compoundSignal ? '✅' : '❌';
+
+        // 淨 APR：費用APR + IL年化率（需有建倉時間與初始本金）
+        const capital = config.INITIAL_INVESTMENT_USD[position.tokenId] ?? 0;
+        let netAprRow = '';
+        if (position.openTimestampMs && position.ilUSD !== null && capital > 0) {
+            const daysOpen = Math.max(1, (Date.now() - position.openTimestampMs) / 86400000);
+            const ilAnnualRate = (position.ilUSD / capital) / daysOpen * 365;
+            const netApr = pool.apr + ilAnnualRate;
+            const sign = ilAnnualRate >= 0 ? '+' : '';
+            netAprRow = `淨APR <b>${(netApr * 100).toFixed(1)}%</b> (IL年化 ${sign}${(ilAnnualRate * 100).toFixed(1)}%)\n`;
+        }
+
+        let block = `\n━━ #${index} ${label} ━━\n`;
+        block += `APR <b>${aprStr}%</b> | 倉位 ${posValue} | 健康 ${risk.healthScore}/100\n`;
+        if (netAprRow) block += netAprRow;
+        block += `👛 ${walletShort} · #${position.tokenId}\n`;
+        block += `💹 當前 ${position.currentPriceStr} | ${position.regime}\n`;
+        block += `  你的: ${position.minPrice} ~ ${position.maxPrice}\n`;
+        block += `  BB:   ${bbBound}\n`;
+        block += `💸 Unclaimed $${position.unclaimedFeesUSD.toFixed(1)} | IL ${ilDisplay}\n`;
+        block += `⏱ Breakeven ${risk.ilBreakevenDays}天 · Compound ${cmp} $${position.unclaimedFeesUSD.toFixed(1)} ${risk.compoundSignal ? '>' : '<'} $${risk.compoundThreshold.toFixed(1)}\n`;
+
+        if (risk.redAlert) block += `🚨 <b>RED_ALERT</b>: Breakeven &gt;${RiskManager.RED_ALERT_BREAKEVEN_DAYS}天 (建議減倉)\n`;
+        if (risk.highVolatilityAvoid) block += `⚠️ <b>HIGH_VOLATILITY_AVOID</b> (建議觀望)\n`;
+        if (risk.driftWarning) {
+            block += `⚠️ <b>DRIFT</b> 重疊 ${risk.driftOverlapPct.toFixed(1)}%`;
+            if (position.rebalance) {
+                const rb = position.rebalance;
+                block += ` | 💡 ${rb.strategyName}`;
+                if (rb.estGasCost > 0) block += ` (Gas $${rb.estGasCost.toFixed(2)})`;
+            } else {
+                block += ` (建議依 BB 重建倉)`;
+            }
+            block += '\n';
+        }
+
+        return block;
+    }
+
+    /** 將所有倉位合併為單一 Telegram 報告 */
+    public async sendConsolidatedReport(
+        entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
+        allPools: PoolStats[],
         lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number }
     ) {
         const timeFormatter = new Intl.DateTimeFormat('zh-TW', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-            timeZone: 'Asia/Taipei', // Local time
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+            timeZone: 'Asia/Taipei',
+        });
+        const timeStr = timeFormatter.format(new Date()).replace(/\//g, '-').replace(',', '');
+        const formatTs = (ts: number) => ts === 0 ? '無紀錄' : timeFormatter.format(new Date(ts)).replace(/\//g, '-').replace(',', '').split(' ')[1];
+
+        // 依當前排序鍵由大到小排列
+        const sorted = [...entries].sort((a, b) => {
+            switch (this.sortBy) {
+                case 'apr':       return b.pool.apr - a.pool.apr;
+                case 'unclaimed': return b.position.unclaimedFeesUSD - a.position.unclaimedFeesUSD;
+                case 'health':    return b.risk.healthScore - a.risk.healthScore;
+                case 'size':
+                default:          return b.position.positionValueUSD - a.position.positionValueUSD;
+            }
         });
 
-        // YYYY-MM-DD HH:mm format
-        const timeStr = timeFormatter.format(new Date()).replace(/\//g, '-').replace(',', '');
-        const aprStr = (pool.apr * 100).toFixed(1);
+        let msg = `<b>[${timeStr}] 倉位監控報告 (${sorted.length} 個倉位 | 排序: ${SORT_LABELS[this.sortBy]} ↓)</b>`;
 
-        const bbBoundStr = (bb && position.bbMinPrice && position.bbMaxPrice)
-            ? `<b>建議 BB 區間</b>: ${position.bbMinPrice} - ${position.bbMaxPrice}`
-            : '<b>建議 BB 區間</b>: 計算失敗或無足夠數據';
+        sorted.forEach(({ position, pool, bb, risk }, i) => {
+            msg += this.formatPositionBlock(i + 1, position, pool, bb, risk);
+        });
 
-        const compoundCheck = risk.compoundSignal ? '✅' : '❌';
-        const regime = position.regime;
-
-        let msg = `<b>[${timeStr}] 監控池: ${pool.dex} ${(pool.feeTier * 100).toFixed(2)}% (APR ${aprStr}%)</b>\n`;
-        msg += `<b>當前價格</b>: ${position.currentPriceStr} | <b>你的區間</b>: ${position.minPrice} - ${position.maxPrice}\n`;
-        msg += `${bbBoundStr}\n`;
-        if (position.bbFallback) {
-            msg += `⚠️ <b>BBEngine 暫時受限</b> (API 限流), 改用預設區間。\n`;
+        // 各池收益排行（顯示一次）
+        if (allPools.length > 0) {
+            const medals = ['🥇', '🥈', '🥉'];
+            const activePoolIds = new Set(entries.map(e => e.position.poolAddress.toLowerCase()));
+            msg += `\n📊 <b>各池收益排行:</b>`;
+            allPools.forEach((p, i) => {
+                const rank = medals[i] ?? '　';
+                const label = `${p.dex} ${(p.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+                const aprPct = (p.apr * 100).toFixed(1);
+                const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(0)}K` : `$${p.tvlUSD.toFixed(0)}`;
+                const tag = activePoolIds.has(p.id.toLowerCase()) ? ' ◀ 你的倉位' : '';
+                msg += `\n${rank} ${label} — APR <b>${aprPct}%</b> | TVL ${tvl}${tag}`;
+            });
         }
 
-        const ilDisplay = position.ilUSD !== 0
-            ? (position.ilUSD > 0 ? `+$${position.ilUSD.toFixed(1)} 🟢` : `-$${Math.abs(position.ilUSD).toFixed(1)} 🔴`)
-            : '未設定歷史本金';
-
-        msg += `<b>Unclaimed</b>: $${position.unclaimedFeesUSD.toFixed(1)} | <b>IL (PNL)</b>: ${ilDisplay} | <b>Breakeven</b>: ${risk.ilBreakevenDays} 天\n`;
-        msg += `<b>Compound Signal</b>: ${compoundCheck} Unclaimed $${position.unclaimedFeesUSD.toFixed(1)} ${risk.compoundSignal ? '&gt;' : '&lt;'} Threshold $${risk.compoundThreshold.toFixed(1)}\n`;
-        msg += `<b>Health Score</b>: ${risk.healthScore}/100 | <b>Regime</b>: ${regime}\n`;
-
-        // Alerts
-        if (risk.redAlert) {
-            msg += `\n🚨 <b>RED_ALERT</b>: IL Breakeven &gt; ${RiskManager.RED_ALERT_BREAKEVEN_DAYS} Days! (建議減倉)`;
-        }
-        if (risk.highVolatilityAvoid) {
-            msg += `\n⚠️ <b>HIGH_VOLATILITY_AVOID</b>: Bandwidth &gt; ${RiskManager.HIGH_VOLATILITY_FACTOR}x 30D Avg! (建議觀望)`;
-        }
-        if (risk.driftWarning) {
-            msg += `\n⚠️ <b>STRATEGY_DRIFT_WARNING</b>: 區間重疊度 &lt; ${RiskManager.DRIFT_WARNING_PCT}% (${risk.driftOverlapPct.toFixed(1)}%)`;
-            if (position.rebalance) {
-                const rb = position.rebalance;
-                msg += `\n   <b>💡 重建倉策略</b>: ${rb.strategyName}\n   📝 <i>${rb.notes}</i>`;
-                if (rb.estGasCost > 0) msg += `\n   ⛽️ 預估 Gas: $${rb.estGasCost.toFixed(2)}`;
-            } else {
-                msg += ` (建議撤資並依建議BB區間重新建倉)`;
-            }
-        }
-
-        // Add suggestion about the highest APR pool
-        if (highestPool.id.toLowerCase() !== pool.id.toLowerCase()) {
-            msg += `\n\n💡 <i>市場發現更高收益率池: ${highestPool.dex} ${(highestPool.feeTier * 100).toFixed(2)}% (APR ${(highestPool.apr * 100).toFixed(1)}%)</i>`;
-        }
-
-        const formatTs = (ts: number) => ts === 0 ? '無紀錄' : timeFormatter.format(new Date(ts)).replace(/\//g, '-').replace(',', '').split(' ')[1];
-        msg += `\n\n⏱ <b>資料更新時間 &amp; 來源:</b>`;
-        msg += `\n- Pool: ${formatTs(lastUpdates.poolScanner)} <i>(vol: ${pool.volSource})</i>`;
-        msg += `\n- Position: ${formatTs(lastUpdates.positionScanner)} <i>(${position.volSource} | price: ${position.priceSource})</i>`;
-        msg += `\n- BB Engine: ${formatTs(lastUpdates.bbEngine)}`;
-        msg += `\n- Risk Manager: ${formatTs(lastUpdates.riskManager)}`;
+        // 更新時間（顯示一次）
+        msg += `\n\n⏱ <b>資料更新時間:</b>`;
+        msg += `\n- Pool: ${formatTs(lastUpdates.poolScanner)} | Position: ${formatTs(lastUpdates.positionScanner)}`;
+        msg += `\n- BB Engine: ${formatTs(lastUpdates.bbEngine)} | Risk: ${formatTs(lastUpdates.riskManager)}`;
 
         await this.sendAlert(msg);
     }
