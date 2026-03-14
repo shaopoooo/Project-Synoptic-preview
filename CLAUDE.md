@@ -37,7 +37,7 @@
 - 一律透過 `fetchGasCostUSD()` 即時取得 `maxFeePerGas`
 
 **輸入清洗**
-- 所有外部傳入的 Pool Address 必須通過 `/^0x[0-9a-fA-F]{40}$/` 校驗
+- V3 Pool Address 必須通過 `/^0x[0-9a-fA-F]{40}$/` 校驗；V4 poolId 為 bytes32（`/^0x[0-9a-fA-F]{64}$/`）
 - 不合法輸入應拒絕處理並記錄錯誤，不允許程式崩潰
 
 ### 架構規範
@@ -119,7 +119,7 @@ src/
     ├── math.ts                 # BigInt 固定精度數學工具
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + nextProvider() + fetchGasCostUSD()
     ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore
-    ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）
+    ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）+ dex 命名自動遷移
     ├── BandwidthTracker.ts     # 30D 帶寬滾動窗口（update / snapshot / restore）
     ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
     ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol）
@@ -161,6 +161,7 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **資料來源**：DexScreener（TVL）→ GeckoTerminal（所有池子，The Graph subgraph 已停用）
 - **APR 公式**：`APR = (24h 手續費 / TVL) × 365`，24h 手續費 = 7D 加權均量 × 費率
 - **池清單**：由 `config.POOL_SCAN_LIST`（`constants.ts`）統一定義，新增池子只需改此處；完整地址見 README.md
+- **UniswapV4 支援**：`_fetchV4PoolStats()` 透過 `StateView.getSlot0(poolId)` 取得當前 tick / sqrtPriceX96；poolId 為 bytes32，驗證改用 `/^0x[0-9a-fA-F]{64}$/`
 - **關鍵函式**：`scanAllCorePools()` → `fetchPoolStats()` → `fetchPoolVolume()`
 
 ### BBEngine（`src/services/BBEngine.ts`）
@@ -185,7 +186,8 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 
 - **職責**：狀態管理、倉位發現、鏈上原始資料讀取（→ `RawChainPosition[]`）、timestamp 補齊；不直接計算 IL / PNL / Risk
 - **多錢包支援**：`WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 環境變數，支援動態新增
-- **Gauge 鎖倉**：`TRACKED_TOKEN_<tokenId>=<DEX>` 手動追蹤質押倉位；`isStaked` 欄位自動偵測（ownerOf 回傳非已知錢包 → staked）；`depositorWallet` 追蹤實際持有者
+- **UniswapV4 支援**：`_fetchV4NpmData()` 透過 V4 PositionManager 的 `getPoolAndPositionInfo(tokenId)` 取得 PoolKey + packed PositionInfo；PositionInfo packed uint256 解碼：bits 0-23 = tickLower（int24），bits 24-47 = tickUpper（int24）；poolId 由 `keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))` 動態計算
+- **Gauge / MasterChef 鎖倉**：`TRACKED_TOKEN_<tokenId>=<DEX>` 手動追蹤質押倉位（DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`）；`isStaked` 欄位自動偵測（ownerOf 回傳非已知錢包 → staked）；`depositorWallet` 追蹤實際持有者
 - **關閉倉位自動剔除**：`updatePositions()` 確認 `liquidity=0` 時，將 tokenId 加入 `closedTokenIds` Set 並從 `this.positions` 移除；`syncFromChain` 和 `restoreDiscoveredPositions` 均跳過 closedTokenIds；持久化至 `state.json`，重啟後不重新掃描（避免已關倉的 NFT 每週期浪費 RPC）
 - **Drift 門檻**：實際區間與 BB 區間重合度 < 80% 時推播 `STRATEGY_DRIFT_WARNING`
 - **手續費計算**：委託 `FeeCalculator`（見下方），PositionScanner 不直接呼叫合約計算費用
@@ -196,10 +198,11 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 ### FeeCalculator（`src/services/FeeCalculator.ts`）
 
 - **職責**：純 RPC 手續費計算，與 PositionScanner 解耦
+- **UniswapV4**：`StateView.getPositionInfo(poolId, positionManager, tickLower, tickUpper, salt)` 取得 `lastFgX128`；`StateView.getFeeGrowthInside(poolId, tickLower, tickUpper)` 取得當前 `fgX128`；`fees = liquidity × sub256(current, last) / 2^128`；`salt = bytes32(tokenId)`
 - **Aerodrome staked fallback 鏈**：`voter.gauges()` → `gauge.pendingFees(tokenId)` → `collect.staticCall({from: gauge})` → `tokensOwed`（第 3 級 `computePendingFees()` 暫時停用：`0x22AEe369` pool 在公共節點不支援 `feeGrowthGlobal` / `ticks()`，CALL_EXCEPTION 每次浪費 6+ 次 retry）
 - **Aerodrome unstaked**：`computePendingFees()`（pool feeGrowth 數學計算）
-- **Uniswap / PancakeSwap**：`collect.staticCall({ from: owner })`，最終 fallback `tokensOwed0/1`
-- **第三幣獎勵**：PancakeSwap staked → `masterchef.pendingCake(tokenId)`；Aerodrome staked → `gauge.earned(depositorWallet, tokenId)`
+- **UniswapV3 / PancakeSwapV3**：`collect.staticCall({ from: owner })`，最終 fallback `tokensOwed0/1`
+- **第三幣獎勵**：PancakeSwapV3 staked → `masterchef.pendingCake(tokenId)`；Aerodrome staked → `gauge.earned(depositorWallet, tokenId)`
 - **幣價**：直接使用傳入的 `cakePrice / aeroPrice` 參數（由 `tokenPrices.ts` 提供），不自行維護快取
 
 ### PositionAggregator（`src/services/PositionAggregator.ts`）
@@ -270,7 +273,7 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 完整說明與 `.env` 範例見 **README.md**。Claude 在讀寫環境變數時需注意的關鍵命名：
 - `WALLET_ADDRESS_N`：多錢包依序編號
 - `INITIAL_INVESTMENT_<tokenId>`：本金設定，影響 PnL / 獲利率顯示
-- `TRACKED_TOKEN_<tokenId>=<DEX>`：鎖倉倉位手動追蹤
+- `TRACKED_TOKEN_<tokenId>=<DEX>`：鎖倉倉位手動追蹤（DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`）
 
 ---
 
@@ -553,6 +556,18 @@ index.ts runRiskManager()
 #### 🟢 低優先（精度地雷，階段十前置）
 
 - [ ] **浮點數精度地雷（為階段十打底）**：`PositionAggregator` 用 `Math.pow(1.0001, tick)` 與 IEEE-754 雙精度計算 LP 值；大 tick 或幣價懸殊池（如 SHIB/ETH）會累積精度流失，導致 PnL 與 Uniswap 介面差距擴大；進入階段十 IL 精算前，應優先廢棄浮點數，改用 `@uniswap/v3-sdk` 的 `TickMath` 與 `Position` 物件做淨值計算
+
+### ✅ 階段十五：Uniswap V4 支援 + DEX 命名統一（已完成）
+
+- [x] **Dex 型別版本號**：`'Uniswap'` → `'UniswapV3'`；`'PancakeSwap'` → `'PancakeSwapV3'`；新增 `'UniswapV4'`、預留 `'PancakeSwapV2'`；集中至 `src/types/index.ts`
+- [x] **POOLS / NPM_ADDRESSES 常數鍵更名**：`PANCAKE_` → `PANCAKEV3_`、`UNISWAP_` → `UNISWAPV3_`、新增 `UNISWAPV4_ETH_CBBTC`；`constants.ts` Dex import 移至頂部
+- [x] **V4 合約地址**：`V4_POOL_MANAGER`、`V4_POSITION_MANAGER`、`V4_STATE_VIEW` 加入 `constants.ts`；`V4_NPM_ABI` / `V4_STATE_VIEW_ABI` 加入 `abis.ts`
+- [x] **PositionScanner V4**：`_fetchV4NpmData()` — `getPoolAndPositionInfo()` 取 PoolKey + packed PositionInfo；bits 0-23 = tickLower，bits 24-47 = tickUpper；poolId 動態計算（`keccak256(abi.encode(currency0,currency1,fee,tickSpacing,hooks))`）
+- [x] **FeeCalculator V4**：`_fetchV4Fees()` — `StateView.getPositionInfo()` + `getFeeGrowthInside()` delta 計算；`salt = bytes32(tokenId)`
+- [x] **PoolScanner V4**：`_fetchV4PoolStats()` — `StateView.getSlot0(poolId)` 取 tick / sqrtPriceX96；bytes32 poolId 驗證正規式 `/^0x[0-9a-fA-F]{64}$/`
+- [x] **tokenInfo.ts ETH native**：`address(0)` → `'ETH'`，支援 V4 ETH/cbBTC pair
+- [x] **stateManager 遷移**：`loadState()` 加入 `DEX_MIGRATION`（`PancakeSwap→PancakeSwapV3`、`Uniswap→UniswapV3`），向後相容舊 `state.json`
+- [x] **index.ts TRACKED_TOKEN_IDS 偵測**：啟動時比對 `TRACKED_TOKEN_IDS` 與 `cachedPositions`，有新增未追蹤 tokenId 時強制 `syncFromChain`（避免 restore 路徑跳過新倉位）
 
 ---
 

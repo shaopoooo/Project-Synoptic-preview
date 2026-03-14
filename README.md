@@ -35,7 +35,7 @@
 
 # DexBot — Base Network DEX 流動性監測機器人
 
-純背景監測腳本，透過 Telegram 推播 Uniswap V3 / PancakeSwap V3 / Aerodrome Slipstream 流動性池的 APR、BB 區間建議、IL 風險評估與複利訊號。不執行任何鏈上交易。支援多錢包監測與鎖倉倉位追蹤（Aerodrome Gauge）。
+純背景監測腳本，透過 Telegram 推播 Uniswap V3 / Uniswap V4 / PancakeSwap V3 / Aerodrome Slipstream 流動性池的 APR、BB 區間建議、IL 風險評估與複利訊號。不執行任何鏈上交易。支援多錢包監測與鎖倉倉位追蹤（Aerodrome Gauge / PancakeSwap MasterChef）。
 
 ---
 
@@ -51,7 +51,7 @@
 | `BOT_TOKEN` | 是 | Telegram Bot Token（從 [@BotFather](https://t.me/BotFather) 取得） |
 | `CHAT_ID` | 是 | Telegram 接收推播的 Chat ID |
 | `INITIAL_INVESTMENT_<tokenId>` | 否 | 各倉位初始本金 USD，用於 IL / 淨 APR 計算（如 `INITIAL_INVESTMENT_123456=1000`） |
-| `TRACKED_TOKEN_<tokenId>` | 否 | 手動追蹤鎖倉倉位，值為 DEX 名稱（如 `TRACKED_TOKEN_123456=Aerodrome`） |
+| `TRACKED_TOKEN_<tokenId>` | 否 | 手動追蹤鎖倉倉位，值為 DEX 名稱（如 `TRACKED_TOKEN_123456=Aerodrome`），支援 `UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome` |
 
 > 若所有 `WALLET_ADDRESS_N` 均未設定，則跳過倉位掃描，僅推播池子 APR 排行。
 
@@ -68,7 +68,8 @@ CHAT_ID=-100123456789
 INITIAL_INVESTMENT_123456=1000.0
 INITIAL_INVESTMENT_789012=500.0
 
-# 鎖倉於 Gauge 的倉位（格式：TRACKED_TOKEN_<tokenId>=<DEX>）
+# 鎖倉於 Gauge/MasterChef 的倉位（格式：TRACKED_TOKEN_<tokenId>=<DEX>）
+# 支援：UniswapV3 / UniswapV4 / PancakeSwapV3 / Aerodrome
 TRACKED_TOKEN_789012=Aerodrome
 ```
 
@@ -131,14 +132,14 @@ src/
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
 │   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas）
-│   ├── abis.ts                 # 合約 ABI（NPM、Pool）
+│   ├── abis.ts                 # 合約 ABI（NPM、Pool、V4 PositionManager / StateView）
 │   └── index.ts                # 統一匯出入口
 ├── services/
 │   ├── PoolScanner.ts          # APR 掃描（DexScreener + GeckoTerminal）
 │   ├── BBEngine.ts             # 動態布林通道（20 SMA + EWMA stdDev + 30D 波動率）
 │   ├── ChainEventScanner.ts    # 通用鏈上事件掃描器（ScanHandler 介面 + OpenTimestampHandler）
 │   ├── PositionScanner.ts      # LP NFT 倉位監測（狀態管理、倉位發現、鏈上讀取）
-│   ├── FeeCalculator.ts        # 手續費計算（Uniswap / PancakeSwap / Aerodrome 三路 + 第三幣獎勵）
+│   ├── FeeCalculator.ts        # 手續費計算（UniswapV3 / V4 / PancakeSwapV3 / Aerodrome 四路 + 第三幣獎勵）
 │   ├── PositionAggregator.ts   # 倉位組裝 Pipeline（RawChainPosition → PositionRecord）
 │   ├── RiskManager.ts          # 風險評估（Health Score、IL Breakeven、EOQ 複利訊號）
 │   ├── PnlCalculator.ts        # 絕對 PNL、開倉資訊、組合總覽計算
@@ -176,13 +177,14 @@ data/
 
 ## 監測池（Base Network）
 
-| 協議 | 交易對 | 費率 | 合約地址 |
-|------|--------|------|----------|
+| 協議 | 交易對 | 費率 | 合約地址 / Pool ID |
+|------|--------|------|-------------------|
 | PancakeSwap V3 | WETH/cbBTC | 0.01% | `0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3` |
 | PancakeSwap V3 | WETH/cbBTC | 0.05% | `0xd974d59e30054cf1abeded0c9947b0d8baf90029` |
 | Uniswap V3 | WETH/cbBTC | 0.05% | `0x7aea2e8a3843516afa07293a10ac8e49906dabd1` |
 | Uniswap V3 | WETH/cbBTC | 0.30% | `0x8c7080564b5a792a33ef2fd473fba6364d5495e5` |
 | Aerodrome Slipstream | WETH/cbBTC | 0.0085% | `0x22aee3699b6a0fed71490c103bd4e5f3309891d5` |
+| Uniswap V4 | ETH/cbBTC | 0.01% | `0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5` (bytes32 poolId) |
 
 ---
 
@@ -299,7 +301,7 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
   "volCacheBB":   { "0xpool...": { "vol30D": 0.52, "expiresAt": 1700000000000 } },
   "volCachePool": { "0xpool...": { "daily": 123456, "avg7d": 100000, "source": "GeckoTerminal", "expiresAt": 1700000000000 } },
   "priceBuffer":  { "0xpool...": { "1700000000": 0.02921, "1700003600": 0.02935 } },
-  "openTimestamps": { "123456_PancakeSwap": 1699000000000 },
+  "openTimestamps": { "123456_PancakeSwapV3": 1699000000000 },
   "bandwidthWindows": { "0xpool...": [0.00123, 0.00145, 0.00132] },
   "sortBy": "size",
   "intervalMinutes": 10,
@@ -307,7 +309,7 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
   "bbKHighVol": 2.5,
   "closedTokenIds": ["1675918"],
   "discoveredPositions": [
-    { "tokenId": "123456", "dex": "PancakeSwap", "ownerWallet": "0x..." }
+    { "tokenId": "123456", "dex": "PancakeSwapV3", "ownerWallet": "0x..." }
   ],
   "syncedWallets": ["0x..."]
 }
@@ -342,8 +344,9 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
               ├── 恢復 sortBy（Telegram 排序偏好）
               └── 判斷是否跳過 syncFromChain：
                     條件：walletsUnchanged AND discoveredPositions.length > 0
-                    ├── 兩者皆是 ──→ restoreDiscoveredPositions()（秒級恢復）
-                    └── 任一否    ──→ syncFromChain()（完整掃描，20–50s）
+                          AND 無新增 TRACKED_TOKEN_IDS（不在快取中）
+                    ├── 全部成立 ──→ restoreDiscoveredPositions()（秒級恢復）
+                    └── 任一否   ──→ syncFromChain()（完整掃描，20–50s）
 ```
 
 ### 首次 vs 重啟行為對照
@@ -353,6 +356,7 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 | 首次啟動（無 state.json） | 是 | ~20–50s |
 | 重啟（wallet 配置相同） | **否** | <1s |
 | 重啟（新增 / 移除錢包） | 是 | ~20–50s |
+| 重啟（新增 TRACKED_TOKEN_IDS） | 是 | ~20–50s |
 | state.json 損毀或讀取失敗 | 是 | ~20–50s |
 
 ---
@@ -408,12 +412,15 @@ INITIAL_INVESTMENT_789012=500.0
 
 ## 鎖倉倉位追蹤（Aerodrome Gauge）
 
-Aerodrome 倉位質押至 Gauge 後，NFT 轉移至 Gauge 合約，`balanceOf(wallet) = 0`，無法透過正常掃描找到。
+倉位質押至 Gauge / MasterChef 後，NFT 轉移至合約，`balanceOf(wallet) = 0`，無法透過正常掃描找到。
 在 `.env` 中以 `TRACKED_TOKEN_<tokenId>=<DEX>` 格式手動指定需追蹤的 Token ID：
 
 ```env
-TRACKED_TOKEN_789012=Aerodrome
+TRACKED_TOKEN_789012=Aerodrome      # Aerodrome Gauge 鎖倉
+TRACKED_TOKEN_111111=PancakeSwapV3  # PancakeSwap MasterChef 鎖倉
 ```
+
+支援 DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`。
 
 系統會在錢包掃描完成後，額外從鏈上讀取這些 Token ID 並加入監測清單。
 開倉時間戳透過 `ChainEventScanner`（`OpenTimestampHandler`）批次查詢 NFT `Transfer(from=0x0)` 事件。同一 NPM 合約的所有 tokenId 合併成單次 `getLogs`（`topics[3]` OR filter），支援分塊掃描（2000 blocks/chunk）與連續失敗中止（3 次），大幅減少 RPC 呼叫次數。結果快取並存入 `data/state.json`。
