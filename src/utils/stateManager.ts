@@ -8,6 +8,7 @@ import { rename } from 'fs/promises';
 import * as path from 'path';
 import { createServiceLogger } from './logger';
 import { bbVolCache, poolVolCache, snapshotCache, restoreCache, BBVolEntry, PoolVolEntry } from './cache';
+import { Dex } from '../types';
 
 const log = createServiceLogger('State');
 const STATE_FILE = path.join(process.cwd(), 'data', 'state.json');
@@ -15,7 +16,7 @@ const TMP_FILE   = STATE_FILE + '.tmp';
 
 export interface DiscoveredPosition {
     tokenId: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     ownerWallet: string;
 }
 
@@ -35,10 +36,23 @@ export interface PersistedState {
     syncedWallets?: string[];   // 當時掃描的 wallet 列表，用於判斷配置是否變更
 }
 
+/** 舊命名 → 新命名對應表，保持向後相容 */
+const DEX_MIGRATION: Record<string, string> = {
+    Uniswap: 'UniswapV3',
+    PancakeSwap: 'PancakeSwapV3',
+};
+
 export async function loadState(): Promise<PersistedState | null> {
     try {
         if (!(await fs.pathExists(STATE_FILE))) return null;
         const raw = await fs.readJson(STATE_FILE) as PersistedState;
+        // 遷移舊版 dex 命名（Uniswap → UniswapV3, PancakeSwap → PancakeSwapV3）
+        if (raw.discoveredPositions) {
+            raw.discoveredPositions = raw.discoveredPositions.map(p => ({
+                ...p,
+                dex: (DEX_MIGRATION[p.dex as string] ?? p.dex) as Dex,
+            }));
+        }
         const bbKeys   = Object.keys(raw.volCacheBB   ?? {}).length;
         const poolKeys = Object.keys(raw.volCachePool ?? {}).length;
         const tsKeys   = Object.keys(raw.openTimestamps ?? {}).length;

@@ -307,12 +307,19 @@ async function main() {
   const walletsUnchanged = savedWallets.length === currentWallets.length &&
     savedWallets.every(w => currentWallets.includes(w));
   const cachedPositions = savedState?.discoveredPositions ?? [];
+  const savedClosedIds = new Set(savedState?.closedTokenIds ?? []);
+  const cachedIds = new Set(cachedPositions.map(p => p.tokenId));
+  // 有新增 TRACKED_TOKEN_IDS 未在快取中 → 必須重新掃鏈以發現新倉位
+  const hasNewTracked = Object.keys(config.TRACKED_TOKEN_IDS).some(
+    id => !cachedIds.has(id) && !savedClosedIds.has(id)
+  );
 
-  if (walletsUnchanged && cachedPositions.length > 0) {
+  if (walletsUnchanged && cachedPositions.length > 0 && !hasNewTracked) {
     PositionScanner.restoreDiscoveredPositions(
       cachedPositions, savedWallets, savedState?.openTimestamps ?? {}
     );
   } else {
+    if (hasNewTracked) log.info('New TRACKED_TOKEN_IDS detected — forcing chain sync');
     await PositionScanner.syncFromChain(true);
   }
 

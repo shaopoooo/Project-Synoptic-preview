@@ -1,9 +1,11 @@
 // Central type definitions for DexBot.
 // All shared interfaces live here; source files re-export for backward compatibility.
 
+export type Dex = 'UniswapV3' | 'UniswapV4' | 'PancakeSwapV3' | 'PancakeSwapV2' | 'Aerodrome';
+
 export interface PoolStats {
     id: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     feeTier: number;
     apr: number;
     tvlUSD: number;
@@ -63,7 +65,7 @@ export interface RebalanceSuggestion {
 
 export interface PositionRecord {
     tokenId: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     poolAddress: string;
     feeTier: number;
     token0Symbol: string;
@@ -118,7 +120,7 @@ export interface PositionRecord {
 /** Raw discovered position — tokenId + DEX + owner, before on-chain scanning. */
 export interface RawPosition {
     tokenId: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     ownerWallet: string;
 }
 
@@ -141,7 +143,7 @@ export interface RewardsQueryResult {
 /** Input for PositionAggregator.assemble() */
 export interface AggregateInput {
     tokenId: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     owner: string;
     depositorWallet: string;
     isStaked: boolean;
@@ -161,7 +163,7 @@ export interface AggregateInput {
 /** Raw NPM chain data — fetched by PositionScanner, consumed by PositionAggregator */
 export interface RawChainPosition {
     tokenId: string;
-    dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+    dex: Dex;
     ownerWallet: string;       // original wallet (from syncFromChain / manual)
     owner: string;             // ownerOf() result — may be a gauge contract
     isStaked: boolean;

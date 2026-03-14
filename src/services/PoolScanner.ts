@@ -4,7 +4,7 @@ import { poolVolCache } from '../utils/cache';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../utils/rpcProvider';
-import { PoolStats } from '../types';
+import { PoolStats, Dex } from '../types';
 
 export type { PoolStats };
 
@@ -19,7 +19,7 @@ interface VolResult { daily: number; avg7d: number; source: string; }
  * Fetch 7-day volume data for a pool.
  * Order: The Graph (DEX-specific) → GeckoTerminal → stale cache → zeros
  */
-async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<VolResult> {
+async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult> {
     const key = poolAddress.toLowerCase();
     const cached = poolVolCache.get(key);
     if (cached && Date.now() < cached.expiresAt) return cached;
@@ -114,21 +114,29 @@ async function fetchPoolVolume(poolAddress: string, dex: 'Uniswap' | 'PancakeSwa
 }
 
 
+// Accept both V3 pool addresses (40 hex) and V4 poolIds (64 hex)
 const POOL_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const POOL_ID_RE      = /^0x[0-9a-fA-F]{64}$/;
 
 export class PoolScanner {
     /**
-     * Fetch 24h stats for a given pool using On-Chain RPC and DexScreener for Volume
+     * Fetch 24h stats for a given pool using On-Chain RPC and DexScreener for Volume.
+     * For UniswapV4, poolAddress is the bytes32 poolId; slot0 is read from StateView.
      */
     static async fetchPoolStats(
         poolAddress: string,
-        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
+        dex: Dex,
         feeTierVal: number
     ): Promise<PoolStats | null> {
-        if (!POOL_ADDRESS_RE.test(poolAddress)) {
-            log.error(`Invalid pool address rejected: ${poolAddress}`);
+        if (!POOL_ADDRESS_RE.test(poolAddress) && !POOL_ID_RE.test(poolAddress)) {
+            log.error(`Invalid pool address/id rejected: ${poolAddress}`);
             return null;
         }
+
+        if (dex === 'UniswapV4') {
+            return this._fetchV4PoolStats(poolAddress, feeTierVal);
+        }
+
         try {
             // 1. Fetch On-Chain Tick and SqrtPrice
             // Aerodrome Slipstream 的 slot0() 無 feeProtocol 欄位，需使用專屬 ABI
@@ -152,7 +160,6 @@ export class PoolScanner {
 
             if (dexRes.data && dexRes.data.pairs && dexRes.data.pairs.length > 0) {
                 const pairData = dexRes.data.pairs[0];
-                // log.dev(`[PoolScanner] DexScreener Response for ${poolAddress}: ${JSON.stringify(pairData, null, 2)}`);
                 tvlUSD = parseFloat(pairData.liquidity?.usd || '0');
                 dailyVolumeUSD = parseFloat(pairData.volume?.h24 || '0');
             } else {
@@ -164,15 +171,13 @@ export class PoolScanner {
             const geckoDailyVol = volData.daily;
             const gecko7DVol = volData.avg7d;
             const volSource = volData.source;
-            // log.dev(`[PoolScanner] TheGraph/Gecko fallback Vol Data for ${poolAddress}: ${JSON.stringify(volData)}`);
 
             // 4. Multi-Source Volume Verification
-            // If one source is wildly off (e.g. > 2x difference), take the conservative (lower) average, else average them.
             let verified24hVol = dailyVolumeUSD;
             if (geckoDailyVol > 0 && dailyVolumeUSD > 0) {
                 const ratio = Math.max(geckoDailyVol, dailyVolumeUSD) / Math.min(geckoDailyVol, dailyVolumeUSD);
                 if (ratio > 2) {
-                    verified24hVol = Math.min(geckoDailyVol, dailyVolumeUSD); // Conservative approach
+                    verified24hVol = Math.min(geckoDailyVol, dailyVolumeUSD);
                 } else {
                     verified24hVol = (geckoDailyVol + dailyVolumeUSD) / 2;
                 }
@@ -190,8 +195,6 @@ export class PoolScanner {
                 log.warn(`TVL=0  ${poolAddress.slice(0, 10)}  APR skipped`);
             }
 
-            // log.dev(`[PoolScanner] Final Computed Stats for ${poolAddress}: avgDailyVolume=${avgDailyVolume}, dailyFeesUSD=${dailyFeesUSD}, apr=${apr}`);
-
             return {
                 id: poolAddress.toLowerCase(),
                 dex,
@@ -205,6 +208,82 @@ export class PoolScanner {
             };
         } catch (error) {
             log.error(`fetchPoolStats failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
+            return null;
+        }
+    }
+
+    /**
+     * Fetch pool stats for a Uniswap V4 pool.
+     * poolId is a bytes32 (64 hex chars + 0x prefix).
+     * Uses StateView for on-chain tick/price; DexScreener + GeckoTerminal for volume.
+     */
+    private static async _fetchV4PoolStats(poolId: string, feeTierVal: number): Promise<PoolStats | null> {
+        const tag = poolId.slice(0, 10);
+        try {
+            // 1. Read slot0 from StateView
+            const stateView = new ethers.Contract(config.V4_STATE_VIEW, config.V4_STATE_VIEW_ABI, nextProvider());
+            const slot0 = await rpcRetry(
+                () => stateView.getSlot0(poolId),
+                `V4.getSlot0(${tag})`
+            );
+            const tick = Number(slot0.tick);
+            const sqrtPriceX96 = BigInt(slot0.sqrtPriceX96);
+
+            // 2. Volume/TVL from DexScreener (V4 poolId may or may not be indexed)
+            let tvlUSD = 0;
+            let dailyVolumeUSD = 0;
+            try {
+                const dexRes = await axios.get(
+                    `https://api.dexscreener.com/latest/dex/pairs/base/${poolId}`,
+                    { timeout: 8000 }
+                );
+                if (dexRes.data?.pairs?.length > 0) {
+                    const p = dexRes.data.pairs[0];
+                    tvlUSD = parseFloat(p.liquidity?.usd || '0');
+                    dailyVolumeUSD = parseFloat(p.volume?.h24 || '0');
+                } else {
+                    log.warn(`DexScreener no V4 pair data  ${tag}`);
+                }
+            } catch (e: any) {
+                log.warn(`DexScreener V4 fetch failed  ${tag}: ${e.message}`);
+            }
+
+            // 3. GeckoTerminal OHLCV by poolId
+            const volData = await fetchPoolVolume(poolId, 'UniswapV4');
+            const geckoDailyVol = volData.daily;
+            const gecko7DVol = volData.avg7d;
+            const volSource = volData.source;
+
+            // 4. Volume reconciliation
+            let verified24hVol = dailyVolumeUSD;
+            if (geckoDailyVol > 0 && dailyVolumeUSD > 0) {
+                const ratio = Math.max(geckoDailyVol, dailyVolumeUSD) / Math.min(geckoDailyVol, dailyVolumeUSD);
+                verified24hVol = ratio > 2
+                    ? Math.min(geckoDailyVol, dailyVolumeUSD)
+                    : (geckoDailyVol + dailyVolumeUSD) / 2;
+            } else if (geckoDailyVol > 0) {
+                verified24hVol = geckoDailyVol;
+            }
+
+            const avgDailyVolume = gecko7DVol > 0 ? (verified24hVol + gecko7DVol) / 2 : verified24hVol;
+            const dailyFeesUSD = avgDailyVolume * feeTierVal;
+            const apr = tvlUSD > 0 ? (dailyFeesUSD / tvlUSD) * 365 : 0;
+
+            log.info(`🌐 V4 pool  ${tag}  tick=${tick}  tvl=$${tvlUSD.toFixed(0)}  apr=${(apr * 100).toFixed(1)}%`);
+
+            return {
+                id: poolId.toLowerCase(),
+                dex: 'UniswapV4',
+                feeTier: feeTierVal,
+                apr,
+                tvlUSD,
+                dailyFeesUSD,
+                tick,
+                sqrtPriceX96,
+                volSource,
+            };
+        } catch (error) {
+            log.error(`V4 fetchPoolStats failed  ${tag}: ${error}`);
             return null;
         }
     }

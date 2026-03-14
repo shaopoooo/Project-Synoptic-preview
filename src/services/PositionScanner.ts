@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../utils/formatter';
-import { BBResult, RawChainPosition } from '../types';
+import { BBResult, RawChainPosition, Dex } from '../types';
 import { createServiceLogger, positionLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
 import { openTimestampHandler, findMintTimestampMs } from './ChainEventScanner';
@@ -97,8 +97,8 @@ export class PositionScanner {
             return;
         }
 
-        type Discovery = { tokenId: string; dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'; ownerWallet: string };
-        const dexes: ('Uniswap' | 'PancakeSwap' | 'Aerodrome')[] = ['Uniswap', 'PancakeSwap', 'Aerodrome'];
+        type Discovery = { tokenId: string; dex: Dex; ownerWallet: string };
+        const dexes: Dex[] = ['UniswapV3', 'PancakeSwapV3', 'Aerodrome', 'UniswapV4'];
         const discovered: Discovery[] = [];
 
         for (const walletAddress of config.WALLET_ADDRESSES) {
@@ -110,7 +110,9 @@ export class PositionScanner {
                     const npmAddress = config.NPM_ADDRESSES[dex];
                     if (!npmAddress) continue;
 
-                    const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
+                    // V4 uses a separate ABI (getPoolAndPositionInfo instead of positions())
+                    const abi = dex === 'UniswapV4' ? config.V4_NPM_ABI : config.NPM_ABI;
+                    const npmContract = new ethers.Contract(npmAddress, abi, nextProvider());
                     const balance = await rpcRetry(
                         () => npmContract.balanceOf(walletAddress),
                         `${dex}.balanceOf`
@@ -143,7 +145,7 @@ export class PositionScanner {
         for (const [tokenId, dex] of Object.entries(config.TRACKED_TOKEN_IDS)) {
             if (discoveredIds.has(tokenId)) continue;
             log.info(`📍 manual  #${tokenId} (${dex})`);
-            discovered.push({ tokenId, dex: dex as 'Uniswap' | 'PancakeSwap' | 'Aerodrome', ownerWallet: 'manual' });
+            discovered.push({ tokenId, dex: dex as Dex, ownerWallet: 'manual' });
         }
 
         const timestamps: Record<string, number> = {};
@@ -286,14 +288,18 @@ export class PositionScanner {
 
     /**
      * Fetch raw NPM data for a single position — ownerOf + positions().
+     * Dispatches to V4-specific method for UniswapV4 positions.
      * Returns null on failure.
      */
     private static async _fetchNpmData(
         tokenId: string,
-        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
+        dex: Dex,
         ownerWallet: string,
         openTimestampMs?: number,
     ): Promise<RawChainPosition | null> {
+        if (dex === 'UniswapV4') {
+            return this._fetchV4NpmData(tokenId, ownerWallet, openTimestampMs);
+        }
         try {
             const npmAddress = config.NPM_ADDRESSES[dex];
             const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
@@ -345,16 +351,95 @@ export class PositionScanner {
     }
 
     /**
+     * Fetch raw chain data for a Uniswap V4 position.
+     * Reads PoolKey + PositionInfo from V4 PositionManager; computes poolId from PoolKey.
+     */
+    private static async _fetchV4NpmData(
+        tokenId: string,
+        ownerWallet: string,
+        openTimestampMs?: number,
+    ): Promise<RawChainPosition | null> {
+        try {
+            const npmAddress = config.NPM_ADDRESSES['UniswapV4'];
+            const npmContract = new ethers.Contract(npmAddress, config.V4_NPM_ABI, nextProvider());
+
+            const owner = await rpcRetry(() => npmContract.ownerOf(tokenId), `V4.ownerOf(${tokenId})`);
+            const [poolKey, positionInfoPacked] = await rpcRetry(
+                () => npmContract.getPoolAndPositionInfo(tokenId),
+                `V4.getPoolAndPositionInfo(${tokenId})`
+            );
+            const liquidity = await rpcRetry(
+                () => npmContract.getPositionLiquidity(tokenId),
+                `V4.getPositionLiquidity(${tokenId})`
+            );
+
+            // Decode packed PositionInfo: bits 0-23 = tickLower (int24), bits 24-47 = tickUpper (int24)
+            const info = BigInt(positionInfoPacked.toString());
+            const TICK_MASK = (1n << 24n) - 1n;
+            const tickLower = Number(BigInt.asIntN(24, info & TICK_MASK));
+            const tickUpper = Number(BigInt.asIntN(24, (info >> 24n) & TICK_MASK));
+
+            // Compute poolId = keccak256(abi.encode(PoolKey))
+            const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+            const poolId = ethers.keccak256(abiCoder.encode(
+                ['address', 'address', 'uint24', 'int24', 'address'],
+                [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]
+            ));
+
+            const feeTier = Number(poolKey.fee);
+            const tickSpacing = Number(poolKey.tickSpacing);
+            const feeTierForStats = feeTier / 1_000_000;
+
+            // Normalize position to match V3 shape expected by PositionAggregator
+            const position = {
+                token0: poolKey.currency0.toLowerCase(),
+                token1: poolKey.currency1.toLowerCase(),
+                fee: poolKey.fee,
+                tickLower,
+                tickUpper,
+                liquidity,
+                // feeGrowth values not available from PositionManager; V4 FeeCalculator reads from StateView
+                feeGrowthInside0LastX128: 0n,
+                feeGrowthInside1LastX128: 0n,
+                tokensOwed0: 0n,
+                tokensOwed1: 0n,
+            };
+
+            const ownerIsWallet = config.WALLET_ADDRESSES.some(w => w.toLowerCase() === owner.toLowerCase());
+            const isStaked = !ownerIsWallet;
+            const oShort = `${owner.slice(0, 6)}…${owner.slice(-4)}`;
+            log.info(`⛓  #${tokenId} UniswapV4  owner ${oShort}  fee=${feeTier}  tick=[${tickLower},${tickUpper}]  liq=${liquidity}`);
+
+            return {
+                tokenId,
+                dex: 'UniswapV4',
+                ownerWallet,
+                owner,
+                isStaked,
+                position,
+                poolAddress: poolId.toLowerCase(),
+                feeTier,
+                feeTierForStats,
+                tickSpacing,
+                openTimestampMs,
+            };
+        } catch (error) {
+            log.error(`V4 npm fetch failed  #${tokenId}: ${error}`);
+            return null;
+        }
+    }
+
+    /**
      * Helper to find a pool address given two tokens and a fee.
      */
-    private static getPoolFromTokens(tokenA: string, tokenB: string, fee: number, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): string | null {
+    private static getPoolFromTokens(tokenA: string, tokenB: string, fee: number, dex: Dex): string | null {
         const map: Record<string, string> = {
-            'PancakeSwap_100':  config.POOLS?.PANCAKE_WETH_CBBTC_0_01  || '0xc211e1f853a898bd1302385ccde55f33a8c4b3f3',
-            'PancakeSwap_500':  config.POOLS?.PANCAKE_WETH_CBBTC_0_05  || '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
-            'Uniswap_500':      config.POOLS?.UNISWAP_WETH_CBBTC_0_05  || '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
-            'Uniswap_3000':     config.POOLS?.UNISWAP_WETH_CBBTC_0_3   || '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
-            'Aerodrome_85':     config.POOLS?.AERO_WETH_CBBTC_0_0085   || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
-            'Aerodrome_1':      config.POOLS?.AERO_WETH_CBBTC_0_0085   || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
+            'PancakeSwapV3_100': config.POOLS?.PANCAKEV3_WETH_CBBTC_0_01   || '0xc211e1f853a898bd1302385ccde55f33a8c4b3f3',
+            'PancakeSwapV3_500': config.POOLS?.PANCAKEV3_WETH_CBBTC_0_05   || '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
+            'UniswapV3_500':     config.POOLS?.UNISWAPV3_WETH_CBBTC_0_05   || '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
+            'UniswapV3_3000':    config.POOLS?.UNISWAPV3_WETH_CBBTC_0_3    || '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
+            'Aerodrome_85':      config.POOLS?.AERODROME_WETH_CBBTC_0_0085  || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
+            'Aerodrome_1':       config.POOLS?.AERODROME_WETH_CBBTC_0_0085  || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
         };
         return map[`${dex}_${fee}`] || null;
     }

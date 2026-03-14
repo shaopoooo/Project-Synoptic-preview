@@ -24,12 +24,12 @@ export const env = {
         return map;
     })(),
 
-    // 手動追蹤鎖倉 TokenId：TRACKED_TOKEN_<tokenId>=<Uniswap|PancakeSwap|Aerodrome>
+    // 手動追蹤鎖倉 TokenId：TRACKED_TOKEN_<tokenId>=<UniswapV3|UniswapV4|PancakeSwapV3|PancakeSwapV2|Aerodrome>
     TRACKED_TOKEN_IDS: (() => {
-        const map: Record<string, 'Uniswap' | 'PancakeSwap' | 'Aerodrome'> = {};
+        const map: Record<string, 'UniswapV3' | 'UniswapV4' | 'PancakeSwapV3' | 'PancakeSwapV2' | 'Aerodrome'> = {};
         for (const [key, val] of Object.entries(process.env)) {
             if (key.startsWith('TRACKED_TOKEN_') && val) {
-                map[key.replace('TRACKED_TOKEN_', '')] = val as 'Uniswap' | 'PancakeSwap' | 'Aerodrome';
+                map[key.replace('TRACKED_TOKEN_', '')] = val as 'UniswapV3' | 'UniswapV4' | 'PancakeSwapV3' | 'PancakeSwapV2' | 'Aerodrome';
             }
         }
         return map;
