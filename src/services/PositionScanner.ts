@@ -200,9 +200,18 @@ export class PositionScanner {
                 continue;
             }
             if (Number(fresh.liquidity) === 0) {
-                this.closedTokenIds.add(prev.tokenId);
-                // Persist closed flag into WalletPosition
                 const ownerWallet = ucFindWallet(appState.userConfig, prev.tokenId) ?? prev.ownerWallet;
+                const walletEntry = appState.userConfig.wallets.find(
+                    w => w.address.toLowerCase() === ownerWallet.toLowerCase()
+                );
+                const isExternal = walletEntry?.positions.find(p => p.tokenId === prev.tokenId)?.externalStake ?? false;
+                if (isExternal) {
+                    // externalStake 倉位不自動關閉：可能是 RPC 返回過時區塊導致 liquidity=0
+                    log.warn(`#${prev.tokenId} liquidity=0 but externalStake=true — keeping stale record (possible stale RPC data)`);
+                    updated.push(prev);
+                    continue;
+                }
+                this.closedTokenIds.add(prev.tokenId);
                 appState.userConfig = ucUpsertPosition(appState.userConfig, ownerWallet, prev.tokenId, { closed: true });
                 log.info(`#${prev.tokenId} liquidity=0 — marked closed, removed from tracking`);
                 continue; // drop from positions, will not be scanned again
