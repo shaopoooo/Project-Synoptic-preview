@@ -8,7 +8,6 @@ export const constants = {
     // ── RPC ────────────────────────────────────────────────────────────────
     RPC_FALLBACKS: [
         'https://base-rpc.publicnode.com',
-        'https://rpc.ankr.com/base',
         'https://base.drpc.org',
     ],
     RPC_STALL_TIMEOUT_MS: 3000,
