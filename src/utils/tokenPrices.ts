@@ -7,16 +7,9 @@
 import axios from 'axios';
 import { config } from '../config';
 import { createServiceLogger } from './logger';
+import { TokenPrices } from '../types';
 
 const log = createServiceLogger('TokenPrices');
-
-export interface TokenPrices {
-    ethPrice: number;
-    cbbtcPrice: number;
-    cakePrice: number;
-    aeroPrice: number;
-    fetchedAt: number;
-}
 
 let cache: TokenPrices | null = null;
 

@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
+import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { FeeQueryResult, RewardsQueryResult } from '../types';
+import { FeeQueryResult, RewardsQueryResult, Dex } from '../types';
 
-export type { FeeQueryResult, RewardsQueryResult };
 
 const log = createServiceLogger('FeeCalculator');
 
@@ -15,7 +15,7 @@ export class FeeCalculator {
      */
     static async fetchUnclaimedFees(
         tokenId: string,
-        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
+        dex: Dex,
         owner: string,
         ownerIsWallet: boolean,
         poolAddress: string,
@@ -24,6 +24,11 @@ export class FeeCalculator {
         isStaked: boolean,
         npmAddress: string,
     ): Promise<FeeQueryResult> {
+        // UniswapV4: fees computed from StateView feeGrowth math (V4 has no collect())
+        if (dex === 'UniswapV4') {
+            return this._fetchV4Fees(tokenId, poolAddress, position.tickLower, position.tickUpper, BigInt(position.liquidity), owner);
+        }
+
         const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
         let depositorWallet = ownerIsWallet ? owner : '';
         let unclaimed0 = 0n;
@@ -45,7 +50,7 @@ export class FeeCalculator {
                         const gauge = new ethers.Contract(canonicalGauge, config.AERO_GAUGE_ABI, nextProvider());
 
                         if (!depositorWallet) {
-                            for (const wallet of config.WALLET_ADDRESSES) {
+                            for (const wallet of ucWalletAddresses(appState.userConfig)) {
                                 try {
                                     if (await gauge.stakedContains(wallet, BigInt(tokenId))) {
                                         depositorWallet = wallet;
@@ -170,7 +175,7 @@ export class FeeCalculator {
      */
     static async fetchThirdPartyRewards(
         tokenId: string,
-        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
+        dex: Dex,
         owner: string,
         ownerIsWallet: boolean,
         poolAddress: string,
@@ -209,7 +214,7 @@ export class FeeCalculator {
         }
 
         // CAKE rewards (PancakeSwap MasterChef V3)
-        if (dex === 'PancakeSwap') {
+        if (dex === 'PancakeSwapV3') {
             const candidates = ownerIsWallet
                 ? (config.PANCAKE_MASTERCHEF_V3 ? [config.PANCAKE_MASTERCHEF_V3] : [])
                 : [owner, ...(config.PANCAKE_MASTERCHEF_V3 && owner.toLowerCase() !== config.PANCAKE_MASTERCHEF_V3.toLowerCase() ? [config.PANCAKE_MASTERCHEF_V3] : [])];
@@ -245,9 +250,53 @@ export class FeeCalculator {
     /**
      * Compute pending fees from pool feeGrowth math (Uniswap V3 formula).
      */
+    /**
+     * Compute unclaimed fees for a Uniswap V4 position using StateView.
+     * V4 has no collect() — fees are derived from feeGrowthInside delta × liquidity.
+     */
+    private static async _fetchV4Fees(
+        tokenId: string,
+        poolId: string,
+        tickLower: number,
+        tickUpper: number,
+        liquidity: bigint,
+        owner: string,
+    ): Promise<FeeQueryResult> {
+        const Q128 = 2n ** 128n;
+        const U256_MAX = 2n ** 256n;
+        const sub256 = (a: bigint, b: bigint) => ((a - b) % U256_MAX + U256_MAX) % U256_MAX;
+
+        const stateView = new ethers.Contract(config.V4_STATE_VIEW, config.V4_STATE_VIEW_ABI, nextProvider());
+        const positionManager = config.NPM_ADDRESSES['UniswapV4'];
+        // salt = bytes32(tokenId) — used to distinguish positions with same owner + range
+        const salt = ethers.zeroPadValue(ethers.toBeHex(BigInt(tokenId)), 32);
+
+        const [posInfo, feeGrowthInside] = await Promise.all([
+            rpcRetry(
+                () => stateView.getPositionInfo(poolId, positionManager, tickLower, tickUpper, salt),
+                `V4.getPositionInfo(${tokenId})`
+            ),
+            rpcRetry(
+                () => stateView.getFeeGrowthInside(poolId, tickLower, tickUpper),
+                `V4.getFeeGrowthInside(${poolId.slice(0, 10)})`
+            ),
+        ]);
+
+        const lastFg0 = BigInt(posInfo.feeGrowthInside0LastX128);
+        const lastFg1 = BigInt(posInfo.feeGrowthInside1LastX128);
+        const curFg0  = BigInt(feeGrowthInside.feeGrowthInside0X128);
+        const curFg1  = BigInt(feeGrowthInside.feeGrowthInside1X128);
+
+        const fees0 = liquidity * sub256(curFg0, lastFg0) / Q128;
+        const fees1 = liquidity * sub256(curFg1, lastFg1) / Q128;
+
+        log.info(`💸 #${tokenId} V4 fees  ${fees0} / ${fees1}  [StateView.feeGrowth]`);
+        return { unclaimed0: fees0, unclaimed1: fees1, depositorWallet: owner, source: 'V4.StateView.feeGrowth' };
+    }
+
     private static async computePendingFees(
         poolAddress: string,
-        dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome',
+        dex: Dex,
         currentTick: number,
         tickLower: number,
         tickUpper: number,

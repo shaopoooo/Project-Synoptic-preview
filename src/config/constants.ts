@@ -1,5 +1,5 @@
 import { env } from './env';
-import { SortBy } from '../types';
+import { SortBy, Dex } from '../types';
 
 export const constants = {
     // ── Network ────────────────────────────────────────────────────────────
@@ -14,8 +14,8 @@ export const constants = {
 
     // ── Subgraph Endpoints ─────────────────────────────────────────────────
     SUBGRAPHS: {
-        // Uniswap: `https://gateway.thegraph.com/api/${env.SUBGRAPH_API_KEY}/subgraphs/id/FUbEPQw1oMghy39fwWBFY5fE6MXPXZQtjncQy2cXdrNS`,
-        // PancakeSwap: `https://gateway.thegraph.com/api/${env.SUBGRAPH_API_KEY}/subgraphs/id/84ADrft27B8Jo46mdknbJ3PHoJ5wK5YeNBrYTD19WnaH`
+        // UniswapV3: `https://gateway.thegraph.com/api/${env.SUBGRAPH_API_KEY}/subgraphs/id/FUbEPQw1oMghy39fwWBFY5fE6MXPXZQtjncQy2cXdrNS`,
+        // PancakeSwapV3: `https://gateway.thegraph.com/api/${env.SUBGRAPH_API_KEY}/subgraphs/id/84ADrft27B8Jo46mdknbJ3PHoJ5wK5YeNBrYTD19WnaH`
     } as Record<string, string>,
 
     // ── API Endpoints ──────────────────────────────────────────────────────
@@ -76,23 +76,32 @@ export const constants = {
     GAS_UNITS_COMPOUND: 300_000n,  // Base 上 collect + reinvest 估算用 gas
     DEFAULT_GAS_COST_USD: 1.5,     // Gas oracle 失敗時的 fallback
 
+    // ── Uniswap V4 Contracts (Base Network) ──────────────────────────────
+    V4_POOL_MANAGER: '0x498581ff718922c3f8e6a244956af099b2652b2b',
+    V4_POSITION_MANAGER: '0x7c5f5a4bbd8fd63184577525326123b519429bdc',
+    V4_STATE_VIEW: '0xa3c0c9b65bad0b08107aa264b0f3db444b867a71',
+
     // ── Core Pools (Base Network) ─────────────────────────────────────────
     POOLS: {
-        PANCAKE_WETH_CBBTC_0_01: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3',
-        PANCAKE_WETH_CBBTC_0_05: '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
-        UNISWAP_WETH_CBBTC_0_05: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
-        UNISWAP_WETH_CBBTC_0_3: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
-        AERO_WETH_CBBTC_0_0085: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', // Aerodrome Slipstream, fee=85 (0.0085%), tickSpacing=1
+        PANCAKEV3_WETH_CBBTC_0_01: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3',
+        PANCAKEV3_WETH_CBBTC_0_05: '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
+        UNISWAPV3_WETH_CBBTC_0_05: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
+        UNISWAPV3_WETH_CBBTC_0_3: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
+        AERODROME_WETH_CBBTC_0_0085: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', // Aerodrome Slipstream, fee=85 (0.0085%), tickSpacing=1
+        // Uniswap V4 ETH/cbBTC — poolId (bytes32, keccak256(abi.encode(PoolKey)))
+        UNISWAPV4_ETH_CBBTC: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5',
     },
 
     // ── Pool Scan List（驅動 PoolScanner.scanAllCorePools，新增池子只需改此處）──
     POOL_SCAN_LIST: [
-        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwap' as const, fee: 0.0001 },
-        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwap' as const, fee: 0.0005 },
-        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'Uniswap' as const, fee: 0.0005 },
-        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'Uniswap' as const, fee: 0.003 },
+        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001 },
+        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005 },
+        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3' as const, fee: 0.0005 },
+        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
         { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome' as const, fee: 0.000085 },
-    ] as { address: string; dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'; fee: number }[],
+        // V4: address 欄位存放 bytes32 poolId
+        { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.0001 },
+    ] as { address: string; dex: Dex; fee: number }[],
 
     // ── Math Config ───────────────────────────────────────────────────────
     DECIMAL_PRECISION: 18n,
@@ -114,8 +123,11 @@ export const constants = {
     PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0x22d7937d7c8f96bbe426f5ce592c462b69c5e57d',
 
     NPM_ADDRESSES: {
-        Uniswap: '0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1',
-        PancakeSwap: '0x46A15B0b27311cedF172AB29E4f4766fbE7F4364',
+        UniswapV3: '0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1',
+        UniswapV4: '0x7c5f5a4bbd8fd63184577525326123b519429bdc',
+        PancakeSwapV3: '0x46A15B0b27311cedF172AB29E4f4766fbE7F4364',
+        // PancakeSwapV2 uses ERC-20 LP tokens (not ERC-721 NFTs) — different tracking mechanism
+        // PancakeSwapV2: '',  // TODO: add when V2 position tracking is implemented
         Aerodrome: '0x827922686190790b37229fd06084350E74485b72',
     } as Record<string, string>,
 
@@ -135,4 +147,10 @@ export const constants = {
         unclaimed: '可領取',
         health: '健康值',
     } as Record<SortBy, string>,
+
+    /** 允許透過 Telegram 指令輸入的 DEX 值 */
+    VALID_DEXES: ['UniswapV3', 'UniswapV4', 'PancakeSwapV3', 'Aerodrome'] as Dex[],
+
+    /** 舊版 DEX 命名 → 新版命名遷移表（loadState migration 使用） */
+    DEX_MIGRATION: { Uniswap: 'UniswapV3', PancakeSwap: 'PancakeSwapV3' } as Record<string, string>,
 };

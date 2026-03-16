@@ -1,14 +1,13 @@
 import axios from 'axios';
 import { nearestUsableTick } from '@uniswap/v3-sdk';
-import { bbVolCache, BBVolEntry } from '../utils/cache';
+import { bbVolCache } from '../utils/cache';
 import { createServiceLogger } from '../utils/logger';
 import { geckoRequest } from '../utils/rpcProvider';
 import { config } from '../config';
 import { getTokenPrices } from '../utils/tokenPrices';
-import { BBResult } from '../types';
+import { BBResult, BBVolEntry, Dex } from '../types';
 import { appState } from '../utils/AppState';
 
-export type { BBResult };
 
 const log = createServiceLogger('BBEngine');
 
@@ -28,7 +27,7 @@ function calcVol(prices: number[]): number {
 /** Fetch 30-day annualized vol.
  *  Order: DEX-specific The Graph subgraph → GeckoTerminal → stale cache → 50% default
  *  Results are cached 2 hours to avoid hitting free-tier rate limits. */
-async function fetchDailyVol(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome'): Promise<number> {
+async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
   const key = poolAddress.toLowerCase();
   const cached = bbVolCache.get(key);
   if (cached && Date.now() < cached.expiresAt) return cached.vol;
@@ -193,7 +192,7 @@ export class BBEngine {
    * Fetches historical OHLCV data from GeckoTerminal (Free API, requires no key)
    * Base Network ID is 'base'
    */
-  static async computeDynamicBB(poolAddress: string, dex: 'Uniswap' | 'PancakeSwap' | 'Aerodrome', tickSpacing: number, currentTick: number): Promise<BBResult | null> {
+  static async computeDynamicBB(poolAddress: string, dex: Dex, tickSpacing: number, currentTick: number): Promise<BBResult | null> {
     try {
       const currentPrice = Math.pow(1.0001, currentTick);
 

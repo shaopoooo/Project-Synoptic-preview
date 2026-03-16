@@ -1,4 +1,23 @@
 export const abis = {
+    // Uniswap V4 PositionManager (ERC-721 NFT manager)
+    // getPoolAndPositionInfo returns (PoolKey, packed uint256 positionInfo)
+    // PositionInfo packing: bits 0-23 = tickLower (int24), bits 24-47 = tickUpper (int24), bit 48 = hasSubscriber
+    V4_NPM_ABI: [
+        'function balanceOf(address owner) external view returns (uint256)',
+        'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
+        'function ownerOf(uint256 tokenId) external view returns (address)',
+        'function getPoolAndPositionInfo(uint256 tokenId) external view returns ((address currency0, address currency1, uint24 fee, int24 tickSpacing, address hooks) poolKey, uint256 positionInfo)',
+        'function getPositionLiquidity(uint256 tokenId) external view returns (uint128 liquidity)',
+        'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)',
+    ],
+
+    // Uniswap V4 StateView — read-only lens over PoolManager state
+    V4_STATE_VIEW_ABI: [
+        'function getSlot0(bytes32 poolId) external view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)',
+        'function getPositionInfo(bytes32 poolId, address owner, int24 tickLower, int24 tickUpper, bytes32 salt) external view returns (uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128)',
+        'function getFeeGrowthInside(bytes32 poolId, int24 tickLower, int24 tickUpper) external view returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128)',
+    ],
+
     // PancakeSwap V3 MasterChef — pendingCake(tokenId) 查詢未領 CAKE 獎勵
     PANCAKE_MASTERCHEF_V3_ABI: [
         'function pendingCake(uint256 tokenId) external view returns (uint256)',

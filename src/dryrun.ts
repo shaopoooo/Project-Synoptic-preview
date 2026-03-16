@@ -4,10 +4,11 @@
  *
  * Usage: npm run dryrun
  */
-import { PoolScanner, PoolStats } from './services/PoolScanner';
-import { BBEngine, BBResult } from './services/BBEngine';
-import { RiskManager, PositionState, RiskAnalysis } from './services/RiskManager';
-import { PositionScanner, PositionRecord } from './services/PositionScanner';
+import { PoolScanner } from './services/PoolScanner';
+import { BBEngine } from './services/BBEngine';
+import { RiskManager } from './services/RiskManager';
+import { PositionScanner } from './services/PositionScanner';
+import { PoolStats, BBResult, PositionState, RiskAnalysis, PositionRecord } from './types';
 import { PositionAggregator } from './services/PositionAggregator';
 import { createServiceLogger } from './utils/logger';
 

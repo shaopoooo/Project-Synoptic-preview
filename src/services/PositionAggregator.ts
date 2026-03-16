@@ -2,12 +2,12 @@ import pLimit from 'p-limit';
 import { BBResult, PoolStats, PositionRecord, AggregateInput, RawChainPosition } from '../types';
 import { FeeCalculator } from './FeeCalculator';
 import { config } from '../config';
+import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { getTokenPrices } from '../utils/tokenPrices';
 import { tickToPrice } from '../utils/math';
 import { getTokenDecimals, getTokenSymbol } from '../utils/tokenInfo';
 
-export type { AggregateInput };
 
 const log = createServiceLogger('PositionAggregator');
 
@@ -148,7 +148,7 @@ export class PositionAggregator {
             const bb = latestBBs[poolKey] ?? null;
 
             const npmAddress = config.NPM_ADDRESSES[raw.dex];
-            const ownerIsWallet = config.WALLET_ADDRESSES.some(
+            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(
                 w => w.toLowerCase() === raw.owner.toLowerCase()
             );
 
