@@ -6,7 +6,6 @@ import { createServiceLogger } from '../utils/logger';
 import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../utils/rpcProvider';
 import { PoolStats, Dex } from '../types';
 
-export type { PoolStats };
 
 const log = createServiceLogger('PoolScanner');
 

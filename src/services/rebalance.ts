@@ -3,7 +3,6 @@ import { createServiceLogger } from '../utils/logger';
 import { config } from '../config';
 import { RebalanceSuggestion } from '../types';
 
-export type { RebalanceSuggestion };
 
 const log = createServiceLogger('RebalanceService');
 

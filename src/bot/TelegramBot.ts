@@ -1,10 +1,10 @@
 import { Bot } from 'grammy';
 import { config } from '../config';
-import { PoolStats, BBResult, PositionRecord, RiskAnalysis, SortBy } from '../types';
+import { PoolStats, BBResult, PositionRecord, RiskAnalysis, SortBy, Dex, UserConfig } from '../types';
 import { createServiceLogger } from '../utils/logger';
 import { getTokenPrices } from '../utils/tokenPrices';
 import { buildTelegramPositionBlock, fmtInterval } from '../utils/formatter';
-import { appState } from '../utils/AppState';
+import { appState, ucWalletAddresses, ucInitialInvestment, ucTrackedPositions, ucUpsertPosition, ucRemovePosition, ucFindWallet } from '../utils/AppState';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -21,16 +21,16 @@ export function minutesToCron(min: number): string {
 export class TelegramBotService {
     private bot: Bot;
     private chatId: string;
-    private sortBy: SortBy = 'size';
     private onReschedule: ((minutes: number) => void) | null = null;
-    private onBbkChange: ((kLow: number, kHigh: number) => void) | null = null;
+    private onUserConfigChange: ((cfg: UserConfig) => Promise<void>) | null = null;
 
     setRescheduleCallback(cb: (minutes: number) => void) {
         this.onReschedule = cb;
     }
 
-    setBbkCallback(cb: (kLow: number, kHigh: number) => void) {
-        this.onBbkChange = cb;
+    /** 設定 userConfig 變更時的回呼（更新 appState 並持久化）。 */
+    setUserConfigChangeCallback(cb: (cfg: UserConfig) => Promise<void>) {
+        this.onUserConfigChange = cb;
     }
 
     constructor() {
@@ -57,27 +57,45 @@ export class TelegramBotService {
                 `<b>📐 BB 布林通道</b>\n` +
                 `/bbk — 查看目前 k 值設定\n` +
                 `/bbk &lt;low&gt; &lt;high&gt; — 調整 BB 帶寬乘數\n` +
-                `  · low：震盪市（Low Vol）用\n` +
-                `  · high：趨勢市（High Vol）用\n` +
                 `  建議範圍 1.0 ~ 3.0，預設 ${config.BB_K_LOW_VOL}/${config.BB_K_HIGH_VOL}\n` +
                 `  範例: <code>/bbk 1.8 2.5</code>\n\n` +
+                `<b>👛 錢包管理</b>\n` +
+                `/wallet — 列出目前監測的錢包\n` +
+                `/wallet add &lt;address&gt; — 新增錢包\n` +
+                `/wallet rm &lt;address&gt; — 移除錢包\n\n` +
+                `<b>🔀 DEX</b>\n` +
+                `/dex — 列出所有支援的 DEX\n\n` +
+                `<b>💰 本金</b>\n` +
+                `/capital — 列出所有本金設定\n` +
+                `/capital &lt;tokenId&gt; &lt;amount&gt; — 設定/更新本金（不需地址）\n\n` +
+                `<b>🔒 外部質押倉位</b>\n` +
+                `/stake — 列出所有外部質押倉位\n` +
+                `/stake &lt;address&gt; &lt;tokenId&gt; &lt;dex&gt; — 標記倉位為外部質押（Gauge/MasterChef）\n` +
+                `/unstake &lt;tokenId&gt; — 取消外部質押標記\n` +
+                `  dex 可用值: ${dexList}\n\n` +
+                `<b>💼 倉位配置（合併設定）</b>\n` +
+                `/invest — 列出所有倉位配置\n` +
+                `/invest &lt;address&gt; &lt;tokenId&gt; &lt;amount&gt; &lt;dex&gt; — 同時設定本金 + 外部質押\n` +
+                `  dex 可用值: ${dexList}\n\n` +
                 `<b>📖 說明</b>\n` +
                 `/explain — 各項指標計算公式詳解\n` +
                 `/help — 顯示本說明`;
             ctx.reply(msg, { parse_mode: 'HTML' });
         });
 
-        this.bot.command('sort', (ctx) => {
+        this.bot.command('sort', async (ctx) => {
             const key = (ctx.match?.trim() ?? '') as SortBy;
             const valid = Object.keys(config.SORT_LABELS) as SortBy[];
             if (valid.includes(key)) {
-                this.sortBy = key;
+                const newCfg = { ...appState.userConfig, sortBy: key };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
                 ctx.reply(`✅ 排序已設為: <b>${config.SORT_LABELS[key]}</b> ↓`, { parse_mode: 'HTML' });
             } else {
+                const currentSortBy = appState.userConfig.sortBy ?? 'size';
                 ctx.reply(
                     `排序選項:\n` +
                     valid.map(k => `  /sort ${k} — ${config.SORT_LABELS[k]}`).join('\n') +
-                    `\n\n目前排序: <b>${config.SORT_LABELS[this.sortBy]}</b>`,
+                    `\n\n目前排序: <b>${config.SORT_LABELS[currentSortBy]}</b>`,
                     { parse_mode: 'HTML' }
                 );
             }
@@ -106,7 +124,7 @@ export class TelegramBotService {
                 `Unclaimed ❌ &lt; Threshold → 繼續等待累積\n\n` +
                 `<b>獲利率</b>\n` +
                 `= (LP現值 + Unclaimed - 本金) / 本金 × 100%\n` +
-                `需設定初始本金（INITIAL_INVESTMENT_&lt;tokenId&gt;）才顯示\n\n` +
+                `需設定初始本金（<code>/invest &lt;address&gt; &lt;tokenId&gt; &lt;amount&gt; &lt;dex&gt;</code>）才顯示\n\n` +
                 `<b>布林通道 BB（Bollinger Bands）</b>\n` +
                 `SMA = 最近 20 筆小時 tick 均價\n` +
                 `帶寬 = k × σ（stdDev，EWMA 平滑）\n` +
@@ -122,7 +140,7 @@ export class TelegramBotService {
             ctx.reply(msg, { parse_mode: 'HTML' });
         });
 
-        this.bot.command('interval', (ctx) => {
+        this.bot.command('interval', async (ctx) => {
             const raw = ctx.match?.trim() ?? '';
             if (!raw) {
                 const opts = VALID_INTERVALS.map(m => `  /interval ${m} — ${fmtInterval(m)}`).join('\n');
@@ -137,13 +155,15 @@ export class TelegramBotService {
             }
             if (this.onReschedule) {
                 this.onReschedule(min);
+                const newCfg = { ...appState.userConfig, intervalMinutes: min };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
                 ctx.reply(`✅ 排程已更新為每 <b>${fmtInterval(min)}</b> 執行一次\n（cron: <code>${minutesToCron(min)}</code>）`, { parse_mode: 'HTML' });
             } else {
                 ctx.reply('❌ 排程功能尚未初始化');
             }
         });
 
-        this.bot.command('bbk', (ctx) => {
+        this.bot.command('bbk', async (ctx) => {
             const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
             if (parts.length === 0) {
                 const { bbKLowVol, bbKHighVol } = appState;
@@ -168,22 +188,286 @@ export class TelegramBotService {
                 ctx.reply('❌ 數值無效。low 與 high 需為正數且 low ≤ high');
                 return;
             }
-            if (this.onBbkChange) {
-                this.onBbkChange(kLow, kHigh);
+            appState.bbKLowVol  = kLow;
+            appState.bbKHighVol = kHigh;
+            const newCfg = { ...appState.userConfig, bbKLowVol: kLow, bbKHighVol: kHigh };
+            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+            ctx.reply(
+                `✅ BB k 值已更新\nk_low=<b>${kLow}</b>  k_high=<b>${kHigh}</b>\n（下個週期生效）`,
+                { parse_mode: 'HTML' }
+            );
+        });
+
+        // ── /dex ──────────────────────────────────────────────────────────────
+        this.bot.command('dex', (ctx) => {
+            const list = config.VALID_DEXES.map(d => `  · <code>${d}</code>`).join('\n');
+            ctx.reply(`🔀 <b>支援的 DEX</b>\n\n${list}`, { parse_mode: 'HTML' });
+        });
+
+        // ── /wallet ───────────────────────────────────────────────────────────
+        this.bot.command('wallet', async (ctx) => {
+            const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+            const sub = parts[0]?.toLowerCase() ?? '';
+            const addr = parts[1] ?? '';
+
+            if (!sub || sub === 'list') {
+                const wallets = appState.userConfig.wallets;
+                if (wallets.length === 0) {
+                    ctx.reply('目前沒有設定任何錢包。\n用法: <code>/wallet add &lt;address&gt;</code>', { parse_mode: 'HTML' });
+                } else {
+                    const list = wallets.map((w, i) => {
+                        const posCount = w.positions.length;
+                        return `${i + 1}. <code>${w.address}</code>  (${posCount} 個倉位配置)`;
+                    }).join('\n');
+                    ctx.reply(`👛 <b>監測錢包（${wallets.length} 個）</b>\n\n${list}`, { parse_mode: 'HTML' });
+                }
+                return;
+            }
+
+            if (sub === 'add') {
+                if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+                    ctx.reply('❌ 無效地址格式。請輸入 0x 開頭的 42 位十六進位地址。');
+                    return;
+                }
+                if (appState.userConfig.wallets.some(w => w.address.toLowerCase() === addr.toLowerCase())) {
+                    ctx.reply(`⚠️ 此錢包已在監測清單中: <code>${addr}</code>`, { parse_mode: 'HTML' });
+                    return;
+                }
+                const newCfg: UserConfig = {
+                    wallets: [...appState.userConfig.wallets, { address: addr, positions: [] }],
+                };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+                ctx.reply(`✅ 已新增錢包: <code>${addr}</code>\n（下個週期起開始掃描此錢包的倉位）`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            if (sub === 'rm') {
+                if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+                    ctx.reply('❌ 無效地址格式。');
+                    return;
+                }
+                const filtered = appState.userConfig.wallets.filter(
+                    w => w.address.toLowerCase() !== addr.toLowerCase()
+                );
+                if (filtered.length === appState.userConfig.wallets.length) {
+                    ctx.reply(`⚠️ 找不到此錢包: <code>${addr}</code>`, { parse_mode: 'HTML' });
+                    return;
+                }
+                const newCfg: UserConfig = { wallets: filtered };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+                ctx.reply(`✅ 已移除錢包: <code>${addr}</code>（及其倉位配置）`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            ctx.reply('❌ 用法:\n/wallet — 列出錢包\n/wallet add &lt;address&gt;\n/wallet rm &lt;address&gt;', { parse_mode: 'HTML' });
+        });
+
+        // ── /invest（合併 track 功能）────────────────────────────────────────
+        const dexList = config.VALID_DEXES.join(' / ');
+
+        this.bot.command('invest', async (ctx) => {
+            const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+
+            // ── 列出所有倉位配置 ────────────────────────────────────────────
+            if (parts.length === 0) {
+                const lines: string[] = [];
+                for (const wallet of appState.userConfig.wallets) {
+                    for (const pos of wallet.positions) {
+                        if (pos.initial === 0 && !pos.externalStake) continue;
+                        const wShort = `<code>${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}</code>`;
+                        const inv = pos.initial > 0 ? `$${pos.initial.toFixed(2)}` : '未設定';
+                        const track = pos.externalStake ? `🔒 ${pos.dexType}` : '';
+                        lines.push(`${wShort} #<code>${pos.tokenId}</code>  本金 ${inv}  ${track}`.trimEnd());
+                    }
+                }
+                if (lines.length === 0) {
+                    ctx.reply(
+                        `目前沒有倉位配置。\n\n` +
+                        `用法: <code>/invest &lt;address&gt; &lt;tokenId&gt; &lt;amount&gt; &lt;dex&gt;</code>\n` +
+                        `dex 可用值: ${dexList}`,
+                        { parse_mode: 'HTML' }
+                    );
+                } else {
+                    ctx.reply(`💰 <b>倉位配置（${lines.length} 筆）</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
+                }
+                return;
+            }
+
+            if (parts.length < 4) {
                 ctx.reply(
-                    `✅ BB k 值已更新\nk_low=<b>${kLow}</b>  k_high=<b>${kHigh}</b>\n（下個週期生效）`,
+                    `❌ 用法:\n` +
+                    `<code>/invest &lt;address&gt; &lt;tokenId&gt; &lt;amount&gt; &lt;dex&gt;</code>  設定本金 + 追蹤倉位\n` +
+                    `  amount=0 清除本金（保留追蹤）\n` +
+                    `  dex 可用值: ${dexList}`,
                     { parse_mode: 'HTML' }
                 );
-            } else {
-                ctx.reply('❌ BBk 功能尚未初始化');
+                return;
             }
-        });
-    }
 
-    public getSortBy(): string { return this.sortBy; }
-    public setSortBy(key: string) {
-        const valid = Object.keys(config.SORT_LABELS) as SortBy[];
-        if (valid.includes(key as SortBy)) this.sortBy = key as SortBy;
+            // ── 解析與驗證 ───────────────────────────────────────────────────
+            const address = parts[0];
+            const tokenId = parts[1];
+            const amount  = parseFloat(parts[2]);
+            const dexArg  = parts[3] as Dex;
+
+            if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+                ctx.reply('❌ 無效錢包地址（需為 0x 開頭的 42 位十六進位）');
+                return;
+            }
+            if (isNaN(amount) || amount < 0) {
+                ctx.reply('❌ amount 必須為 ≥ 0 的數字');
+                return;
+            }
+            if (!config.VALID_DEXES.includes(dexArg)) {
+                ctx.reply(`❌ 無效 DEX「${dexArg}」\n可用值: ${dexList}`);
+                return;
+            }
+            if (!appState.userConfig.wallets.some(w => w.address.toLowerCase() === address.toLowerCase())) {
+                ctx.reply(`❌ 找不到錢包 <code>${address}</code>，請先用 /wallet add 新增`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            // ── Upsert ───────────────────────────────────────────────────────
+            const newCfg = ucUpsertPosition(appState.userConfig, address, tokenId, {
+                initial:  amount,
+                dexType:  dexArg,
+                externalStake: true,
+            });
+            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+
+            // ── 確認訊息 ─────────────────────────────────────────────────────
+            const wShort = `${address.slice(0, 6)}…${address.slice(-4)}`;
+            const invMsg = amount > 0 ? `本金 <b>$${amount.toFixed(2)}</b>` : '本金已清除';
+            ctx.reply(`✅ #${tokenId} (${wShort})  ${invMsg}  🔒 externalStake=${dexArg}`, { parse_mode: 'HTML' });
+        });
+
+        // ── /stake ────────────────────────────────────────────────────────────
+        this.bot.command('stake', async (ctx) => {
+            const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+
+            if (parts.length === 0) {
+                const staked = ucTrackedPositions(appState.userConfig);
+                if (staked.length === 0) {
+                    ctx.reply(
+                        `目前沒有外部質押倉位。\n\n` +
+                        `用法: <code>/stake &lt;address&gt; &lt;tokenId&gt; &lt;dex&gt;</code>\n` +
+                        `dex 可用值: ${dexList}`,
+                        { parse_mode: 'HTML' }
+                    );
+                } else {
+                    const list = staked.map(t =>
+                        `#<code>${t.tokenId}</code>  ${t.dexType}  <code>${t.ownerWallet.slice(0, 6)}…${t.ownerWallet.slice(-4)}</code>`
+                    ).join('\n');
+                    ctx.reply(`🔒 <b>外部質押倉位（${staked.length} 個）</b>\n\n${list}\n\n取消: <code>/unstake &lt;tokenId&gt;</code>`, { parse_mode: 'HTML' });
+                }
+                return;
+            }
+
+            if (parts.length < 3) {
+                ctx.reply(
+                    `❌ 用法: <code>/stake &lt;address&gt; &lt;tokenId&gt; &lt;dex&gt;</code>\n` +
+                    `dex 可用值: ${dexList}`,
+                    { parse_mode: 'HTML' }
+                );
+                return;
+            }
+
+            const address = parts[0];
+            const tokenId = parts[1];
+            const dexArg  = parts[2] as Dex;
+
+            if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+                ctx.reply('❌ 無效錢包地址（需為 0x 開頭的 42 位十六進位）');
+                return;
+            }
+            if (!config.VALID_DEXES.includes(dexArg)) {
+                ctx.reply(`❌ 無效 DEX「${dexArg}」\n可用值: ${dexList}`);
+                return;
+            }
+            if (!appState.userConfig.wallets.some(w => w.address.toLowerCase() === address.toLowerCase())) {
+                ctx.reply(`❌ 找不到錢包 <code>${address}</code>，請先用 /wallet add 新增`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            const newCfg = ucUpsertPosition(appState.userConfig, address, tokenId, {
+                dexType: dexArg,
+                externalStake: true,
+            });
+            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+            const wShort = `${address.slice(0, 6)}…${address.slice(-4)}`;
+            ctx.reply(`✅ #${tokenId} (${wShort}) 已標記為外部質押 🔒 ${dexArg}`, { parse_mode: 'HTML' });
+        });
+
+        // ── /unstake ──────────────────────────────────────────────────────────
+        this.bot.command('unstake', async (ctx) => {
+            const tokenId = ctx.match?.trim() ?? '';
+            if (!tokenId) {
+                const staked = ucTrackedPositions(appState.userConfig);
+                if (staked.length === 0) {
+                    ctx.reply(`目前沒有外部質押倉位。\n用法: <code>/stake &lt;address&gt; &lt;tokenId&gt; &lt;dex&gt;</code>`, { parse_mode: 'HTML' });
+                } else {
+                    const list = staked.map(t =>
+                        `#<code>${t.tokenId}</code>  ${t.dexType}  <code>${t.ownerWallet.slice(0, 6)}…${t.ownerWallet.slice(-4)}</code>`
+                    ).join('\n');
+                    ctx.reply(`🔒 <b>外部質押倉位（${staked.length} 個）</b>\n\n${list}\n\n用法: <code>/unstake &lt;tokenId&gt;</code>`, { parse_mode: 'HTML' });
+                }
+                return;
+            }
+            const walletAddr = ucFindWallet(appState.userConfig, tokenId);
+            if (!walletAddr) {
+                ctx.reply(`⚠️ #${tokenId} 不在質押清單中`);
+                return;
+            }
+            const newCfg = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { externalStake: false });
+            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+            ctx.reply(`✅ #${tokenId} 已取消外部質押標記`);
+        });
+
+        // ── /capital ──────────────────────────────────────────────────────────
+        this.bot.command('capital', async (ctx) => {
+            const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+
+            if (parts.length === 0) {
+                const lines: string[] = [];
+                for (const wallet of appState.userConfig.wallets) {
+                    for (const pos of wallet.positions) {
+                        if (pos.closed || pos.initial === 0) continue;
+                        const wShort = `<code>${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}</code>`;
+                        lines.push(`${wShort} #<code>${pos.tokenId}</code>  本金 <b>$${pos.initial.toFixed(2)}</b>`);
+                    }
+                }
+                if (lines.length === 0) {
+                    ctx.reply('目前沒有設定本金的倉位。\n用法: <code>/capital &lt;tokenId&gt; &lt;amount&gt;</code>', { parse_mode: 'HTML' });
+                } else {
+                    ctx.reply(`💰 <b>本金設定（${lines.length} 筆）</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
+                }
+                return;
+            }
+
+            if (parts.length < 2) {
+                ctx.reply('❌ 用法: <code>/capital &lt;tokenId&gt; &lt;amount&gt;</code>\n  amount=0 清除本金', { parse_mode: 'HTML' });
+                return;
+            }
+
+            const tokenId = parts[0];
+            const amount = parseFloat(parts[1]);
+            if (isNaN(amount) || amount < 0) {
+                ctx.reply('❌ amount 必須為 ≥ 0 的數字');
+                return;
+            }
+
+            const walletAddr = ucFindWallet(appState.userConfig, tokenId);
+            if (!walletAddr) {
+                ctx.reply(`❌ #${tokenId} 不在任何錢包的追蹤清單中`);
+                return;
+            }
+
+            const newCfg = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { initial: amount });
+            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+
+            const msg = amount > 0 ? `本金已設為 <b>$${amount.toFixed(2)}</b>` : '本金已清除';
+            ctx.reply(`✅ #${tokenId}  ${msg}`, { parse_mode: 'HTML' });
+        });
     }
 
     public async startBot() {
@@ -229,8 +513,9 @@ export class TelegramBotService {
         const formatTs = (ts: number) => ts === 0 ? '無紀錄' : timeOnlyFormatter.format(new Date(ts));
 
         // 依當前排序鍵由大到小排列
+        const sortBy = appState.userConfig.sortBy ?? 'size';
         const sorted = [...entries].sort((a, b) => {
-            switch (this.sortBy) {
+            switch (sortBy) {
                 case 'apr': return b.pool.apr - a.pool.apr;
                 case 'unclaimed': return b.position.unclaimedFeesUSD - a.position.unclaimedFeesUSD;
                 case 'health': return b.risk.healthScore - a.risk.healthScore;
@@ -253,7 +538,7 @@ export class TelegramBotService {
         ).size;
         const fmtUSD = (v: number) => v >= 0 ? `+$${v.toFixed(1)}` : `-$${Math.abs(v).toFixed(1)}`;
 
-        let msg = `<b>[${timeStr}] 倉位監控報告 (${sorted.length} 個倉位 | 排序: ${config.SORT_LABELS[this.sortBy]} ↓)</b>`;
+        let msg = `<b>[${timeStr}] 倉位監控報告 (${sorted.length} 個倉位 | 排序: ${config.SORT_LABELS[sortBy]} ↓)</b>`;
         msg += `\n\n📊 <b>總覽</b>  ${entries.length} 倉位 · ${walletCount} 錢包`;
         msg += `\n💼 總倉位 <b>$${totalPositionUSD.toFixed(0)}</b>  |  本金 <b>$${totalInitialCapital.toFixed(0)}</b>  |  Unclaimed <b>$${totalUnclaimedUSD.toFixed(1)}</b>`;
 

@@ -8,6 +8,7 @@ import { ethers } from 'ethers';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, delay, nextProvider } from '../utils/rpcProvider';
 import { config } from '../config';
+import { ScanRequest, ScanHandler } from '../types';
 
 const log = createServiceLogger('ChainEventScanner');
 
@@ -17,46 +18,6 @@ const CHUNK_DELAY_MS = config.COLLECTED_FEES_CHUNK_DELAY_MS;
 
 const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
 const FROM_ZERO_TOPIC = ethers.zeroPadValue(ethers.ZeroAddress, 32);
-
-// ─── Public Interfaces ───────────────────────────────────────────────────────
-
-export interface ScanRequest {
-    tokenId: string;
-    npmAddress: string;
-    dex: string;
-    openTimestampMs?: number;
-}
-
-export interface ScanHandler {
-    name: string;
-    topic0: string;
-    /** Which topics[] index holds the tokenId in matching logs */
-    tokenIdTopicIndex: 1 | 2 | 3;
-    /** Additional topic filters inserted between topic0 and the tokenId OR filter */
-    extraTopics?: (string | string[] | null)[];
-    stopOnFirstMatch: boolean;
-    needsBlockTimestamp: boolean;
-    /** Return the fromBlock for this request. Return currentBlock+1 to skip scanning. */
-    getFromBlock(req: ScanRequest, currentBlock: number): number;
-    processLog(log: ethers.Log, req: ScanRequest, blockTimestamp?: number): Promise<void>;
-    /**
-     * Called after EACH successful getLogs chunk so handlers can persist
-     * incremental scan progress without waiting for the full scan to finish.
-     */
-    onChunkSuccess?(requests: ScanRequest[], chunkFromBlock: number): void;
-    /**
-     * Called after the scan loop for each NPM group.
-     * @param successfullyScanned tokenIds included in at least one successful getLogs chunk
-     * @param lowestScannedBlock  lowest fromBlock of any successful chunk (undefined if all failed)
-     */
-    onBatchComplete(
-        npmAddress: string,
-        group: ScanRequest[],
-        currentBlock: number,
-        successfullyScanned: Set<string>,
-        lowestScannedBlock?: number,
-    ): void;
-}
 
 // ─── ChainEventScanner ──────────────────────────────────────────────────────
 

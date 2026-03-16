@@ -46,14 +46,14 @@
 | 變數名稱 | 必填 | 說明 |
 |----------|------|------|
 | `RPC_URL` | 否 | Base 主網 RPC 端點（預設：`https://mainnet.base.org`） |
-| `WALLET_ADDRESS_1` | 否 | 第一個監測錢包地址 |
+| `WALLET_ADDRESS_1` | 否 | 第一個監測錢包地址（啟動種子；後續可透過 `/wallet add` 動態新增） |
 | `WALLET_ADDRESS_2` | 否 | 第二個監測錢包地址（可繼續增加 `_3`, `_4`...） |
 | `BOT_TOKEN` | 是 | Telegram Bot Token（從 [@BotFather](https://t.me/BotFather) 取得） |
 | `CHAT_ID` | 是 | Telegram 接收推播的 Chat ID |
-| `INITIAL_INVESTMENT_<tokenId>` | 否 | 各倉位初始本金 USD，用於 IL / 淨 APR 計算（如 `INITIAL_INVESTMENT_123456=1000`） |
-| `TRACKED_TOKEN_<tokenId>` | 否 | 手動追蹤鎖倉倉位，值為 DEX 名稱（如 `TRACKED_TOKEN_123456=Aerodrome`），支援 `UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome` |
 
-> 若所有 `WALLET_ADDRESS_N` 均未設定，則跳過倉位掃描，僅推播池子 APR 排行。
+> `INITIAL_INVESTMENT_<tokenId>` 與 `TRACKED_TOKEN_<tokenId>` 已移除。本金與鎖倉設定改透過 Telegram `/invest` 指令管理，並持久化至 `state.json`。
+
+> 若所有 `WALLET_ADDRESS_N` 均未設定且 `state.json` 無錢包紀錄，則跳過倉位掃描，僅推播池子 APR 排行。
 
 `.env` 範例：
 
@@ -63,14 +63,6 @@ WALLET_ADDRESS_1=0xYourFirstWalletAddress
 WALLET_ADDRESS_2=0xYourSecondWalletAddress
 BOT_TOKEN=123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ
 CHAT_ID=-100123456789
-
-# 各倉位初始本金（格式：INITIAL_INVESTMENT_<tokenId>=<USD>）
-INITIAL_INVESTMENT_123456=1000.0
-INITIAL_INVESTMENT_789012=500.0
-
-# 鎖倉於 Gauge/MasterChef 的倉位（格式：TRACKED_TOKEN_<tokenId>=<DEX>）
-# 支援：UniswapV3 / UniswapV4 / PancakeSwapV3 / Aerodrome
-TRACKED_TOKEN_789012=Aerodrome
 ```
 
 ### 使用 dotenvx 管理環境變數（推薦）
@@ -196,7 +188,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 
 1. **PoolScanner**：從 DexScreener 取得 TVL；GeckoTerminal 取得成交量（The Graph subgraph 已停用）；計算各池 APR
 2. **BBEngine**：先行計算所有池的布林通道（避免 PositionScanner 重複呼叫 GeckoTerminal），維護 in-memory 小時價格緩衝區，計算 20 SMA + EWMA 平滑 stdDev（α=0.3, β=0.7）+ 動態 k 值，產出建議 Tick 區間
-3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `TRACKED_TOKEN_<tokenId>` 鎖倉倉位）；自動偵測 `isStaked`（ownerOf 回傳合約地址）；追蹤第三幣獎勵（CAKE via MasterChef `pendingCake`、AERO via gauge `earned`）；Aerodrome staked 手續費走 `gauge.pendingFees` → `collect.staticCall` → `tokensOwed` 四級策略；首次發現倉位時透過 `ChainEventScanner` 批次查鏈取得建倉時間戳
+3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `userConfig` 中標記 `tracked=true` 的鎖倉倉位）；自動偵測 `isStaked`（ownerOf 回傳合約地址）；追蹤第三幣獎勵（CAKE via MasterChef `pendingCake`、AERO via gauge `earned`）；Aerodrome staked 手續費走 `gauge.pendingFees` → `collect.staticCall` → `tokensOwed` 四級策略；首次發現倉位時透過 `ChainEventScanner` 批次查鏈取得建倉時間戳並寫回 `userConfig`
 4. **RiskManager**：取得即時 Gas 費用（`fetchGasCostUSD`）；計算 Health Score、IL Breakeven Days、動態 EOQ Compound Threshold、drift 警告
 5. **TelegramBot**：合併所有倉位為單一報告推播，支援 `/sort` 排序切換
 
@@ -252,7 +244,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 
 **選用欄位（有條件才顯示）：**
 - `💱` 幣價行：有任意 BBResult 時顯示即時 ETH / BTC / CAKE / AERO 價格
-- `⏳ 開倉`：需設定 `INITIAL_INVESTMENT_<tokenId>` 且倉位有建倉時間戳；`· 獲利 +X.XX%` 在本金已設時顯示
+- `⏳ 開倉`：需透過 `/invest` 設定本金且倉位有建倉時間戳；`· 獲利 +X.XX%` 在本金已設時顯示
 - `🔒`：倉位 NFT 已質押至 Gauge / MasterChef（`isStaked = true`）
 - `無常損失`：在 `💸 淨損益` 同行，僅當初始本金已設時顯示
 - 未領取手續費逐幣明細：各幣種金額 > 0 時顯示，使用下標零緊湊格式（如 `0.0₃2719 WETH`）
@@ -273,6 +265,13 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 | `/bbk` | 查看目前 BB k 值（low / high） |
 | `/bbk <low> <high>` | 調整 BB 帶寬乘數，下個週期生效並持久化（例：`/bbk 1.8 2.5`） |
 | `/explain` | 顯示所有指標的計算公式說明（含 BB k 值、再平衡策略） |
+| `/wallet` | 列出所有已監測錢包 |
+| `/wallet add <address>` | 新增監測錢包 |
+| `/wallet rm <address>` | 移除監測錢包（同時刪除該錢包的所有倉位設定） |
+| `/invest` | 列出所有倉位的本金與鎖倉設定 |
+| `/invest <addr> <tokenId> <amount>` | 設定本金（USD）；amount=0 清除本金 |
+| `/invest <addr> <tokenId> <amount> <dex>` | 設定本金並標記為鎖倉（`tracked=true`），dex 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `PancakeSwapV2` / `Aerodrome` |
+| `/untrack <tokenId>` | 取消鎖倉標記（`tracked=false`），保留本金設定 |
 
 ---
 
@@ -301,17 +300,35 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
   "volCacheBB":   { "0xpool...": { "vol30D": 0.52, "expiresAt": 1700000000000 } },
   "volCachePool": { "0xpool...": { "daily": 123456, "avg7d": 100000, "source": "GeckoTerminal", "expiresAt": 1700000000000 } },
   "priceBuffer":  { "0xpool...": { "1700000000": 0.02921, "1700003600": 0.02935 } },
-  "openTimestamps": { "123456_PancakeSwapV3": 1699000000000 },
   "bandwidthWindows": { "0xpool...": [0.00123, 0.00145, 0.00132] },
   "sortBy": "size",
   "intervalMinutes": 10,
   "bbKLowVol": 1.8,
   "bbKHighVol": 2.5,
   "closedTokenIds": ["1675918"],
-  "discoveredPositions": [
-    { "tokenId": "123456", "dex": "PancakeSwapV3", "ownerWallet": "0x..." }
-  ],
-  "syncedWallets": ["0x..."]
+  "userConfig": {
+    "wallets": [
+      {
+        "address": "0xYourWallet...",
+        "dex": [
+          {
+            "tokenId": "123456",
+            "dexType": "PancakeSwapV3",
+            "initial": 1000.0,
+            "tracked": false,
+            "openTimestamp": 1699000000000
+          },
+          {
+            "tokenId": "789012",
+            "dexType": "Aerodrome",
+            "initial": 500.0,
+            "tracked": true,
+            "openTimestamp": 1700000000000
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 
@@ -322,14 +339,12 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 | `volCacheBB` | 6 小時 | BBEngine 每次計算後 | `BBEngine.ts` |
 | `volCachePool` | 30 分鐘 | PoolScanner 每次計算後 | `PoolScanner.ts` |
 | `priceBuffer` | 永久（滾動保留最近 24 筆） | 每次 tick 更新時 | `BBEngine.ts` |
-| `openTimestamps` | 永久 | 首次發現倉位時 | `ChainEventScanner.ts` |
 | `bandwidthWindows` | 永久（滾動保留最近 8640 筆） | 每次 5 分鐘週期 | `BandwidthTracker.ts` |
 | `sortBy` | 永久 | `/sort` 指令觸發時 | `TelegramBot.ts` |
 | `intervalMinutes` | 永久 | `/interval` 指令觸發時 | `TelegramBot.ts` |
 | `bbKLowVol` / `bbKHighVol` | 永久 | `/bbk` 指令觸發時 | `TelegramBot.ts` |
 | `closedTokenIds` | 永久 | 偵測到 `liquidity=0` 時自動加入 | `PositionScanner.ts` |
-| `discoveredPositions` | 永久 | 每次 5 分鐘週期 | `PositionScanner.ts` |
-| `syncedWallets` | 永久 | 每次 5 分鐘週期 | `index.ts` |
+| `userConfig` | 永久 | `/wallet`、`/invest`、`/untrack` 指令觸發時；倉位發現時自動寫入 tokenId + openTimestamp | `TelegramBot.ts` / `PositionScanner.ts` |
 
 ### 啟動恢復決策流程
 
@@ -340,11 +355,10 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
         └── 存在
               ├── 恢復 volCacheBB / volCachePool（LRU cache，過期項自動跳過）
               ├── 恢復 priceBuffer（BBEngine 直接使用，無需重新累積）
-              ├── 恢復 openTimestamps（避免重複查 getLogs）
+              ├── 恢復 userConfig（錢包清單、本金設定、鎖倉設定、開倉時間戳）
               ├── 恢復 sortBy（Telegram 排序偏好）
               └── 判斷是否跳過 syncFromChain：
-                    條件：walletsUnchanged AND discoveredPositions.length > 0
-                          AND 無新增 TRACKED_TOKEN_IDS（不在快取中）
+                    條件：walletsUnchanged AND userConfig.wallets[].dex.length > 0
                     ├── 全部成立 ──→ restoreDiscoveredPositions()（秒級恢復）
                     └── 任一否   ──→ syncFromChain()（完整掃描，20–50s）
 ```
@@ -356,7 +370,6 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 | 首次啟動（無 state.json） | 是 | ~20–50s |
 | 重啟（wallet 配置相同） | **否** | <1s |
 | 重啟（新增 / 移除錢包） | 是 | ~20–50s |
-| 重啟（新增 TRACKED_TOKEN_IDS） | 是 | ~20–50s |
 | state.json 損毀或讀取失敗 | 是 | ~20–50s |
 
 ---
@@ -399,31 +412,33 @@ k 值可透過 Telegram `/bbk <low> <high>` 指令即時調整，重啟後從 `s
 PNL = (LP 倉位現值 + 累計已領/未領手續費) - 初始投入本金
 ```
 
-在 `.env` 中以 `INITIAL_INVESTMENT_<tokenId>=<USD>` 格式設定各倉位建倉本金：
+透過 Telegram `/invest` 指令設定各倉位建倉本金：
 
-```env
-INITIAL_INVESTMENT_123456=1000.0
-INITIAL_INVESTMENT_789012=500.0
+```
+/invest 0xYourWallet 123456 1000      # 設定 tokenId 123456 本金 $1000
+/invest 0xYourWallet 789012 500       # 設定 tokenId 789012 本金 $500
+/invest 0xYourWallet 123456 0         # 清除本金設定
 ```
 
-未設定的 Token ID 不顯示獲利率與開倉資訊，ilUSD 為 null，不計入組合總獲利。
+設定會即時持久化至 `state.json`，重啟後自動恢復。未設定的 Token ID 不顯示獲利率與開倉資訊，ilUSD 為 null，不計入組合總獲利。
 
 ---
 
 ## 鎖倉倉位追蹤（Aerodrome Gauge）
 
 倉位質押至 Gauge / MasterChef 後，NFT 轉移至合約，`balanceOf(wallet) = 0`，無法透過正常掃描找到。
-在 `.env` 中以 `TRACKED_TOKEN_<tokenId>=<DEX>` 格式手動指定需追蹤的 Token ID：
+透過 Telegram `/invest` 指令新增 DEX 參數即可標記為鎖倉追蹤：
 
-```env
-TRACKED_TOKEN_789012=Aerodrome      # Aerodrome Gauge 鎖倉
-TRACKED_TOKEN_111111=PancakeSwapV3  # PancakeSwap MasterChef 鎖倉
+```
+/invest 0xYourWallet 789012 500 Aerodrome      # 設定本金 + Aerodrome Gauge 鎖倉
+/invest 0xYourWallet 111111 0 PancakeSwapV3    # 只追蹤（不設本金）PancakeSwap MasterChef 鎖倉
+/untrack 789012                                 # 取消鎖倉追蹤
 ```
 
-支援 DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`。
+支援 DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `PancakeSwapV2` / `Aerodrome`。
 
-系統會在錢包掃描完成後，額外從鏈上讀取這些 Token ID 並加入監測清單。
-開倉時間戳透過 `ChainEventScanner`（`OpenTimestampHandler`）批次查詢 NFT `Transfer(from=0x0)` 事件。同一 NPM 合約的所有 tokenId 合併成單次 `getLogs`（`topics[3]` OR filter），支援分塊掃描（2000 blocks/chunk）與連續失敗中止（3 次），大幅減少 RPC 呼叫次數。結果快取並存入 `data/state.json`。
+系統會在錢包掃描完成後，額外從鏈上讀取標記為 `tracked=true` 的 Token ID 並加入監測清單。
+開倉時間戳透過 `ChainEventScanner`（`OpenTimestampHandler`）批次查詢 NFT `Transfer(from=0x0)` 事件。同一 NPM 合約的所有 tokenId 合併成單次 `getLogs`（`topics[3]` OR filter），支援分塊掃描（2000 blocks/chunk）與連續失敗中止（3 次），大幅減少 RPC 呼叫次數。結果持久化至 `state.json` 的 `userConfig` 欄位。
 
 ---
 
@@ -481,10 +496,10 @@ docker compose down
    | `RPC_URL` | Base 主 RPC（QuickNode / Alchemy 付費節點） |
    | `BOT_TOKEN` | Telegram Bot Token |
    | `CHAT_ID` | Telegram Chat ID |
-   | `WALLET_ADDRESS_1` | 監控錢包地址（可加 `_2`, `_3`…） |
-   | `INITIAL_INVESTMENT_<tokenId>` | 各倉位初始本金 USD |
-   | `TRACKED_TOKEN_<tokenId>` | 手動追蹤鎖倉倉位，值為 DEX 名稱 |
+   | `WALLET_ADDRESS_1` | 監控錢包地址（可加 `_2`, `_3`…；亦可啟動後透過 `/wallet add` 新增） |
    | `PANCAKE_MASTERCHEF_V3` | PancakeSwap MasterChef V3 地址（選填） |
+
+   > 本金與鎖倉設定透過 Telegram `/invest` 指令管理，無需在 Railway Variables 設定。
 
 3. **掛載 Volume（強烈建議）**
    Railway Dashboard → 你的服務 → Volumes → Add Volume，路徑設為 `/app/data`

@@ -1,20 +1,20 @@
 import cron from 'node-cron';
 import { PoolScanner } from './services/PoolScanner';
 import { BBEngine, getPriceBufferSnapshot, restorePriceBuffer, refreshPriceBuffer } from './services/BBEngine';
-import { RiskManager, PositionState, RiskAnalysis } from './services/RiskManager';
+import { RiskManager } from './services/RiskManager';
 import { RebalanceService } from './services/rebalance';
 import { PnlCalculator } from './services/PnlCalculator';
-import { TelegramBotService, minutesToCron, VALID_INTERVALS } from './bot/TelegramBot';
-import { PositionScanner, getOpenTimestampSnapshot, restoreOpenTimestamps } from './services/PositionScanner';
+import { TelegramBotService, minutesToCron, VALID_INTERVALS, IntervalMinutes } from './bot/TelegramBot';
+import { PositionScanner } from './services/PositionScanner';
 import { PositionAggregator } from './services/PositionAggregator';
 import { createServiceLogger } from './utils/logger';
 import { fetchGasCostUSD } from './utils/rpcProvider';
 import { fetchTokenPrices } from './utils/tokenPrices';
 import { loadState, saveState, restoreState } from './utils/stateManager';
 import { bandwidthTracker } from './utils/BandwidthTracker';
-import { appState } from './utils/AppState';
+import { appState, ucWalletAddresses, ucTrackedPositions } from './utils/AppState';
 import { config, validateEnv } from './config';
-import { PoolStats, BBResult, PositionRecord } from './types';
+import { PoolStats, BBResult, PositionRecord, PositionState, RiskAnalysis } from './types';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
@@ -41,11 +41,9 @@ function buildCronJob() {
       await runRiskManager().catch((e) => log.error(`Cron RiskManager: ${e}`));
       await runBotService().catch((e) => log.error(`Cron BotService: ${e}`));
       const triggerStateSave = async () => saveState(
-        getPriceBufferSnapshot(), getOpenTimestampSnapshot(), botService.getSortBy(),
-        PositionScanner.getDiscoveredSnapshot(), config.WALLET_ADDRESSES,
-        bandwidthTracker.snapshot(), currentIntervalMinutes,
-        appState.bbKLowVol, appState.bbKHighVol,
-        PositionScanner.getClosedSnapshot(),
+        getPriceBufferSnapshot(),
+        bandwidthTracker.snapshot(),
+        appState.userConfig,
       );
       await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
       log.section('cycle end');
@@ -281,10 +279,32 @@ async function main() {
   log.section('DexInfoBot startup');
 
   botService.setRescheduleCallback(reschedule);
-  botService.setBbkCallback((kLow, kHigh) => {
-    appState.bbKLowVol  = kLow;
-    appState.bbKHighVol = kHigh;
-    log.info(`📐 BB k values updated: low=${kLow}  high=${kHigh}`);
+  botService.setUserConfigChangeCallback(async (cfg) => {
+    // 在更新前記錄舊錢包清單，用來偵測新增錢包
+    const prevWalletSet = new Set(ucWalletAddresses(appState.userConfig).map(w => w.toLowerCase()));
+    const addedWallets = ucWalletAddresses(cfg).filter(w => !prevWalletSet.has(w.toLowerCase()));
+
+    appState.userConfig = cfg;
+    // bbKLowVol / bbKHighVol 在 userConfig 更新後同步到 appState runtime 欄位（BBEngine 使用）
+    if (cfg.bbKLowVol  !== undefined) appState.bbKLowVol  = cfg.bbKLowVol;
+    if (cfg.bbKHighVol !== undefined) appState.bbKHighVol = cfg.bbKHighVol;
+    await saveState(
+      getPriceBufferSnapshot(),
+      bandwidthTracker.snapshot(),
+      cfg,
+    );
+    const wallets = ucWalletAddresses(cfg);
+    const tracked = ucTrackedPositions(cfg);
+    const investments = cfg.wallets.reduce((s, w) => s + w.positions.filter(p => p.initial > 0).length, 0);
+    log.info(`💾 userConfig updated & saved — wallets: ${wallets.length}, investments: ${investments}, tracked: ${tracked.length}`);
+
+    // 有新增錢包 → 背景觸發 chain scan 自動發現倉位，完成後更新 state.json
+    if (addedWallets.length > 0) {
+      log.info(`🔍 新錢包偵測到，背景觸發 chain scan: ${addedWallets.join(', ')}`);
+      PositionScanner.syncFromChain(true)
+        .then(() => saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig))
+        .catch(e => log.error(`Auto sync (new wallet): ${e}`));
+    }
   });
   botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
 
@@ -292,56 +312,72 @@ async function main() {
   if (savedState) {
     restoreState(savedState);
     restorePriceBuffer(savedState.priceBuffer ?? {});
-    restoreOpenTimestamps(savedState.openTimestamps ?? {});
     bandwidthTracker.restore(savedState.bandwidthWindows ?? {});
-    if (savedState.sortBy) botService.setSortBy(savedState.sortBy);
-    if (savedState.intervalMinutes) currentIntervalMinutes = savedState.intervalMinutes;
-    if (savedState.bbKLowVol  !== undefined) appState.bbKLowVol  = savedState.bbKLowVol;
-    if (savedState.bbKHighVol !== undefined) appState.bbKHighVol = savedState.bbKHighVol;
-    PositionScanner.restoreClosedTokenIds(savedState.closedTokenIds ?? []);
+    // closedTokenIds migration happens in loadState(); restoreFromUserConfig() is called below
     log.info('✅ state restored from previous session');
   }
 
-  const savedWallets = savedState?.syncedWallets ?? [];
-  const currentWallets = config.WALLET_ADDRESSES;
-  const walletsUnchanged = savedWallets.length === currentWallets.length &&
-    savedWallets.every(w => currentWallets.includes(w));
-  const cachedPositions = savedState?.discoveredPositions ?? [];
-  const savedClosedIds = new Set(savedState?.closedTokenIds ?? []);
-  const cachedIds = new Set(cachedPositions.map(p => p.tokenId));
-  // 有新增 TRACKED_TOKEN_IDS 未在快取中 → 必須重新掃鏈以發現新倉位
-  const hasNewTracked = Object.keys(config.TRACKED_TOKEN_IDS).some(
-    id => !cachedIds.has(id) && !savedClosedIds.has(id)
-  );
+  // 從 state.json 恢復 userConfig（遷移已在 loadState 處理，包含 sortBy / intervalMinutes / bbK）
+  if (savedState?.userConfig) {
+    appState.userConfig = savedState.userConfig;
+    const uc = appState.userConfig;
+    if (uc.intervalMinutes && VALID_INTERVALS.includes(uc.intervalMinutes as IntervalMinutes))
+      currentIntervalMinutes = uc.intervalMinutes;
+    if (uc.bbKLowVol  !== undefined) appState.bbKLowVol  = uc.bbKLowVol;
+    if (uc.bbKHighVol !== undefined) appState.bbKHighVol = uc.bbKHighVol;
+    const wallets = ucWalletAddresses(uc);
+    const totalPositions = uc.wallets.reduce((s, w) => s + w.positions.length, 0);
+    log.info(`✅ userConfig restored — wallets: ${wallets.length}, positions: ${totalPositions}`);
+  } else if (savedState) {
+    log.info(`userConfig not in state — using .env seed (wallets: ${ucWalletAddresses(appState.userConfig).length})`);
+  }
 
-  if (walletsUnchanged && cachedPositions.length > 0 && !hasNewTracked) {
-    PositionScanner.restoreDiscoveredPositions(
-      cachedPositions, savedWallets, savedState?.openTimestamps ?? {}
-    );
+  const hasWallets = ucWalletAddresses(appState.userConfig).length > 0;
+
+  if (!hasWallets) {
+    log.warn('No wallet addresses configured — skipping startup scan. Use /wallet add in Telegram to add a wallet.');
   } else {
-    if (hasNewTracked) log.info('New TRACKED_TOKEN_IDS detected — forcing chain sync');
-    await PositionScanner.syncFromChain(true);
+    PositionScanner.restoreFromUserConfig();
+    // 從 userConfig.wallets[].positions[] 判斷是否有位置已存在（可跳過 chain scan）
+    const allKnownIds = new Set(
+      appState.userConfig.wallets.flatMap(w => w.positions.map(p => p.tokenId))
+    );
+    const savedWalletAddresses = savedState?.userConfig
+      ? ucWalletAddresses(savedState.userConfig)
+      : (savedState?.syncedWallets ?? []);
+    const currentWallets = ucWalletAddresses(appState.userConfig);
+    const walletsUnchanged = savedWalletAddresses.length === currentWallets.length &&
+      savedWalletAddresses.every(w => currentWallets.includes(w));
+    const hasNewTracked = ucTrackedPositions(appState.userConfig).some(
+      tp => !allKnownIds.has(tp.tokenId)
+    );
+
+    if (walletsUnchanged && allKnownIds.size > 0 && !hasNewTracked) {
+      PositionScanner.restoreDiscoveredPositions();
+    } else {
+      if (hasNewTracked) log.info('New tracked positions detected — forcing chain sync');
+      await PositionScanner.syncFromChain(true);
+    }
+
+    await runTokenPriceFetcher();
+    await runPoolScanner();
+
+    if (savedState) {
+      for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
+      log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+    }
+
+    await runPositionScanner();
+    await runBBEngine();
+    await runRiskManager();
   }
-
-  await runTokenPriceFetcher();
-  await runPoolScanner();
-
-  if (savedState) {
-    for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
-    log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
-  }
-
-  await runPositionScanner();
-  await runBBEngine();
-  await runRiskManager();
 
   isStartupComplete = true;
 
   const triggerStateSave = async () => saveState(
-    getPriceBufferSnapshot(), getOpenTimestampSnapshot(), botService.getSortBy(),
-    PositionScanner.getDiscoveredSnapshot(), config.WALLET_ADDRESSES,
-    bandwidthTracker.snapshot(), currentIntervalMinutes,
-    appState.bbKLowVol, appState.bbKHighVol,
+    getPriceBufferSnapshot(),
+    bandwidthTracker.snapshot(),
+    appState.userConfig,
   );
 
   await triggerStateSave();
@@ -363,10 +399,9 @@ async function gracefulShutdown(signal: string) {
   log.info(`${signal} received — saving state before exit`);
   try {
     await saveState(
-      getPriceBufferSnapshot(), getOpenTimestampSnapshot(), botService.getSortBy(),
-      PositionScanner.getDiscoveredSnapshot(), config.WALLET_ADDRESSES,
-      bandwidthTracker.snapshot(), currentIntervalMinutes,
-      appState.bbKLowVol, appState.bbKHighVol,
+      getPriceBufferSnapshot(),
+      bandwidthTracker.snapshot(),
+      appState.userConfig,
     );
     log.info('✅ state saved — exiting');
   } catch (e) {

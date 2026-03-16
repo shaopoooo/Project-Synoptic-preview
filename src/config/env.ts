@@ -36,12 +36,14 @@ export const env = {
     })(),
 };
 
-/** 驗證必填環境變數，缺少時輸出錯誤並中止程式 */
+/** 驗證必填環境變數，缺少時輸出錯誤並中止程式。
+ *  WALLET_ADDRESS_1 已可透過 Telegram /wallet add 動態新增並存入 state.json，
+ *  因此不強制要求（main() 在 state 載入後會做二次驗證）。
+ */
 export function validateEnv(): void {
     const missing: string[] = [];
-    if (!process.env.BOT_TOKEN)       missing.push('BOT_TOKEN');
-    if (!process.env.CHAT_ID)         missing.push('CHAT_ID');
-    if (!process.env.WALLET_ADDRESS_1) missing.push('WALLET_ADDRESS_1');
+    if (!process.env.BOT_TOKEN) missing.push('BOT_TOKEN');
+    if (!process.env.CHAT_ID)   missing.push('CHAT_ID');
     if (missing.length > 0) {
         console.error(`[env] 缺少必填環境變數: ${missing.join(', ')}\n請確認 .env 檔案或部署環境的環境變數設定。`);
         process.exit(1);

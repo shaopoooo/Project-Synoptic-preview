@@ -1,7 +1,6 @@
 import { BBResult, PositionState, RiskAnalysis } from '../types';
 import { config } from '../config';
 
-export type { PositionState, RiskAnalysis };
 
 export class RiskManager {
     private static readonly COMPOUND_GAS_COST_USD = config.DEFAULT_GAS_COST_USD;

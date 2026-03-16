@@ -1,17 +1,16 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
+import { appState, ucWalletAddresses, ucTrackedPositions, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet } from '../utils/AppState';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../utils/formatter';
 import { BBResult, RawChainPosition, Dex } from '../types';
 import { createServiceLogger, positionLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { openTimestampHandler, findMintTimestampMs } from './ChainEventScanner';
-import { DiscoveredPosition } from '../utils/stateManager';
+import { findMintTimestampMs } from './ChainEventScanner';
 import { PositionRecord } from '../types';
 import { TOKEN_DECIMALS } from '../utils/tokenInfo';
 import path from 'path';
 import fs from 'fs-extra';
 
-export type { PositionRecord };
 
 const log = createServiceLogger('PositionScanner');
 
@@ -20,79 +19,64 @@ export class PositionScanner {
     /** In-memory position store */
     private static positions: PositionRecord[] = [];
     private static syncedWallets = new Set<string>();
-    /** 已確認關閉（liquidity=0）的 tokenId，持久化後跨重啟跳過掃描 */
+    /** 已確認關閉（liquidity=0）的 tokenId，O(1) 查詢用 */
     private static closedTokenIds = new Set<string>();
-    /** 各 tokenId 的 timestamp 查詢失敗次數；超過上限後停止重試，顯示 N/A */
-    private static timestampFailures = new Map<string, number>();
 
     /**
-     * 從 state 恢復已探索的倉位清單，並標記 wallet 已同步（跳過 chain scan）。
+     * 從 appState.userConfig 恢復已知倉位（跳過 chain scan）。
      */
-    static restoreDiscoveredPositions(
-        discovered: DiscoveredPosition[],
-        wallets: string[],
-        timestamps: Record<string, number>
-    ) {
-        const activeDiscovered = discovered.filter(d => !this.closedTokenIds.has(d.tokenId));
-        const seedPositions: PositionRecord[] = activeDiscovered.map(d => ({
-            tokenId: d.tokenId,
-            dex: d.dex,
-            poolAddress: '',
-            feeTier: 0,
-            token0Symbol: '',
-            token1Symbol: '',
-            ownerWallet: d.ownerWallet,
-            liquidity: '0',
-            tickLower: 0,
-            tickUpper: 0,
-            minPrice: '0',
-            maxPrice: '0',
-            currentTick: 0,
-            currentPriceStr: '0',
-            positionValueUSD: 0,
-            unclaimed0: '0',
-            unclaimed1: '0',
-            unclaimed2: '0',
-            unclaimedFeesUSD: 0,
-            fees0USD: 0,
-            fees1USD: 0,
-            fees2USD: 0,
-            token2Symbol: '',
-            isStaked: false,
-            overlapPercent: 0,
-            ilUSD: null,
-            breakevenDays: 0,
-            healthScore: 0,
-            regime: '資料累積中',
-            lastUpdated: 0,
-            openTimestampMs: timestamps[`${d.tokenId}_${d.dex}`],
-            volSource: 'pending',
-            priceSource: 'pending',
-            bbFallback: false,
-        }));
-        this.positions = seedPositions;
+    static restoreDiscoveredPositions() {
+        const wallets = ucWalletAddresses(appState.userConfig);
+        const allPositions: PositionRecord[] = [];
+
+        for (const wallet of appState.userConfig.wallets) {
+            for (const wp of wallet.positions) {
+                if (wp.closed) continue;
+                allPositions.push(this._makeSeedPosition(wp.tokenId, wp.dexType, wallet.address, wp.openTimestamp));
+            }
+        }
+
+        this.positions = allPositions;
         wallets.forEach(w => this.syncedWallets.add(w));
-        log.info(`✅ positions restored from state: ${seedPositions.length} position(s), chain sync skipped`);
+        log.info(`✅ positions restored from state: ${allPositions.length} position(s), chain sync skipped`);
     }
 
-    /** 取得目前 discovered positions 快照，供 stateManager 儲存。 */
-    static getDiscoveredSnapshot(): DiscoveredPosition[] {
-        return this.positions.map(p => ({ tokenId: p.tokenId, dex: p.dex, ownerWallet: p.ownerWallet }));
+    /** 從 appState.userConfig 恢復已關閉的 tokenId 到 in-memory Set。 */
+    static restoreFromUserConfig() {
+        for (const wallet of appState.userConfig.wallets)
+            for (const pos of wallet.positions)
+                if (pos.closed) this.closedTokenIds.add(pos.tokenId);
+        if (this.closedTokenIds.size > 0)
+            log.info(`💾 closed positions restored: ${[...this.closedTokenIds].join(', ')}`);
     }
 
-    /** 取得已關閉 tokenId 清單快照，供 stateManager 持久化。 */
-    static getClosedSnapshot(): string[] {
-        return [...this.closedTokenIds];
-    }
-
-    /** 從 state 恢復已關閉的 tokenId 集合。 */
-    static restoreClosedTokenIds(ids: string[]) {
-        ids.forEach(id => this.closedTokenIds.add(id));
-        if (ids.length > 0) log.info(`💾 closed positions restored: ${ids.join(', ')}`);
+    /** 建立空的 seed PositionRecord（等待下一輪 fetchAll 填充鏈上資料） */
+    private static _makeSeedPosition(
+        tokenId: string, dex: Dex, ownerWallet: string, openTimestampMs?: number
+    ): PositionRecord {
+        return {
+            tokenId, dex,
+            poolAddress: '', feeTier: 0,
+            token0Symbol: '', token1Symbol: '',
+            ownerWallet,
+            liquidity: '0',
+            tickLower: 0, tickUpper: 0,
+            minPrice: '0', maxPrice: '0',
+            currentTick: 0, currentPriceStr: '0',
+            positionValueUSD: 0,
+            unclaimed0: '0', unclaimed1: '0', unclaimed2: '0',
+            unclaimedFeesUSD: 0, fees0USD: 0, fees1USD: 0, fees2USD: 0,
+            token2Symbol: '', isStaked: false,
+            overlapPercent: 0, ilUSD: null, breakevenDays: 0, healthScore: 0,
+            regime: '資料累積中', lastUpdated: 0,
+            openTimestampMs,
+            volSource: 'pending', priceSource: 'pending', bbFallback: false,
+        };
     }
 
     static async syncFromChain(skipTimestampScan = false) {
-        if (config.WALLET_ADDRESSES.length === 0) {
+        const walletAddresses = ucWalletAddresses(appState.userConfig);
+        if (walletAddresses.length === 0) {
             log.info('no wallets configured, skipping chain sync');
             return;
         }
@@ -101,7 +85,7 @@ export class PositionScanner {
         const dexes: Dex[] = ['UniswapV3', 'PancakeSwapV3', 'Aerodrome', 'UniswapV4'];
         const discovered: Discovery[] = [];
 
-        for (const walletAddress of config.WALLET_ADDRESSES) {
+        for (const walletAddress of walletAddresses) {
             const wShort = `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`;
             log.info(`⛓  sync  ${wShort}`);
 
@@ -142,60 +126,27 @@ export class PositionScanner {
 
         // 補入手動追蹤的 TokenId（鎖倉於 Gauge 等情境）
         const discoveredIds = new Set(discovered.map(d => d.tokenId));
-        for (const [tokenId, dex] of Object.entries(config.TRACKED_TOKEN_IDS)) {
-            if (discoveredIds.has(tokenId)) continue;
-            log.info(`📍 manual  #${tokenId} (${dex})`);
-            discovered.push({ tokenId, dex: dex as Dex, ownerWallet: 'manual' });
+        for (const tp of ucTrackedPositions(appState.userConfig)) {
+            if (discoveredIds.has(tp.tokenId)) continue;
+            log.info(`📍 manual  #${tp.tokenId} (${tp.dexType})`);
+            discovered.push({ tokenId: tp.tokenId, dex: tp.dexType, ownerWallet: tp.ownerWallet });
         }
 
-        const timestamps: Record<string, number> = {};
+        // 將新發現的倉位寫入 appState.userConfig，使 openTimestamp 等配置一併持久化
         for (const d of discovered) {
-            const ts = openTimestampHandler.getCachedTimestamp(`${d.tokenId}_${d.dex}`);
-            if (ts !== undefined) timestamps[`${d.tokenId}_${d.dex}`] = ts;
-        }
-        if (!skipTimestampScan) {
-            log.info(`⏭  timestamp lookup deferred to fillMissingTimestamps()`);
+            if (this.closedTokenIds.has(d.tokenId)) continue;
+            appState.userConfig = ucUpsertPosition(
+                appState.userConfig, d.ownerWallet, d.tokenId,
+                { dexType: d.dex, externalStake: d.ownerWallet === 'manual' }
+            );
         }
 
         const activeDiscovered = discovered.filter(d => !this.closedTokenIds.has(d.tokenId));
-        const seedPositions: PositionRecord[] = activeDiscovered.map(d => ({
-            tokenId: d.tokenId,
-            dex: d.dex,
-            poolAddress: '',
-            feeTier: 0,
-            token0Symbol: '',
-            token1Symbol: '',
-            ownerWallet: d.ownerWallet,
-            liquidity: '0',
-            tickLower: 0,
-            tickUpper: 0,
-            minPrice: '0',
-            maxPrice: '0',
-            currentTick: 0,
-            currentPriceStr: '0',
-            positionValueUSD: 0,
-            unclaimed0: '0',
-            unclaimed1: '0',
-            unclaimed2: '0',
-            unclaimedFeesUSD: 0,
-            fees0USD: 0,
-            fees1USD: 0,
-            fees2USD: 0,
-            token2Symbol: '',
-            isStaked: false,
-            overlapPercent: 0,
-            ilUSD: null,
-            breakevenDays: 0,
-            healthScore: 0,
-            regime: '資料累積中',
-            lastUpdated: 0,
-            openTimestampMs: timestamps[`${d.tokenId}_${d.dex}`],
-            volSource: 'pending',
-            priceSource: 'pending',
-            bbFallback: false,
-        }));
+        this.positions = activeDiscovered.map(d =>
+            this._makeSeedPosition(d.tokenId, d.dex, d.ownerWallet,
+                ucGetOpenTimestamp(appState.userConfig, d.tokenId))
+        );
 
-        this.positions = seedPositions;
         log.info(`✅ chain sync done: ${this.positions.length} position(s) loaded`);
     }
 
@@ -210,7 +161,7 @@ export class PositionScanner {
      * Called by index.ts; results are passed to PositionAggregator.aggregateAll().
      */
     static async fetchAll(): Promise<RawChainPosition[]> {
-        const unsyncedWallets = config.WALLET_ADDRESSES.filter(w => !this.syncedWallets.has(w));
+        const unsyncedWallets = ucWalletAddresses(appState.userConfig).filter(w => !this.syncedWallets.has(w));
         if (unsyncedWallets.length > 0) {
             log.info(`🔄 ${unsyncedWallets.length} new wallet(s) detected, re-syncing chain`);
             await this.syncFromChain();
@@ -250,10 +201,13 @@ export class PositionScanner {
             }
             if (Number(fresh.liquidity) === 0) {
                 this.closedTokenIds.add(prev.tokenId);
+                // Persist closed flag into WalletPosition
+                const ownerWallet = ucFindWallet(appState.userConfig, prev.tokenId) ?? prev.ownerWallet;
+                appState.userConfig = ucUpsertPosition(appState.userConfig, ownerWallet, prev.tokenId, { closed: true });
                 log.info(`#${prev.tokenId} liquidity=0 — marked closed, removed from tracking`);
                 continue; // drop from positions, will not be scanned again
             }
-            const isKnownWallet = config.WALLET_ADDRESSES.some(
+            const isKnownWallet = ucWalletAddresses(appState.userConfig).some(
                 w => w.toLowerCase() === fresh.ownerWallet.toLowerCase()
             );
             const ownerWallet = isKnownWallet ? fresh.ownerWallet : prev.ownerWallet;
@@ -328,7 +282,7 @@ export class PositionScanner {
                 feeTierForStats = 0.000085;
             }
 
-            const ownerIsWallet = config.WALLET_ADDRESSES.some(w => w.toLowerCase() === owner.toLowerCase());
+            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(w => w.toLowerCase() === owner.toLowerCase());
             const isStaked = !ownerIsWallet;
 
             return {
@@ -405,7 +359,7 @@ export class PositionScanner {
                 tokensOwed1: 0n,
             };
 
-            const ownerIsWallet = config.WALLET_ADDRESSES.some(w => w.toLowerCase() === owner.toLowerCase());
+            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(w => w.toLowerCase() === owner.toLowerCase());
             const isStaked = !ownerIsWallet;
             const oShort = `${owner.slice(0, 6)}…${owner.slice(-4)}`;
             log.info(`⛓  #${tokenId} UniswapV4  owner ${oShort}  fee=${feeTier}  tick=[${tickLower},${tickUpper}]  liq=${liquidity}`);
@@ -448,53 +402,53 @@ export class PositionScanner {
      * 背景補齊缺少 openTimestampMs 的倉位建倉時間。
      * 失敗超過 TIMESTAMP_MAX_FAILURES 次後標記為 -1（顯示 N/A），停止重試。
      */
+    /**
+     * 背景補齊缺少 openTimestamp 的倉位。
+     * 找到後立即更新 appState.userConfig 並呼叫 saveStateCallback 持久化。
+     * 失敗次數已合併至 openTimestamp=-1（N/A 哨兵值），不再維護獨立 Map。
+     */
     static async fillMissingTimestamps(saveStateCallback?: () => Promise<void>): Promise<void> {
+        // openTimestamp=undefined → 待查；openTimestamp=-1 → 已放棄（N/A）
         const missing = this.positions.filter(p => p.openTimestampMs === undefined);
         if (missing.length === 0) return;
 
         log.info(`⏳ fillMissingTimestamps  ${missing.length} token(s) pending`);
 
+        const failures = new Map<string, number>(); // 本次執行期間的失敗計數
         let filled = 0;
+
         for (const pos of missing) {
-            const key = `${pos.tokenId}_${pos.dex}`;
-
-            // Check cache first (restored from state.json on startup)
-            const cached = openTimestampHandler.getCachedTimestamp(key);
-            if (cached !== undefined) {
-                this.positions = this.positions.map(p =>
-                    p.tokenId === pos.tokenId ? { ...p, openTimestampMs: cached } : p
-                );
-                filled++;
-                continue;
-            }
-
-            // 超過失敗上限 → 標記為 -1（N/A），不再重試
-            const failures = this.timestampFailures.get(key) ?? 0;
-            if (failures >= config.TIMESTAMP_MAX_FAILURES) {
-                this.positions = this.positions.map(p =>
-                    p.tokenId === pos.tokenId ? { ...p, openTimestampMs: -1 } : p
-                );
-                continue;
-            }
-
             const npmAddress = config.NPM_ADDRESSES[pos.dex];
             if (!npmAddress) continue;
 
-            // Binary search: ~15 RPC calls instead of ~1500 getLogs chunks
             const tsMs = await findMintTimestampMs(pos.tokenId, npmAddress);
             if (tsMs !== null) {
-                openTimestampHandler.setCachedTimestamp(key, tsMs);
+                // 更新 in-memory positions
                 this.positions = this.positions.map(p =>
                     p.tokenId === pos.tokenId ? { ...p, openTimestampMs: tsMs } : p
+                );
+                // 更新 appState.userConfig（持久化來源）
+                appState.userConfig = ucUpsertPosition(
+                    appState.userConfig,
+                    pos.ownerWallet,
+                    pos.tokenId,
+                    { openTimestamp: tsMs }
                 );
                 filled++;
                 if (saveStateCallback) {
                     await saveStateCallback().catch(e => log.error(`Timestamp saveState failed: ${e}`));
                 }
             } else {
-                this.timestampFailures.set(key, failures + 1);
-                if (failures + 1 >= config.TIMESTAMP_MAX_FAILURES) {
-                    log.warn(`⏳ #${pos.tokenId} timestamp lookup failed ${config.TIMESTAMP_MAX_FAILURES} times — marking N/A`);
+                const cnt = (failures.get(pos.tokenId) ?? 0) + 1;
+                failures.set(pos.tokenId, cnt);
+                if (cnt >= config.TIMESTAMP_MAX_FAILURES) {
+                    log.warn(`⏳ #${pos.tokenId} timestamp lookup failed ${cnt} times — marking N/A`);
+                    this.positions = this.positions.map(p =>
+                        p.tokenId === pos.tokenId ? { ...p, openTimestampMs: -1 } : p
+                    );
+                    appState.userConfig = ucUpsertPosition(
+                        appState.userConfig, pos.ownerWallet, pos.tokenId, { openTimestamp: -1 }
+                    );
                 }
             }
         }
@@ -503,5 +457,3 @@ export class PositionScanner {
     }
 }
 
-// Re-export from ChainEventScanner so stateManager keeps a stable import path.
-export { getOpenTimestampSnapshot, restoreOpenTimestamps } from './ChainEventScanner';

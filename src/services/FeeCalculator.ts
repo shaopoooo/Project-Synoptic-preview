@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
+import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
 import { FeeQueryResult, RewardsQueryResult, Dex } from '../types';
 
-export type { FeeQueryResult, RewardsQueryResult };
 
 const log = createServiceLogger('FeeCalculator');
 
@@ -50,7 +50,7 @@ export class FeeCalculator {
                         const gauge = new ethers.Contract(canonicalGauge, config.AERO_GAUGE_ABI, nextProvider());
 
                         if (!depositorWallet) {
-                            for (const wallet of config.WALLET_ADDRESSES) {
+                            for (const wallet of ucWalletAddresses(appState.userConfig)) {
                                 try {
                                     if (await gauge.stakedContains(wallet, BigInt(tokenId))) {
                                         depositorWallet = wallet;

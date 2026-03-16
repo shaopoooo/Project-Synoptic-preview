@@ -1,21 +1,5 @@
-import { config } from '../config';
-
-export interface PortfolioSummary {
-    positionCount: number;
-    walletCount: number;
-    totalPositionUSD: number;
-    totalUnclaimedUSD: number;
-    totalInitialCapital: number;    // sum of configured INITIAL_INVESTMENT_USD across all positions
-    totalPnL: number | null;        // null if no positions have capital configured
-    totalPnLPct: number | null;     // totalPnL / totalInitialCapital × 100
-}
-
-export interface OpenInfo {
-    days: number;
-    hours: number;
-    timeStr: string;       // e.g. "3天2小時" or "5小時"
-    profitRate: number | null; // percentage, e.g. 9.17 (null if no capital set)
-}
+import { appState, ucInitialInvestment } from '../utils/AppState';
+import { OpenInfo, PortfolioSummary, PositionRecord } from '../types';
 
 /**
  * Service for position-level financial metrics:
@@ -32,17 +16,15 @@ export class PnlCalculator {
         livePositionValueUSD: number,
         totalCollectedAndUnclaimedFeesUSD: number
     ): number | null {
-        const initialInvestmentUSD = config.INITIAL_INVESTMENT_USD[tokenId];
-        if (typeof initialInvestmentUSD !== 'number' || initialInvestmentUSD === 0) {
-            return null;
-        }
+        const initialInvestmentUSD = ucInitialInvestment(appState.userConfig, tokenId);
+        if (initialInvestmentUSD === 0) return null;
         return (livePositionValueUSD + totalCollectedAndUnclaimedFeesUSD) - initialInvestmentUSD;
     }
 
     /** Returns the configured initial investment for a tokenId, or null if not set. */
     static getInitialCapital(tokenId: string): number | null {
-        const v = config.INITIAL_INVESTMENT_USD[tokenId];
-        return typeof v === 'number' && v > 0 ? v : null;
+        const v = ucInitialInvestment(appState.userConfig, tokenId);
+        return v > 0 ? v : null;
     }
 
     /**
@@ -61,7 +43,7 @@ export class PnlCalculator {
         const hours = Math.floor((elapsedMs % 86400000) / 3600000);
         const timeStr = days > 0 ? `${days}天${hours}小時` : `${hours}小時`;
 
-        const capital = config.INITIAL_INVESTMENT_USD[tokenId] ?? 0;
+        const capital = ucInitialInvestment(appState.userConfig, tokenId);
         const profitRate = (ilUSD !== null && capital > 0)
             ? (ilUSD / capital) * 100
             : null;
@@ -94,13 +76,15 @@ export class PnlCalculator {
         let totalPnLPct: number | null = null;
         if (pnlPositions.length > 0) {
             totalPnL = pnlPositions.reduce((s, p) => s + (p.ilUSD ?? 0), 0);
-            const totalInitialCapital = pnlPositions.reduce((s, p) => {
-                return s + (config.INITIAL_INVESTMENT_USD[p.tokenId] ?? 0);
-            }, 0);
-            totalPnLPct = totalInitialCapital > 0 ? (totalPnL / totalInitialCapital) * 100 : null;
+            const pnlCapital = pnlPositions.reduce(
+                (s, p) => s + ucInitialInvestment(appState.userConfig, p.tokenId), 0
+            );
+            totalPnLPct = pnlCapital > 0 ? (totalPnL / pnlCapital) * 100 : null;
         }
 
-        const totalInitialCapital = positions.reduce((s, p) => s + (config.INITIAL_INVESTMENT_USD[p.tokenId] ?? 0), 0);
+        const totalInitialCapital = positions.reduce(
+            (s, p) => s + ucInitialInvestment(appState.userConfig, p.tokenId), 0
+        );
 
         return { positionCount: positions.length, walletCount, totalPositionUSD, totalUnclaimedUSD, totalInitialCapital, totalPnL, totalPnLPct };
     }

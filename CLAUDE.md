@@ -122,7 +122,7 @@ src/
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）+ dex 命名自動遷移
     ├── BandwidthTracker.ts     # 30D 帶寬滾動窗口（update / snapshot / restore）
     ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
-    ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol）
+    ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol / userConfig）；re-exports WalletPosition / WalletEntry / UserConfig from types/
     ├── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol / TOKEN_DECIMALS）
     └── formatter.ts            # 文字格式化工具（compactAmount、formatPositionLog，TelegramBot 與 logger 共用）
 ```
@@ -188,12 +188,12 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **多錢包支援**：`WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 環境變數，支援動態新增
 - **UniswapV4 支援**：`_fetchV4NpmData()` 透過 V4 PositionManager 的 `getPoolAndPositionInfo(tokenId)` 取得 PoolKey + packed PositionInfo；PositionInfo packed uint256 解碼：bits 0-23 = tickLower（int24），bits 24-47 = tickUpper（int24）；poolId 由 `keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))` 動態計算
 - **Gauge / MasterChef 鎖倉**：`TRACKED_TOKEN_<tokenId>=<DEX>` 手動追蹤質押倉位（DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`）；`isStaked` 欄位自動偵測（ownerOf 回傳非已知錢包 → staked）；`depositorWallet` 追蹤實際持有者
-- **關閉倉位自動剔除**：`updatePositions()` 確認 `liquidity=0` 時，將 tokenId 加入 `closedTokenIds` Set 並從 `this.positions` 移除；`syncFromChain` 和 `restoreDiscoveredPositions` 均跳過 closedTokenIds；持久化至 `state.json`，重啟後不重新掃描（避免已關倉的 NFT 每週期浪費 RPC）
+- **關閉倉位自動剔除**：`updatePositions()` 確認 `liquidity=0` 時，將 tokenId 加入 `closedTokenIds` Set 並設 `WalletPosition.closed = true`（透過 `ucUpsertPosition`）；`syncFromChain` 和 `restoreDiscoveredPositions` 均跳過 closed 倉位；重啟後由 `restoreFromUserConfig()` 從 `userConfig.wallets[].positions[].closed` 重建 Set，不重新掃描已關倉 NFT
 - **Drift 門檻**：實際區間與 BB 區間重合度 < 80% 時推播 `STRATEGY_DRIFT_WARNING`
 - **手續費計算**：委託 `FeeCalculator`（見下方），PositionScanner 不直接呼叫合約計算費用
 - **timestamp 失敗保護**：`timestampFailures` Map 記錄各 tokenId 失敗次數；超過 `config.TIMESTAMP_MAX_FAILURES`（= 3）後寫入 `openTimestampMs = -1`（顯示 N/A），停止重試
 - **注意**：Aerodrome `positions()` 第 5 欄回傳 `tickSpacing`（非 fee pips）
-- **關鍵函式**：`fetchAll()` / `updatePositions()` / `syncFromChain(skipTimestampScan?)` / `fillMissingTimestamps()` / `restoreDiscoveredPositions()` / `getDiscoveredSnapshot()` / `getClosedSnapshot()` / `restoreClosedTokenIds()`
+- **關鍵函式**：`fetchAll()` / `updatePositions()` / `syncFromChain(skipTimestampScan?)` / `fillMissingTimestamps()` / `restoreDiscoveredPositions()` / `restoreFromUserConfig()`
 
 ### FeeCalculator（`src/services/FeeCalculator.ts`）
 
@@ -250,7 +250,12 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - **鎖倉 icon**：`isStaked = true` 的倉位在 tokenId 後顯示 `🔒`
 - **BB k 值顯示**：報告底部顯示目前 `k_low / k_high`（`appState.bbKLowVol / bbKHighVol`）
 
-**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/bbk [low high]` / `/explain`；完整說明見 README.md
+**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/bbk [low high]` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
+
+**所有 Telegram 可修改的變數均存於 `appState.userConfig`**，透過 `onUserConfigChange` 回呼立即持久化：
+- `sortBy` — `/sort`；`intervalMinutes` — `/interval`（同時觸發 `onReschedule` 更新 cron）
+- `bbKLowVol / bbKHighVol` — `/bbk`（同時直接更新 `appState.bbKLowVol/bbKHighVol` 供 BBEngine runtime 使用）
+- `wallets[].positions[]` — `/wallet` / `/invest` / `/capital` / `/stake` / `/unstake`
 
 **報告欄位邏輯（實作參考）：**
 
@@ -271,9 +276,8 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 ### 環境變數
 
 完整說明與 `.env` 範例見 **README.md**。Claude 在讀寫環境變數時需注意的關鍵命名：
-- `WALLET_ADDRESS_N`：多錢包依序編號
-- `INITIAL_INVESTMENT_<tokenId>`：本金設定，影響 PnL / 獲利率顯示
-- `TRACKED_TOKEN_<tokenId>=<DEX>`：鎖倉倉位手動追蹤（DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`）
+- `WALLET_ADDRESS_N`：多錢包種子（啟動後透過 `/wallet add` 動態管理，持久化於 `state.json`）
+- 本金設定、外部質押追蹤：已移至 `state.json` 的 `userConfig` 欄位，透過 Telegram 指令管理（`/invest`、`/capital`、`/stake`、`/unstake`）；**不再使用 `.env` 變數**
 
 ---
 
@@ -369,8 +373,8 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - [x] **常數集中化**：BB 參數（`BB_K_LOW_VOL`、`BB_K_HIGH_VOL`、`BB_MAX_OFFSET_PCT`、`EWMA_ALPHA/BETA`、`MIN_CANDLES_FOR_EWMA`）、區塊掃描參數（`BLOCK_SCAN_CHUNK`、`BLOCK_LOOKBACK`、`COLLECTED_FEES_MAX_FAILURES`）、Gas 常數全數移至 `constants.ts`
 - [x] **ChainEventScanner 重構**：`OpenTimestampService.ts` 廢棄，所有 `getLogs` 掃描邏輯集中至 `ChainEventScanner.ts`；新增 `ScanHandler` 介面，未來新增事件類型無需修改核心掃描迴圈
 - [x] **Subgraph 停用**：`SUBGRAPHS` 常數清空（endpoints 已注解），所有池子直接使用 GeckoTerminal
-- [x] **INITIAL_INVESTMENT_USD 維護**：已改為 `.env` 編號變數（`INITIAL_INVESTMENT_<tokenId>`）
-- [x] **TRACKED_TOKEN_IDS 維護**：已改為 `.env` 編號變數（`TRACKED_TOKEN_<tokenId>=<DEX>`）
+- [x] **INITIAL_INVESTMENT_USD 維護**：已改為 `.env` 編號變數（`INITIAL_INVESTMENT_<tokenId>`）→ 後於階段十六改為 Telegram 動態管理
+- [x] **TRACKED_TOKEN_IDS 維護**：已改為 `.env` 編號變數（`TRACKED_TOKEN_<tokenId>=<DEX>`）→ 後於階段十六改為 Telegram 動態管理
 - [x] **Round-robin RPC**：`nextProvider()` 串行呼叫自動輪換節點，分散負載
 - [x] **移除死節點**：`base.meowrpc.com` 返回 308，已從 `RPC_FALLBACKS` 移除
 - [x] **State 恢復 positions**：重啟時若 wallet 配置未變，直接從 `state.json` 恢復 tokenId 清單，跳過 `syncFromChain`（省 20-50s）
@@ -453,7 +457,7 @@ index.ts runRiskManager()
 
 **實作前需確認**
 
-1. **本金定義**：`INITIAL_INVESTMENT_USD` 指「首次入金」還是「累計加減倉後的淨投入」？目前為靜態 env，是否改為支援動態加減倉紀錄？
+1. **本金定義**：`userConfig.wallets[].positions[].initial` 指「首次入金」還是「累計加減倉後的淨投入」？目前為單一 USD 數值（透過 `/capital` 或 `/invest` 動態設定），是否改為支援動態加減倉紀錄？
 2. **已領取手續費**：`ilUSD` 目前不含已領取費用（無鏈上歷史），是否需要追蹤 `collectedFeesUSD`？若需要，要掃描 `Collect` event 累加。
 3. **SDK 精算必要性**：`@uniswap/v3-sdk` `Position` 精算結果與現行誤差預計 < 1%，在沒有測試保護前是否值得優先投入？
 4. **Health Score 公式**：`50 + roi × 1000` 線性映射在極端值（全損 / 超高報酬）的表現是否符合預期？
@@ -549,7 +553,7 @@ index.ts runRiskManager()
 
 - [x] **RiskManager 魔術數字集中至 config**：`RiskManager.ts` 自定義 `static readonly DRIFT_WARNING_PCT = 80` 與 `RED_ALERT_BREAKEVEN_DAYS = 30`，與 `config.DRIFT_WARNING_PCT` 形成兩個真理來源；全數移至 `constants.ts`（新增 `RED_ALERT_BREAKEVEN_DAYS`、`HIGH_VOLATILITY_FACTOR`），`RiskManager` 改讀 `config.*`，移除所有 `static readonly` 常數
 - [x] **formatPositionLog 提煉至 `formatter.ts`**：`PositionScanner.ts` 塞了近 100 行 `formatPositionLog` / `formatTokenCompact`（下標零、對齊、compactAmount）；Scanner 職責是鏈上資料抓取，不該含 UI 排版；提煉至 `src/utils/formatter.ts`，`TelegramBot` 與 console logger 共用同一套工具
-- [x] **Telegram /bbk 指令**：`AppState` 新增 `bbKLowVol / bbKHighVol`（預設讀 config）；`BBEngine.computeDynamicBB` 改讀 `appState` 而非 `config`；`/bbk <low> <high>` 指令透過 `setBbkCallback` 更新 AppState 並持久化至 `state.json`；positions.log 標頭與 Telegram 報告底部均顯示目前 k 值
+- [x] **Telegram /bbk 指令**：`AppState` 新增 `bbKLowVol / bbKHighVol`（預設讀 config）；`BBEngine.computeDynamicBB` 改讀 `appState` 而非 `config`；`/bbk <low> <high>` 直接更新 `appState.bbKLowVol/bbKHighVol` 並透過 `onUserConfigChange` 持久化；positions.log 標頭與 Telegram 報告底部均顯示目前 k 值
 - [x] **Telegram /help 指令**：新增 `/help` 列出所有指令（sort / interval / bbk / explain）；更新 `/explain` 補充 BB k 值、再平衡策略、獲利率公式說明
 - [x] **關閉倉位自動剔除**：`updatePositions()` 偵測 `liquidity=0` 時加入 `closedTokenIds` Set 並移除追蹤；`syncFromChain` / `restoreDiscoveredPositions` 跳過已關閉 tokenId；`getClosedSnapshot()` / `restoreClosedTokenIds()` 接入 `state.json` 持久化，重啟不重新掃描已關倉 NFT
 
@@ -568,6 +572,49 @@ index.ts runRiskManager()
 - [x] **tokenInfo.ts ETH native**：`address(0)` → `'ETH'`，支援 V4 ETH/cbBTC pair
 - [x] **stateManager 遷移**：`loadState()` 加入 `DEX_MIGRATION`（`PancakeSwap→PancakeSwapV3`、`Uniswap→UniswapV3`），向後相容舊 `state.json`
 - [x] **index.ts TRACKED_TOKEN_IDS 偵測**：啟動時比對 `TRACKED_TOKEN_IDS` 與 `cachedPositions`，有新增未追蹤 tokenId 時強制 `syncFromChain`（避免 restore 路徑跳過新倉位）
+
+### ✅ 階段十六：Telegram 動態配置（已完成）
+
+- [x] **錢包中心化 `UserConfig` 介面**：`src/types/index.ts` 定義 `WalletPosition { tokenId, dexType, initial, externalStake, openTimestamp, closed? }`、`WalletEntry { address, positions[] }`、`UserConfig { wallets[] }`；`appState.userConfig` 統一管理錢包、本金、外部質押、開倉時間戳、關閉狀態
+- [x] **helper 函式**：`ucWalletAddresses`、`ucInitialInvestment`、`ucGetOpenTimestamp`、`ucFindWallet`、`ucTrackedPositions`、`ucUpsertPosition`、`ucRemovePosition` — 所有讀寫通過 helper，不直接操作巢狀結構
+- [x] **openTimestamps 合併**：移除 `state.json` 的獨立 `openTimestamps` 欄位；開倉時間戳改存於 `userConfig.wallets[].positions[].openTimestamp`（`undefined` = 待查；`-1` = 查詢放棄 N/A；timestamp ms = 已取得）
+- [x] **discoveredPositions / syncedWallets 移除**：倉位發現後直接寫入 `userConfig` 的對應 wallet；`syncedWallets` 改由比對 `savedState.userConfig.wallets` 地址集合推斷
+- [x] **state.json 持久化**：`PersistedState` 新增 `userConfig?: UserConfig`；移除 `openTimestamps`、`discoveredPositions`、`syncedWallets`；`saveState()` 接收 `userConfig` 參數；`loadState()` 實作向後相容 migration（舊格式 → 新格式）
+- [x] **全專案替換**：`config.WALLET_ADDRESSES` → `ucWalletAddresses(appState.userConfig)`；`config.INITIAL_INVESTMENT_USD[tokenId]` → `ucInitialInvestment(appState.userConfig, tokenId)`；`config.TRACKED_TOKEN_IDS` → `ucTrackedPositions(appState.userConfig)`（PnlCalculator / PositionScanner / FeeCalculator / PositionAggregator / index.ts）
+- [x] **Telegram `/wallet`**：`list`（預設）/ `add <address>` / `rm <address>`；address 格式驗證；新增後即時持久化
+- [x] **Telegram `/invest`**：無參 = 列出所有倉位配置；`<addr> <tokenId> <amount> <dex>` = 同時設定本金 + `externalStake=true`（dex 必填）；amount=0 清除本金（保留 externalStake）；dex 值驗證（`VALID_DEXES`）
+- [x] **Telegram `/capital [tokenId] [amount]`**：無參 = 列出所有本金設定；`<tokenId> <amount>` = 設定/更新本金（不需地址）；amount=0 清除本金
+- [x] **Telegram `/stake [address tokenId dex]`**：無參 = 列出所有外部質押倉位；`<addr> <tokenId> <dex>` = 標記倉位為外部質押（Gauge/MasterChef）
+- [x] **Telegram `/unstake <tokenId>`**：設定 `externalStake=false`，保留本金設定
+- [x] **Telegram `/dex`**：列出 `config.VALID_DEXES` 所有支援值
+- [x] **`setUserConfigChangeCallback`**：TelegramBot 新增回呼機制；index.ts wire 後，每次 userConfig 變更立即更新 `appState.userConfig` 並呼叫 `saveState()`
+- [x] **validateEnv() 調整**：移除強制要求 `WALLET_ADDRESS_1`（wallets 可從 state.json 恢復）
+
+### ✅ 階段十七：常數集中化與型別架構整理（已完成）
+
+- [x] **`UserConfig` 型別移至 `src/types/index.ts`**：`WalletPosition`、`WalletEntry`、`UserConfig` 集中於 `src/types/index.ts`；所有模組直接從 `../types` import，`AppState.ts` 移除 re-export
+- [x] **`UserConfig` 新增 Telegram 可修改欄位**：`sortBy?: SortBy`、`intervalMinutes?: number`、`bbKLowVol?: number`、`bbKHighVol?: number` — 所有 Telegram 可設定的全域變數統一收進 `userConfig`
+- [x] **`VALID_DEXES` 移至 `constants.ts`**：移除 `TelegramBot.ts` 的 inline `const VALID_DEXES`；改由 `config.VALID_DEXES` 讀取；確保 DEX 驗證邏輯與型別定義同源
+- [x] **`DEX_MIGRATION` 移至 `constants.ts`**：移除 `stateManager.ts` 的 inline `const DEX_MIGRATION`；改由 `config.DEX_MIGRATION` 讀取
+- [x] **`saveState` 簡化**：移除獨立的 `sortBy`、`intervalMinutes`、`bbKLowVol`、`bbKHighVol`、`closedTokenIds` 參數（均已在 `userConfig` 內）；最終簽名 `saveState(priceBuffer, bandwidthWindows?, userConfig?)`
+- [x] **`PersistedState` 清理**：舊版頂層欄位 `sortBy`、`intervalMinutes`、`bbKLowVol`、`bbKHighVol` 標記 `@deprecated`；`loadState` 自動遷移至 `userConfig` 對應欄位
+- [x] **`setBbkCallback` / `getSortBy` / `setSortBy` 移除**：`TelegramBotService` 移除獨立的 bbk callback 及 sortBy getter/setter；`/bbk` 直接更新 `appState` 並呼叫 `onUserConfigChange`；`/sort` 透過 `onUserConfigChange` 持久化
+- [x] **restore 邏輯集中化**：`index.ts` 啟動恢復只需讀取 `savedState.userConfig`，不再從頂層欄位讀取 bbK / sortBy / intervalMinutes
+
+### ✅ 階段十八：型別集中化、欄位重命名與指令重構（已完成）
+
+- [x] **所有共用 interface 集中至 `src/types/index.ts`**：移除各服務/工具模組的 `export type { ... }` 死 re-export（`BBEngine`、`PoolScanner`、`FeeCalculator`、`RiskManager`、`ChainEventScanner`、`PnlCalculator`、`tokenPrices`、`cache`、`AppState`）；`TokenPrices`、`OpenInfo`、`PortfolioSummary`、`ScanRequest`、`ScanHandler`、`BBVolEntry` 均移入 `types/index.ts`
+- [x] **`WalletEntry.dex[]` → `WalletEntry.positions[]`**：欄位語意明確，避免與 `PoolStats.dex` / `PositionRecord.dex` 混淆
+- [x] **`WalletPosition.tracked` → `WalletPosition.externalStake`**：明確表達「倉位質押於外部合約（Gauge/MasterChef），不在錢包 NFT balance 中」
+- [x] **`closedTokenIds[]` 移除，改用 `WalletPosition.closed?: boolean`**：關閉狀態自包含於倉位物件；`PositionScanner.closedTokenIds` Set 保留作 O(1) in-memory 查找，啟動時由 `restoreFromUserConfig()` 從 `userConfig.wallets[].positions[].closed` 重建；`stateManager` migration 保留向後相容
+- [x] **`saveState` 最終簡化至 3 參數**：移除 `closedTokenIds` 獨立參數
+- [x] **Telegram `/capital [tokenId] [amount]`**：新增純本金設定指令，不需要地址（透過 `ucFindWallet` 查找）
+- [x] **Telegram `/stake <address> <tokenId> <dex>`**：新增外部質押登記指令（純 `externalStake=true`，不含本金）
+- [x] **Telegram `/unstake <tokenId>`**：取代 `/untrack`，設定 `externalStake=false`
+- [x] **Telegram `/dex`**：顯示 `config.VALID_DEXES` 清單
+- [x] **`/invest` dexArg 必填**：移除 `UniswapV3` 預設值，避免靜默設錯 DEX
+- [x] **無錢包冷啟動**：移除 `validateEnv` 強制要求 `WALLET_ADDRESS_1`；`main()` 無錢包時跳過掃描等待 `/wallet add`
+- [x] **新增錢包自動觸發 chain scan**：`onUserConfigChange` 偵測新錢包後背景執行 `syncFromChain`，完成後儲存 `state.json`
 
 ---
 

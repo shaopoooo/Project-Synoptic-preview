@@ -1,14 +1,13 @@
 import axios from 'axios';
 import { nearestUsableTick } from '@uniswap/v3-sdk';
-import { bbVolCache, BBVolEntry } from '../utils/cache';
+import { bbVolCache } from '../utils/cache';
 import { createServiceLogger } from '../utils/logger';
 import { geckoRequest } from '../utils/rpcProvider';
 import { config } from '../config';
 import { getTokenPrices } from '../utils/tokenPrices';
-import { BBResult, Dex } from '../types';
+import { BBResult, BBVolEntry, Dex } from '../types';
 import { appState } from '../utils/AppState';
 
-export type { BBResult };
 
 const log = createServiceLogger('BBEngine');
 
