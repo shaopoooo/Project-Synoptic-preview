@@ -277,43 +277,4 @@ export async function findMintTimestampMs(
     return tsMs;
 }
 
-// ─── OpenTimestampHandler ────────────────────────────────────────────────────
-// Acts only as an in-memory cache; timestamp discovery is now done via
-// findMintTimestampMs() binary search (not getLogs linear scan).
 
-class OpenTimestampHandler {
-    private readonly cache = new Map<string, number>(); // `${tokenId}_${dex}` → tsMs
-
-    getCachedTimestamp(key: string): number | undefined {
-        return this.cache.get(key);
-    }
-
-    setCachedTimestamp(key: string, tsMs: number): void {
-        this.cache.set(key, tsMs);
-    }
-
-    snapshot(): Record<string, number> {
-        return Object.fromEntries(this.cache.entries());
-    }
-
-    restore(data: Record<string, number>): void {
-        for (const [k, v] of Object.entries(data)) this.cache.set(k, v);
-    }
-}
-
-// ─── Singletons ──────────────────────────────────────────────────────────────
-
-export const openTimestampHandler = new OpenTimestampHandler();
-
-/** chainEventScanner is kept for future handlers (e.g. Collect event tracking). */
-export const chainEventScanner = new ChainEventScanner();
-
-// ─── Module-level exports ─────────────────────────────────────────────────────
-
-export function getOpenTimestampSnapshot(): Record<string, number> {
-    return openTimestampHandler.snapshot();
-}
-
-export function restoreOpenTimestamps(data: Record<string, number>): void {
-    openTimestampHandler.restore(data);
-}

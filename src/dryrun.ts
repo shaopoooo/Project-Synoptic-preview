@@ -7,7 +7,7 @@
 import { PoolScanner } from './services/PoolScanner';
 import { BBEngine } from './services/BBEngine';
 import { RiskManager } from './services/RiskManager';
-import { PositionScanner } from './services/PositionScanner';
+import { positionScanner } from './services/PositionScanner';
 import { PoolStats, BBResult, PositionState, RiskAnalysis, PositionRecord } from './types';
 import { PositionAggregator } from './services/PositionAggregator';
 import { createServiceLogger } from './utils/logger';
@@ -19,7 +19,7 @@ async function main() {
 
     // 1. Sync positions from chain
     log.info('Syncing positions from chain...');
-    await PositionScanner.syncFromChain();
+    await positionScanner.syncFromChain();
 
     // 2. Pool Scanner
     log.info('Running PoolScanner...');
@@ -34,7 +34,7 @@ async function main() {
 
     // 3. BB Engine — compute for all active positions' pools
     const latestBBs: Record<string, BBResult> = {};
-    const positions = PositionScanner.getTrackedPositions();
+    const positions = positionScanner.getTrackedPositions();
     const activePositions: PositionRecord[] = positions.filter(p => Number(p.liquidity) > 0);
 
     log.info(`Running BBEngine for ${activePositions.length} active position(s)...`);
@@ -56,10 +56,10 @@ async function main() {
 
     // 4. Position Scanner — fetch raw chain data, aggregate, then update
     log.info('Running PositionScanner...');
-    const rawPositions = await PositionScanner.fetchAll();
+    const rawPositions = await positionScanner.fetchAll();
     const assembled = await PositionAggregator.aggregateAll(rawPositions, latestBBs, pools);
-    PositionScanner.updatePositions(assembled);
-    const updatedPositions = PositionScanner.getTrackedPositions().filter(p => Number(p.liquidity) > 0);
+    positionScanner.updatePositions(assembled);
+    const updatedPositions = positionScanner.getTrackedPositions().filter(p => Number(p.liquidity) > 0);
 
     // 5. Risk Manager + print results
     log.info('Running RiskManager and printing results:');

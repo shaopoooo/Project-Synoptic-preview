@@ -5,8 +5,9 @@
  * vars in index.ts. All pipeline functions read and write through this object
  * so it's easy to reason about data ownership and to mock in tests.
  */
-import { PoolStats, PositionRecord, BBResult, Dex, WalletPosition, WalletEntry, UserConfig } from '../types';
+import { PoolStats, PositionRecord, BBResult, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig } from '../types';
 import { config } from '../config';
+import { isValidWalletAddress } from './validation';
 
 
 // ─── UserConfig helper functions ─────────────────────────────────────────────
@@ -15,7 +16,7 @@ import { config } from '../config';
 export function ucWalletAddresses(cfg: UserConfig): string[] {
     return cfg.wallets
         .map(w => w.address)
-        .filter(a => /^0x[0-9a-fA-F]{40}$/.test(a));
+        .filter(a => isValidWalletAddress(a));
 }
 
 /** 取得 tokenId 的初始本金（搜尋所有錢包） */
@@ -43,6 +44,13 @@ export function ucFindWallet(cfg: UserConfig, tokenId: string): string | undefin
     }
     return undefined;
 }
+
+/** 有效池清單：優先使用 userConfig.pools，fallback 至 config.POOLS。 */
+export function ucPoolList(cfg: UserConfig): PoolConfig[] {
+    return cfg.pools && cfg.pools.length > 0 ? cfg.pools : config.POOLS;
+}
+
+export type { PoolConfig };
 
 /** 所有 externalStake=true 的倉位（手動追蹤的鎖倉 NFT） */
 export function ucTrackedPositions(cfg: UserConfig): Array<{ tokenId: string; dexType: Dex; ownerWallet: string }> {

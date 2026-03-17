@@ -7,8 +7,7 @@ export const constants = {
 
     // ── RPC ────────────────────────────────────────────────────────────────
     RPC_FALLBACKS: [
-        'https://base-rpc.publicnode.com',
-        'https://base.drpc.org',
+        'https://base-rpc.publicnode.com'
     ],
     RPC_STALL_TIMEOUT_MS: 3000,
 
@@ -19,6 +18,7 @@ export const constants = {
     } as Record<string, string>,
 
     // ── API Endpoints ──────────────────────────────────────────────────────
+    USER_AGENT: 'DexBot/1.0',
     API_URLS: {
         GECKOTERMINAL_OHLCV: 'https://api.geckoterminal.com/api/v2/networks/base/pools',
         DEXSCREENER_PAIRS: 'https://api.dexscreener.com/latest/dex/pairs/base',
@@ -82,25 +82,15 @@ export const constants = {
     V4_STATE_VIEW: '0xa3c0c9b65bad0b08107aa264b0f3db444b867a71',
 
     // ── Core Pools (Base Network) ─────────────────────────────────────────
-    POOLS: {
-        PANCAKEV3_WETH_CBBTC_0_01: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3',
-        PANCAKEV3_WETH_CBBTC_0_05: '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
-        UNISWAPV3_WETH_CBBTC_0_05: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
-        UNISWAPV3_WETH_CBBTC_0_3: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
-        AERODROME_WETH_CBBTC_0_0085: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', // Aerodrome Slipstream, fee=85 (0.0085%), tickSpacing=1
-        // Uniswap V4 ETH/cbBTC — poolId (bytes32, keccak256(abi.encode(PoolKey)))
-        UNISWAPV4_ETH_CBBTC: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5',
-    },
-
-    // ── Pool Scan List（驅動 PoolScanner.scanAllCorePools，新增池子只需改此處）──
-    POOL_SCAN_LIST: [
-        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001 },
-        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005 },
-        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3' as const, fee: 0.0005 },
-        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
-        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome' as const, fee: 0.000085 },
-        // V4: address 欄位存放 bytes32 poolId
-        { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.0001 },
+    // 新增池子只需在此加一筆；PoolScanner 與 PositionScanner 均從這裡讀取。
+    POOLS: [
+        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001  },
+        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005  },
+        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3'     as const, fee: 0.0005  },
+        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3'     as const, fee: 0.003   },
+        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome'     as const, fee: 0.000085 }, // tickSpacing=1
+        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003   },
+        { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
     // ── Math Config ───────────────────────────────────────────────────────

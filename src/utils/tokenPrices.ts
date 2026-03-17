@@ -25,10 +25,10 @@ export async function fetchTokenPrices(): Promise<TokenPrices> {
 
     try {
         const [wethRes, cbbtcRes, cakeRes, aeroRes] = await Promise.all([
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.WETH}`,  { timeout: 5000, headers: { 'User-Agent': 'DexBot/1.0' } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CBBTC}`, { timeout: 5000, headers: { 'User-Agent': 'DexBot/1.0' } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CAKE}`,  { timeout: 5000, headers: { 'User-Agent': 'DexBot/1.0' } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.AERO}`,  { timeout: 5000, headers: { 'User-Agent': 'DexBot/1.0' } }),
+            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.WETH}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
+            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CBBTC}`, { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
+            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CAKE}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
+            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.AERO}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
         ]);
 
         cache = {

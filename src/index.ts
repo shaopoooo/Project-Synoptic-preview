@@ -5,14 +5,14 @@ import { RiskManager } from './services/RiskManager';
 import { RebalanceService } from './services/rebalance';
 import { PnlCalculator } from './services/PnlCalculator';
 import { TelegramBotService, minutesToCron, VALID_INTERVALS, IntervalMinutes } from './bot/TelegramBot';
-import { PositionScanner } from './services/PositionScanner';
+import { positionScanner } from './services/PositionScanner';
 import { PositionAggregator } from './services/PositionAggregator';
 import { createServiceLogger } from './utils/logger';
 import { fetchGasCostUSD } from './utils/rpcProvider';
 import { fetchTokenPrices } from './utils/tokenPrices';
 import { loadState, saveState, restoreState } from './utils/stateManager';
 import { bandwidthTracker } from './utils/BandwidthTracker';
-import { appState, ucWalletAddresses, ucTrackedPositions } from './utils/AppState';
+import { appState, ucWalletAddresses, ucTrackedPositions, ucPoolList } from './utils/AppState';
 import { config, validateEnv } from './config';
 import { PoolStats, BBResult, PositionRecord, PositionState, RiskAnalysis } from './types';
 
@@ -47,7 +47,7 @@ function buildCronJob() {
       );
       await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
       log.section('cycle end');
-      PositionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
+      positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
     } finally {
       isCycleRunning = false;
     }
@@ -88,7 +88,7 @@ async function runTokenPriceFetcher() {
 async function runPoolScanner() {
   activeTasks++;
   try {
-    const pools = await PoolScanner.scanAllCorePools();
+    const pools = await PoolScanner.scanAllCorePools(ucPoolList(appState.userConfig));
     if (pools.length === 0) {
       log.warn('no pools returned — subgraph or RPC error');
       await sendCriticalAlert('pool_scanner_empty', 'PoolScanner 無法取得任何池子資料，請確認 RPC / DexScreener 連線狀態。');
@@ -109,11 +109,11 @@ async function runPoolScanner() {
 async function runPositionScanner() {
   activeTasks++;
   try {
-    const rawPositions = await PositionScanner.fetchAll();
+    const rawPositions = await positionScanner.fetchAll();
     const assembled = await PositionAggregator.aggregateAll(rawPositions, appState.bbs, appState.pools);
 
     // PnL enrichment — computed here because assembler is scope-limited to USD values
-    const gasCostUSD = await fetchGasCostUSD().catch(() => 1.5);
+    const gasCostUSD = await fetchGasCostUSD().catch(() => config.DEFAULT_GAS_COST_USD);
     for (const rec of assembled) {
       rec.initialCapital = PnlCalculator.getInitialCapital(rec.tokenId);
       const exactIL = PnlCalculator.calculateAbsolutePNL(rec.tokenId, rec.positionValueUSD, rec.unclaimedFeesUSD);
@@ -126,9 +126,9 @@ async function runPositionScanner() {
       }
     }
 
-    PositionScanner.updatePositions(assembled);
+    positionScanner.updatePositions(assembled);
 
-    const positions = PositionScanner.getTrackedPositions();
+    const positions = positionScanner.getTrackedPositions();
     appState.positions = positions.filter((p) => Number(p.liquidity) > 0);
     appState.lastUpdated.positionScanner = Date.now();
     log.info(`✅ positions  active ${appState.positions.length}/${positions.length} tracked`);
@@ -173,7 +173,7 @@ async function runBBEngine() {
 async function runRiskManager() {
   activeTasks++;
   try {
-    const gasCostUSD = await fetchGasCostUSD().catch(() => 1.5);
+    const gasCostUSD = await fetchGasCostUSD().catch(() => config.DEFAULT_GAS_COST_USD);
     for (const pos of appState.positions) {
       const poolData = appState.pools.find(
         (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
@@ -226,7 +226,7 @@ async function runRiskManager() {
     // Log snapshots here — after both BBEngine and RiskManager have enriched the positions,
     // so positions.log reflects correct Health Score, Drift %, and Breakeven values.
     const bbForLog = Object.values(appState.bbs)[0] ?? null;
-    PositionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol);
+    positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol);
   } catch (error) {
     log.error(`RiskManager: ${error}`);
   } finally { activeTasks--; }
@@ -301,7 +301,7 @@ async function main() {
     // 有新增錢包 → 背景觸發 chain scan 自動發現倉位，完成後更新 state.json
     if (addedWallets.length > 0) {
       log.info(`🔍 新錢包偵測到，背景觸發 chain scan: ${addedWallets.join(', ')}`);
-      PositionScanner.syncFromChain(true)
+      positionScanner.syncFromChain(true)
         .then(() => saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig))
         .catch(e => log.error(`Auto sync (new wallet): ${e}`));
     }
@@ -337,7 +337,7 @@ async function main() {
   if (!hasWallets) {
     log.warn('No wallet addresses configured — skipping startup scan. Use /wallet add in Telegram to add a wallet.');
   } else {
-    PositionScanner.restoreFromUserConfig();
+    positionScanner.restoreFromUserConfig();
     // 從 userConfig.wallets[].positions[] 判斷是否有位置已存在（可跳過 chain scan）
     const allKnownIds = new Set(
       appState.userConfig.wallets.flatMap(w => w.positions.map(p => p.tokenId))
@@ -353,10 +353,10 @@ async function main() {
     );
 
     if (walletsUnchanged && allKnownIds.size > 0 && !hasNewTracked) {
-      PositionScanner.restoreDiscoveredPositions();
+      positionScanner.restoreDiscoveredPositions();
     } else {
       if (hasNewTracked) log.info('New tracked positions detected — forcing chain sync');
-      await PositionScanner.syncFromChain(true);
+      await positionScanner.syncFromChain(true);
     }
 
     await runTokenPriceFetcher();
@@ -388,7 +388,7 @@ async function main() {
   scheduledTask = buildCronJob();
 
   // 開始搜尋遺失的時間戳記 (背景執行)
-  PositionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
+  positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
 }
 
 let isShuttingDown = false;

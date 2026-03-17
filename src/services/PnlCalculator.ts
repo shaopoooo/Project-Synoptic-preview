@@ -1,5 +1,6 @@
 import { appState, ucInitialInvestment } from '../utils/AppState';
 import { OpenInfo, PortfolioSummary, PositionRecord } from '../types';
+import { isValidWalletAddress } from '../utils/validation';
 
 /**
  * Service for position-level financial metrics:
@@ -65,7 +66,7 @@ export class PnlCalculator {
         }>
     ): PortfolioSummary {
         const walletCount = new Set(
-            positions.map(p => p.ownerWallet).filter(w => /^0x[0-9a-fA-F]{40}$/.test(w ?? ''))
+            positions.map(p => p.ownerWallet).filter(w => isValidWalletAddress(w ?? ''))
         ).size;
 
         const totalPositionUSD = positions.reduce((s, p) => s + p.positionValueUSD, 0);

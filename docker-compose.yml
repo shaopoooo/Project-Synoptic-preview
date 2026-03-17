@@ -7,6 +7,12 @@ services:
     command: ["./node_modules/.bin/dotenvx", "run", "--", "node", "dist/index.js"]
     environment:
       - DOTENV_PRIVATE_KEY=${DOTENV_PRIVATE_KEY}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /app/data/state.json && find /app/data/state.json -mmin -10 | grep -q ."]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
     volumes:
       - ./.env:/app/.env:ro   # 執行時 bind mount，不進 image
       - dexbot-data:/app/data  # 持久化 state.json

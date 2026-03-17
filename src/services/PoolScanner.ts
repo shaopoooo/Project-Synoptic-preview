@@ -5,6 +5,7 @@ import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../utils/rpcProvider';
 import { PoolStats, Dex } from '../types';
+import { POOL_ADDRESS_RE, POOL_V4_ID_RE } from '../utils/validation';
 
 
 const log = createServiceLogger('PoolScanner');
@@ -79,7 +80,10 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
         try {
             const geckoRes = await geckoRequest(() => axios.get(
                 `${config.API_URLS.GECKOTERMINAL_OHLCV}/${key}/ohlcv/day?limit=7`,
-                { timeout: 8000, headers: { 'User-Agent': 'DexBot/1.0' } }
+                { 
+                  timeout: 8000,
+                  headers: { 'User-Agent': config.USER_AGENT }
+                }
             ));
             const ohlcvList: any[][] = geckoRes.data?.data?.attributes?.ohlcv_list ?? [];
             if (ohlcvList.length > 0) {
@@ -113,9 +117,6 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
 }
 
 
-// Accept both V3 pool addresses (40 hex) and V4 poolIds (64 hex)
-const POOL_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-const POOL_ID_RE      = /^0x[0-9a-fA-F]{64}$/;
 
 export class PoolScanner {
     /**
@@ -127,7 +128,7 @@ export class PoolScanner {
         dex: Dex,
         feeTierVal: number
     ): Promise<PoolStats | null> {
-        if (!POOL_ADDRESS_RE.test(poolAddress) && !POOL_ID_RE.test(poolAddress)) {
+        if (!POOL_ADDRESS_RE.test(poolAddress) && !POOL_V4_ID_RE.test(poolAddress)) {
             log.error(`Invalid pool address/id rejected: ${poolAddress}`);
             return null;
         }
@@ -150,7 +151,10 @@ export class PoolScanner {
             const sqrtPriceX96 = BigInt(slot0.sqrtPriceX96);
 
             // 2. Fetch Volume and TVL from DexScreener API as a free fallback
-            const dexRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/base/${poolAddress}`, { timeout: 8000 });
+            const dexRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/base/${poolAddress}`, { 
+                timeout: 8000,
+                headers: { 'User-Agent': config.USER_AGENT }
+            });
 
             let tvlUSD = 0;
             let dailyVolumeUSD = 0;
@@ -234,7 +238,10 @@ export class PoolScanner {
             try {
                 const dexRes = await axios.get(
                     `https://api.dexscreener.com/latest/dex/pairs/base/${poolId}`,
-                    { timeout: 8000 }
+                    { 
+                        timeout: 8000,
+                        headers: { 'User-Agent': config.USER_AGENT }
+                    }
                 );
                 if (dexRes.data?.pairs?.length > 0) {
                     const p = dexRes.data.pairs[0];
@@ -290,10 +297,10 @@ export class PoolScanner {
     /**
      * Scan all core pools and format the output
      */
-    static async scanAllCorePools(): Promise<PoolStats[]> {
+    static async scanAllCorePools(pools = config.POOLS): Promise<PoolStats[]> {
         // GeckoTerminal 呼叫由 geckoLimiter 限制並發數 ≤ 2；slot0 RPC 與 DexScreener 可安全平行
         const settled = await Promise.allSettled(
-            config.POOL_SCAN_LIST.map(p => this.fetchPoolStats(p.address, p.dex, p.fee))
+            pools.map(p => this.fetchPoolStats(p.address, p.dex, p.fee))
         );
 
         return settled

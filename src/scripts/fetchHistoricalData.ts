@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'fs-extra';
 import path from 'path';
 import { createServiceLogger } from '../utils/logger';
+import { config } from '../config';
 
 const log = createServiceLogger('FetchHistorical');
 
@@ -16,7 +17,10 @@ async function run() {
         // We can fetch up to 1000 data points via free tier.
         const url = `https://api.geckoterminal.com/api/v2/networks/base/pools/${TARGET_POOL}/ohlcv/hour?limit=1000`;
 
-        const res = await axios.get(url, { timeout: 15000 });
+        const res = await axios.get(url, { 
+            timeout: 15000,
+            headers: { 'User-Agent': config.USER_AGENT }
+        });
 
         if (res.data?.data?.attributes?.ohlcv_list) {
             const ohlcvList = res.data.data.attributes.ohlcv_list;
