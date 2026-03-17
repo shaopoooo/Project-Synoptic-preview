@@ -213,6 +213,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
  ├ 你的 0.02803 ~ 0.03054
  └ 建議 0.02628 ~ 0.03213
 💼 倉位 $12,400 | 本金 $10,000 | 健康 94/100
+📈 區間 APR 335.8% (效率 5.0×)
 ⌛  Breakeven 盈利中 · 獲利 +1.82%
 💸 淨損益 +$18.2 🟢 | 無常損失 -$13.0 🔴
 🔄 未領取手續費 $4.62 ✅ > $0.1
@@ -232,9 +233,9 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 ⚠️ DRIFT 重疊 71.3% (建議依 BB 重建倉)
 
 📊 各池收益排行:
-🥇 PancakeSwap 0.01% — APR 67.2% | TVL $1,234K ◀ 你的倉位
-🥈 Aerodrome 0.0085% — APR 29.4% | TVL $987K ◀ 你的倉位
-🥉 Uniswap 0.05% — APR 18.6% | TVL $543K
+🥇 PancakeSwap 0.01% — APR 67.2% → 區間 335.8% | TVL $1,234K ◀ 你的倉位
+🥈 Aerodrome 0.0085% — APR 29.4% → 區間 147.0% | TVL $987K ◀ 你的倉位
+🥉 Uniswap 0.05% — APR 18.6% → 區間 93.0% | TVL $543K
 
 ⌛ 資料更新時間:
 - Pool: 10:00 | Position: 10:00
@@ -250,6 +251,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 - 未領取手續費逐幣明細：各幣種金額 > 0 時顯示，使用下標零緊湊格式（如 `0.0₃2719 WETH`）
 - `⚠️ RED_ALERT`：IL Breakeven Days > 30 天，建議減倉
 - `⚠️ HIGH_VOLATILITY_AVOID`：當前頻寬 > 2× 30D 平均頻寬，建議觀望
+- `📈 區間 APR`：有 BB 且非 fallback 時顯示；`inRangeApr = poolApr × 資金效率乘數`，乘數公式 `1 / (√(BB上軌/SMA) - √(BB下軌/SMA))`
 - `⚠️ DRIFT`：BB 重疊度 < 80%，附再平衡策略名稱與 Gas 估算
 
 ### Telegram 指令
@@ -514,6 +516,62 @@ docker compose down
 
 ---
 
+## 常見問題排除
+
+### Bot 啟動後沒有推播訊息
+
+1. 確認 `BOT_TOKEN` 與 `CHAT_ID` 設定正確（先在 Telegram 對 Bot 傳送 `/start`）
+2. 查看 `logs/error.log` 是否有連線或認證錯誤
+3. 確認 Bot 已被加入對話，且 `CHAT_ID` 為負數（群組）或正數（私訊）
+
+### RPC 呼叫頻繁失敗 / CALL_EXCEPTION
+
+1. 公共節點（`mainnet.base.org`）有速率限制，建議設定付費的 `RPC_URL`（QuickNode / Alchemy）
+2. 查看 `logs/combined.log` 中 `rpcRetry` 的失敗記錄，確認是哪個合約呼叫失敗
+3. 若是特定倉位的 timestamp 查詢失敗超過 3 次，系統會自動標記為 N/A 並停止重試，不影響其他功能
+
+### GeckoTerminal 回傳 429（Too Many Requests）
+
+Bot 已內建全局 rate limiter（每 1.5 秒一次請求），正常情況不應觸發。若仍發生：
+
+1. 確認同台機器沒有其他程式也在打 GeckoTerminal API
+2. 重啟後等待 1-2 分鐘，rate limiter 會自動恢復
+
+### 倉位顯示「未設定歷史本金」或獲利率 N/A
+
+透過 Telegram 設定本金：
+
+```
+/capital <tokenId> <amount>        # 設定本金 USD
+/invest <addr> <tokenId> <amount> <dex>  # 同時設定本金 + 鎖倉標記
+```
+
+### 如何看 log
+
+```bash
+# 即時追蹤所有 log（含 INFO）
+tail -f logs/combined.log
+
+# 只看錯誤
+tail -f logs/error.log
+
+# 只看倉位快照（每 5 分鐘一次）
+tail -f logs/positions.log
+
+# 搜尋特定 tokenId 的記錄
+grep "123456" logs/combined.log
+```
+
+log 檔案自動輪轉（`combined.log` 最大 5MB × 5 份，`positions.log` 最大 10MB × 10 份），不需手動清理。
+
+### 重啟後 BB stdDev 很小 / 建議區間過窄
+
+`state.json` 的 `priceBuffer` 保留最近 24 筆小時價格，重啟後會自動恢復。若資料累積不足 5 筆，BB 會顯示「資料累積中」並使用 30D 年化波動率換算的保守帶寬，約 20 小時後恢復正常。
+
+若要加速：確保 `data/` 目錄（或 Railway Volume）正確掛載，避免每次重部署都清空 `state.json`。
+
+---
+
 ## 安全性備註
 
 本 Bot 為純背景監測腳本：
@@ -523,3 +581,175 @@ docker compose down
 - **無動態編譯**：不使用 `solc`，無 RCE 風險
 
 `npm audit` 回報的 `cookie`、`serialize-javascript`、`elliptic` 等套件漏洞在此架構下風險為零，可安全忽略。
+
+---
+
+## 開發歷程
+
+### ✅ 階段一：基礎建設
+
+- **RPC 備援**：`FallbackProvider`（QuickNode → Alchemy → 公共節點）+ `rpcRetry`
+- **config 拆分**：`env.ts` / `constants.ts` / `abis.ts` 分離，`index.ts` 統一匯出
+- **README.md**：完整記錄環境變數、架構與啟動方式
+
+### ✅ 階段二：多 DEX / 多錢包支援
+
+- **新增 Aerodrome WETH/cbBTC 池**：fee=85 (0.0085%)，tickSpacing=1
+- **池命名統一**：`{DEX}_{交易對}_{費率}` 格式（如 `UNISWAP_WETH_CBBTC_0_05`）
+- **多錢包支援**：`WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 編號變數
+- **getPoolFromTokens 碰撞修正**：key 改為 `${dex}_${fee}`，避免同費率不同 DEX 衝突
+- **dex 型別擴充**：加入 `'Aerodrome'`
+
+### ✅ 階段三：Bug 修正
+
+- **IL 計算錯誤修正**：改用 Uniswap V3 sqrtPrice 數學計算 LP 倉位本金
+- **Health Score 歸零修正**：連鎖修正（IL 正確後 ilRiskWeight 不再異常）
+- **ilUSD 型別修正**：改為 `number | null`
+- **Aerodrome slot0 ABI 修正**：新增 `AERO_POOL_ABI`（6 個回傳值，無 `feeProtocol`）
+- **BBEngine 重複查詢修正**：執行順序改為 BBEngine → PositionScanner
+- **BB lowerPrice 夾值 Bug 修正**：移除 `Math.max(0.00000001, lowerPrice)`，改為 `Math.max(sma - maxOffset, sma - k * stdDev)`
+- **Hybrid 手續費計算**：Aerodrome / Uniswap / PancakeSwap 三路混合策略
+
+### ✅ 階段四：Telegram 報告優化
+
+- **合併報告**：`sendConsolidatedReport` 單一訊息
+- **各池收益排行**：APR 由高到低，標記持倉池子
+- **排序指令**：`/sort size|apr|unclaimed|health`
+- **建倉時間戳**：自動查詢 NFT mint Transfer 事件
+- **總覽區塊**：總倉位 USD、Unclaimed、總獲利（`PnlCalculator.calculatePortfolioSummary()`）
+- **開倉資訊**：`⏳ 開倉 X天X小時 · 獲利 +X.XX%`
+- **ILCalculator → PnlCalculator**：重命名，新增 `calculateOpenInfo()`、`calculatePortfolioSummary()`
+
+### ✅ 階段五：系統穩定性與強化
+
+- **狀態持久化**：`PriceBuffer`、`volCache`、openTimestampCache 存入 `data/state.json`
+- **記憶體管理**：`volCache` 改用 `lru-cache`（max: 100）
+- **動態 Gas Oracle**：`fetchGasCostUSD()`，5 分鐘快取
+- **ChainEventScanner**：`ScanHandler` 介面統一所有 `getLogs` 掃描邏輯
+- **第三幣獎勵支援**：PancakeSwap `pendingCake`、Aerodrome `gauge.earned`
+- **isStaked 自動偵測**：`ownerOf` 回傳非已知錢包 → `isStaked=true`
+- **BBEngine EWMA stdDev**：資料 ≥ 5 筆用 EWMA（α=0.3, β=0.7），不足時由 30D 年化波動率換算
+- **常數集中化**：BB 參數、區塊掃描參數、Gas 常數全數移至 `constants.ts`
+
+### ✅ 階段六：穩定性補強
+
+- **SIGTERM 優雅關機**：`gracefulShutdown()` handler，`isShuttingDown` 旗標防競態
+- **PriceBuffer 冷啟動缺口**：`refreshPriceBuffer()` 確保啟動首次計算有最新 on-chain 價格
+- **GeckoTerminal 全局 rate limiter**：並發 1、最小間隔 1500ms；指數退避重試
+- **Telegram 錯誤通知**：`sendCriticalAlert()`（30 分鐘 cooldown）
+- **Timestamp 無限重試修正**：失敗超過 3 次後設 `-1`（N/A），停止重試
+
+### ✅ 階段七：計算精度、優化
+
+- **avg30DBandwidth 修正**：滾動窗口（8640 筆 = 30D × 288 次/天）
+- **PoolScanner 平行化**：`Promise.allSettled` + `geckoLimiter`（≤ 2）
+- **Rebalance Gas 即時化**：`getRebalanceSuggestion` 接受 `gasCostUSD?` 參數
+- **BBEngine 方向性偏移**：`sdOffset = 0.3σ × direction`（強勢上移/弱勢下移）
+- **BandwidthTracker 獨立工具類**：`src/utils/BandwidthTracker.ts`
+
+### ✅ 階段八：PositionScanner 解耦
+
+God Class 拆解為五段 Pipeline：
+
+```
+PositionScanner.fetchAll() → RawChainPosition[]
+  → PositionAggregator.aggregateAll()（FeeCalculator）
+  → index.ts PnL enrichment（PnlCalculator）
+  → PositionScanner.updatePositions()
+  → runRiskManager()（RiskManager + RebalanceService）
+```
+
+- 型別集中至 `src/types/index.ts`
+- `FeeCalculator` / `PositionAggregator` 獨立服務
+- `index.ts` 協調所有業務計算，PositionScanner 只負責鏈上資料讀取
+
+### ✅ 階段十三：耦合問題修復（高優先部分）
+
+- **PositionAggregator 重複呼叫 RiskManager 修正**：移除 bandwidth=0 的重複呼叫，統一由 `runRiskManager()` 負責
+- **index.ts 全域狀態提取為 AppState**：`src/utils/AppState.ts` 單例，`pruneStaleBBs()` 取代 inline 迴圈
+- **TelegramBot 解耦服務層**：Bot 只接收 `entries[]`，計算邏輯從 `PositionRecord` 欄位直接讀取
+- **tickToPrice / tokenInfo 重複邏輯整合**：集中至 `src/utils/math.ts` 與 `src/utils/tokenInfo.ts`
+
+### ✅ 階段十四：效能與架構地雷修復（高/中優先部分）
+
+- **positions.log Health/Drift 顯示修正**：移至 `runRiskManager()` 末尾後才記錄快照
+- **positions.log 時區統一**：全面改用 UTC（`getUTCHours()/getUTCMinutes()`）
+- **冷啟動 BB isFallback 標記**：`isWarmupFallback` flag，`regime: '資料累積中'`
+- **Cron Job Overlap 競態保護**：`isCycleRunning` flag + `try/finally`
+- **aggregateAll 序列 RPC 改並行**：`p-limit`（concurrency=4）+ `Promise.allSettled`
+- **Timestamp 背景搜尋即時儲存**：每找到一筆立刻持久化
+- **RiskManager 魔術數字集中至 config**：`RED_ALERT_BREAKEVEN_DAYS`、`HIGH_VOLATILITY_FACTOR` 移至 `constants.ts`
+- **formatPositionLog 提煉至 `formatter.ts`**
+- **關閉倉位自動剔除**：`liquidity=0` 自動加入 `closedTokenIds`，重啟不重新掃描
+
+### ✅ 階段十五：Uniswap V4 支援 + DEX 命名統一
+
+- **Dex 型別版本號**：`'Uniswap'` → `'UniswapV3'`；`'PancakeSwap'` → `'PancakeSwapV3'`；新增 `'UniswapV4'`
+- **V4 合約地址**：`V4_POOL_MANAGER`、`V4_POSITION_MANAGER`、`V4_STATE_VIEW`
+- **PositionScanner V4**：`_fetchV4NpmData()`；packed PositionInfo 解碼（bits 0-23 = tickLower，bits 24-47 = tickUpper）
+- **FeeCalculator V4**：`StateView.getPositionInfo()` + `getFeeGrowthInside()` delta 計算
+- **PoolScanner V4**：`StateView.getSlot0(poolId)`；bytes32 poolId 驗證
+- **stateManager DEX 遷移**：`loadState()` 自動將舊格式 `PancakeSwap→PancakeSwapV3`、`Uniswap→UniswapV3`
+
+### ✅ 階段十六：Telegram 動態配置
+
+- **UserConfig 中心化**：`WalletPosition { tokenId, dexType, initial, externalStake, openTimestamp, closed? }`
+- **openTimestamps 合併入 userConfig**：移除 `state.json` 獨立欄位
+- **全專案替換**：`.env` 靜態設定 → `ucWalletAddresses` / `ucInitialInvestment` / `ucTrackedPositions` helper
+- **Telegram 指令**：`/wallet add|rm`、`/invest`、`/capital`、`/stake`、`/unstake`、`/dex`
+- **`onUserConfigChange` 回呼**：每次 userConfig 變更立即持久化
+
+### ✅ 階段十七：常數集中化與型別架構整理
+
+- **`UserConfig` 型別移至 `src/types/index.ts`**
+- **`UserConfig` 新增 Telegram 可修改欄位**：`sortBy`、`intervalMinutes`、`bbKLowVol`、`bbKHighVol`
+- **`VALID_DEXES` / `DEX_MIGRATION` 移至 `constants.ts`**
+- **`saveState` 簡化**：最終簽名 `saveState(priceBuffer, bandwidthWindows?, userConfig?)`
+- **`setBbkCallback` / `getSortBy` / `setSortBy` 移除**：改透過 `onUserConfigChange` 統一持久化
+
+### ✅ 階段十八：型別集中化、欄位重命名與指令重構
+
+- **所有共用 interface 集中至 `src/types/index.ts`**：移除各模組死 re-export
+- **`WalletEntry.dex[]` → `WalletEntry.positions[]`**
+- **`WalletPosition.tracked` → `WalletPosition.externalStake`**
+- **`closedTokenIds[]` 移除**：改用 `WalletPosition.closed?: boolean`，Set 於啟動時由 `restoreFromUserConfig()` 重建
+- **`/invest` dexArg 必填**：移除 `UniswapV3` 預設值
+- **無錢包冷啟動**：無錢包時跳過掃描等待 `/wallet add`
+- **新增錢包自動觸發 chain scan**：`onUserConfigChange` 偵測新錢包後背景執行 `syncFromChain`
+
+### ✅ P3 精度、測試基礎設施與 CI
+
+- **PositionAggregator 浮點數精度**：`Math.sqrt(Math.pow(1.0001, tick))` 改用 `TickMath.getSqrtRatioAtTick(tick)` (uint160 Q96 → float)，消除大 tick 精度流失
+- **Jest 基礎設施**：`jest.config.js`（已內建）+ ts-jest；`src/__tests__/` 目錄建立
+- **RiskManager 單元測試**：Drift 計算（全重疊/零重疊/半重疊）、redAlert、highVolatility、EOQ compound、healthScore 邊界
+- **PnlCalculator 單元測試**：absolutePNL（null capital / 盈虧兩向）、openInfo（undefined / -1 / 正常）、portfolioSummary（空/單錢包/多倉位 totalPnL）
+- **BBEngine 單元測試**：PriceBuffer addPrice（無效值過濾、同小時覆蓋）、大小寫不敏感、serialize/restore 往返
+- **rebalance.ts 單元測試**：drift < min → null、bbLower=0 → null、upward/downward drift 符號、Gas 超過 unclaimed/2 → 降級 wait
+- **GitHub Actions CI**：`.github/workflows/ci.yml` — push/PR 自動跑 `tsc --noEmit` + `jest --no-coverage`（Node 22、ubuntu-latest）
+
+### ✅ P2 可測試性改進
+
+- **PositionScanner 全靜態類 → 可實例化**：移除所有 `static` 宣告，加入 `export const positionScanner = new PositionScanner()` 單例；`index.ts` / `dryrun.ts` 改用 singleton，為後續 Jest 覆蓋率鋪路
+- **BBEngine PriceBuffer → 可注入**：`globalPriceBuffer` 模組級常數改為 `BBEngine._priceBuffer` 靜態屬性；匯出 `PriceBuffer` 類別；新增 `BBEngine._setPriceBuffer()` 供測試注入自訂 buffer
+- **Docker Compose healthcheck**：`healthcheck` 以 `find /app/data/state.json -mmin -10` 確認容器未卡死（state.json 10 分鐘內有更新），interval=5m、start_period=2m
+
+### ✅ P1 雜項清理
+
+- **Wallet 地址正則集中**：`/^0x[0-9a-fA-F]{40}$/` 從 5 個檔案（`AppState`、`formatter`、`TelegramBot`、`PoolScanner`、`PnlCalculator`）集中至 `src/utils/validation.ts`；匯出 `WALLET_ADDRESS_RE`、`POOL_ADDRESS_RE`、`POOL_V4_ID_RE`、`isValidWalletAddress()`、`isValidPoolAddress()`、`isValidPoolV4Id()`
+- **型別宣告確認**：`PnlCalculator` 與 `ChainEventScanner` 已無自定義 export type，型別均集中於 `src/types/index.ts`
+- **README 常見問題章節**：新增「常見問題排除」章節（Bot 無推播、RPC 失敗、429、本金未設、如何看 log、BB 帶寬過窄）
+
+### ✅ 測試目錄遷移
+
+- **測試目錄遷移至根層**：`src/__tests__/` → `tests/services/`，符合「根目錄測試資料夾，依 src/ 子目錄分類」慣例
+- **tsconfig.test.json**：新增測試專用 tsconfig（`rootDir: "."`），避免主編譯掃描 `tests/`
+- **jest.config.js 更新**：`roots: ['<rootDir>/tests']`，ts-jest 改用 `tsconfig.test.json`
+
+### ✅ 開倉模擬 — In-Range APR
+
+- **`calculateCapitalEfficiency()`**：新增至 `src/utils/math.ts`；公式 `1 / (√(upperPrice/sma) - √(lowerPrice/sma))`，上限 100×
+- **`PositionRecord.inRangeApr`**：新增欄位；`PositionAggregator.assemble()` 在 BB 非 fallback 時計算並填入
+- **Telegram 位置區塊**：`💼` 行後新增 `📈 區間 APR X.X% (效率 X.X×)`（有 BB 才顯示）
+- **各池收益排行**：格式由 `APR X.X%` 擴充為 `APR X.X% → 區間 Y.Y%`（`appState.bbs` 即時計算）
+- **positions.log**：APR 欄位擴充為 `APR: X.X% (區間 Y.Y%)`
+- **`/explain` 指令**：新增「區間 APR」指標說明（公式 + 適用條件）

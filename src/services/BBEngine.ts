@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { nearestUsableTick } from '@uniswap/v3-sdk';
+import { tickToRatio } from '../utils/math';
 import { bbVolCache } from '../utils/cache';
 import { createServiceLogger } from '../utils/logger';
 import { geckoRequest } from '../utils/rpcProvider';
@@ -44,7 +45,10 @@ async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
       log.info(`🌐 30D vol  ${tag}  attempt ${attempt}/3`);
       const res = await geckoRequest(() => axios.get(
         `${config.API_URLS.GECKOTERMINAL_OHLCV}/${key}/ohlcv/day?limit=30`,
-        { timeout: 8000, headers: { 'User-Agent': 'DexBot/1.0' } }
+        {
+          timeout: 10000,
+          headers: { 'User-Agent': config.USER_AGENT }
+        }
       ));
 
       const dailyList: any[][] = res.data?.data?.attributes?.ohlcv_list ?? [];
@@ -76,12 +80,12 @@ async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
  * In-memory Price Buffer to replace hourly GeckoTerminal calls.
  * Stores the close price for each hour.
  */
-class PriceBuffer {
+export class PriceBuffer {
   // poolAddress -> { hourTimestamp: price }
   private buffer: Map<string, Map<number, number>> = new Map();
 
   // Add the current price for the current hour.
-  // Only accepts valid tick-ratio prices (i.e. Math.pow(1.0001, tick)); rejects near-zero or
+  // Only accepts valid tick-ratio prices (i.e. tickToRatio(tick)); rejects near-zero or
   // non-finite values that would corrupt SMA/variance calculations.
   public addPrice(poolAddress: string, price: number) {
     if (!Number.isFinite(price) || price <= 0) {
@@ -170,39 +174,41 @@ class PriceBuffer {
   }
 }
 
-const globalPriceBuffer = new PriceBuffer();
-
-
 export function getPriceBufferSnapshot(): Record<string, Record<string, number>> {
-  return globalPriceBuffer.serialize();
+  return BBEngine._priceBuffer.serialize();
 }
 
 export function restorePriceBuffer(data: Record<string, Record<string, number>>) {
-  globalPriceBuffer.restore(data);
+  BBEngine._priceBuffer.restore(data);
 }
 
 /** 在 runPoolScanner 後、runBBEngine 前呼叫，確保 buffer 有最新當前小時 entry。 */
 export function refreshPriceBuffer(poolAddress: string, currentTick: number) {
-  const price = Math.pow(1.0001, currentTick);
-  globalPriceBuffer.addPrice(poolAddress, price);
+  const price = tickToRatio(currentTick);
+  BBEngine._priceBuffer.addPrice(poolAddress, price);
 }
 
 export class BBEngine {
+  /** @internal Exposed for dependency injection in tests. */
+  static _priceBuffer = new PriceBuffer();
+
+  /** Replace the price buffer with a test double. */
+  static _setPriceBuffer(pb: PriceBuffer) { BBEngine._priceBuffer = pb; }
   /**
    * Fetches historical OHLCV data from GeckoTerminal (Free API, requires no key)
    * Base Network ID is 'base'
    */
   static async computeDynamicBB(poolAddress: string, dex: Dex, tickSpacing: number, currentTick: number): Promise<BBResult | null> {
     try {
-      const currentPrice = Math.pow(1.0001, currentTick);
+      const currentPrice = tickToRatio(currentTick);
 
       // 1. Update the price buffer with the current live price
-      globalPriceBuffer.addPrice(poolAddress, currentPrice);
+      BBEngine._priceBuffer.addPrice(poolAddress, currentPrice);
 
-      // 價格單位說明：priceBuffer 只存 Math.pow(1.0001, tick) 的 tick-ratio 值（例如 WETH/cbBTC ≈ 0.029）。
+      // 價格單位說明：priceBuffer 只存 tickToRatio(tick) 的 tick-ratio 值（例如 WETH/cbBTC ≈ 0.029）。
       // GeckoTerminal hourly backfill 曾被移除，原因是它返回 USD 價格（例如 $70k），
       // 與 tick-ratio 單位完全不同，混用會導致 SMA/方差計算失真。
-      const prices1H = globalPriceBuffer.getPrices(poolAddress);
+      const prices1H = BBEngine._priceBuffer.getPrices(poolAddress);
 
       // 2. 先取得 30D 年化波動率（k 值與 stdDev fallback 都需要）
       const annualizedVol = await fetchDailyVol(poolAddress, dex);
@@ -285,15 +291,15 @@ export class BBEngine {
   private static createFallbackBB(currentTick: number, tickSpacing: number): BBResult {
     const k = config.BB_FALLBACK_K;
     const volatility30D = config.BB_FALLBACK_VOL;
-    const currentPrice = Math.pow(1.0001, currentTick);
+    const currentPrice = tickToRatio(currentTick);
 
     const tickLowerRaw = currentTick - config.BB_FALLBACK_TICK_OFFSET;
     const tickUpperRaw = currentTick + config.BB_FALLBACK_TICK_OFFSET;
 
     return {
       sma: currentPrice,
-      upperPrice: Math.pow(1.0001, tickUpperRaw),
-      lowerPrice: Math.pow(1.0001, tickLowerRaw),
+      upperPrice: tickToRatio(tickUpperRaw),
+      lowerPrice: tickToRatio(tickLowerRaw),
       k,
       volatility30D,
       tickLower: nearestUsableTick(tickLowerRaw, tickSpacing),

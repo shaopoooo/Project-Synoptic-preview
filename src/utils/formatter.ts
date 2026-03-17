@@ -1,5 +1,6 @@
 import { PositionRecord, PoolStats, BBResult, RiskAnalysis } from '../types';
 import { config } from '../config';
+import { isValidWalletAddress } from './validation';
 
 export function fmtInterval(min: number): string {
     if (min < 60)   return `${min} 分鐘`;
@@ -54,7 +55,7 @@ export function buildTelegramPositionBlock(
     risk: RiskAnalysis
 ): string {
     const label = `${pool.dex} ${(pool.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
-    const walletShort = position.ownerWallet && /^0x[0-9a-fA-F]{40}$/.test(position.ownerWallet)
+    const walletShort = position.ownerWallet && isValidWalletAddress(position.ownerWallet)
         ? `${position.ownerWallet.slice(0, 6)}...${position.ownerWallet.slice(-4)}`
         : '未知';
     const posValue = position.positionValueUSD > 0
@@ -104,6 +105,12 @@ export function buildTelegramPositionBlock(
     block += ` └ 建議 ${bbBound}\n`;
     // ── 倉位摘要（縮排）
     block += `💼 倉位 ${posValue} | 本金 ${capitalStr} | 健康 ${risk.healthScore}/100\n`;
+    // ── 區間 APR（有 BB 且非 fallback 才顯示）
+    if (position.inRangeApr !== undefined && pool.apr > 0) {
+        const multiplier = position.inRangeApr / pool.apr;
+        block += `📈 區間 APR <b>${(position.inRangeApr * 100).toFixed(1)}%</b>` +
+                 ` (效率 ${multiplier.toFixed(1)}×)\n`;
+    }
     // ── Breakeven + 獲利率同行
     block += `⌛  Breakeven ${breakevenStr}${profitStr}\n`;
     // ── 淨損益 + 無常損失
@@ -180,6 +187,9 @@ export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record
     const capStr   = pos.initialCapital !== null && pos.initialCapital !== undefined
         ? `$${pos.initialCapital.toFixed(0)}` : 'N/A';
     const aprStr   = pos.apr !== undefined ? `${(pos.apr * 100).toFixed(1)}%` : 'N/A';
+    const inRangeAprStr = pos.inRangeApr !== undefined
+        ? ` (區間 ${(pos.inRangeApr * 100).toFixed(1)}%)`
+        : '';
 
     const pnlSign  = pos.ilUSD === null ? '' : pos.ilUSD >= 0 ? '+' : '-';
     const pnlAbs   = pos.ilUSD === null ? 'N/A' : `$${Math.abs(pos.ilUSD).toFixed(1)}`;
@@ -205,7 +215,7 @@ export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record
 
     const lines: string[] = [];
     lines.push(`[${timeStr}] ━━ #${pos.tokenId} ${label} ━━`);
-    lines.push(`  Value: ${posValue} | Capital: ${capStr} | APR: ${aprStr} | Health: ${pos.healthScore}/100`);
+    lines.push(`  Value: ${posValue} | Capital: ${capStr} | APR: ${aprStr}${inRangeAprStr} | Health: ${pos.healthScore}/100`);
     lines.push(`  Wallet:    ${walletShort}  (${openedStr})`);
     lines.push(`  Price:     ${pos.currentPriceStr} | ${regimeEn(pos.regime)}`);
     lines.push(`    Your:    ${pos.minPrice} ~ ${pos.maxPrice}`);

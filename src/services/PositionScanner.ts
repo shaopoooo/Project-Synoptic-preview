@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
-import { appState, ucWalletAddresses, ucTrackedPositions, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet } from '../utils/AppState';
+import { appState, ucWalletAddresses, ucTrackedPositions, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../utils/formatter';
 import { BBResult, RawChainPosition, Dex } from '../types';
 import { createServiceLogger, positionLogger } from '../utils/logger';
@@ -17,15 +17,15 @@ const log = createServiceLogger('PositionScanner');
 export class PositionScanner {
 
     /** In-memory position store */
-    private static positions: PositionRecord[] = [];
-    private static syncedWallets = new Set<string>();
+    private positions: PositionRecord[] = [];
+    private syncedWallets = new Set<string>();
     /** 已確認關閉（liquidity=0）的 tokenId，O(1) 查詢用 */
-    private static closedTokenIds = new Set<string>();
+    closedTokenIds = new Set<string>();
 
     /**
      * 從 appState.userConfig 恢復已知倉位（跳過 chain scan）。
      */
-    static restoreDiscoveredPositions() {
+    restoreDiscoveredPositions() {
         const wallets = ucWalletAddresses(appState.userConfig);
         const allPositions: PositionRecord[] = [];
 
@@ -42,7 +42,7 @@ export class PositionScanner {
     }
 
     /** 從 appState.userConfig 恢復已關閉的 tokenId 到 in-memory Set。 */
-    static restoreFromUserConfig() {
+    restoreFromUserConfig() {
         for (const wallet of appState.userConfig.wallets)
             for (const pos of wallet.positions)
                 if (pos.closed) this.closedTokenIds.add(pos.tokenId);
@@ -51,7 +51,7 @@ export class PositionScanner {
     }
 
     /** 建立空的 seed PositionRecord（等待下一輪 fetchAll 填充鏈上資料） */
-    private static _makeSeedPosition(
+    private _makeSeedPosition(
         tokenId: string, dex: Dex, ownerWallet: string, openTimestampMs?: number
     ): PositionRecord {
         return {
@@ -74,7 +74,7 @@ export class PositionScanner {
         };
     }
 
-    static async syncFromChain(skipTimestampScan = false) {
+    async syncFromChain(skipTimestampScan = false) {
         const walletAddresses = ucWalletAddresses(appState.userConfig);
         if (walletAddresses.length === 0) {
             log.info('no wallets configured, skipping chain sync');
@@ -151,7 +151,7 @@ export class PositionScanner {
     }
 
     /** Returns the current in-memory tracked positions. */
-    static getTrackedPositions(): PositionRecord[] {
+    getTrackedPositions(): PositionRecord[] {
         return this.positions;
     }
 
@@ -160,7 +160,7 @@ export class PositionScanner {
      * Handles unsynced wallet detection and returns RawChainPosition[].
      * Called by index.ts; results are passed to PositionAggregator.aggregateAll().
      */
-    static async fetchAll(): Promise<RawChainPosition[]> {
+    async fetchAll(): Promise<RawChainPosition[]> {
         const unsyncedWallets = ucWalletAddresses(appState.userConfig).filter(w => !this.syncedWallets.has(w));
         if (unsyncedWallets.length > 0) {
             log.info(`🔄 ${unsyncedWallets.length} new wallet(s) detected, re-syncing chain`);
@@ -189,7 +189,7 @@ export class PositionScanner {
      * Positions missing from assembled (failed scan) keep their stale record.
      * Preserves ownerWallet when ownerOf returns a gauge contract.
      */
-    static updatePositions(assembled: PositionRecord[]) {
+    updatePositions(assembled: PositionRecord[]) {
         const assembledMap = new Map(assembled.map(p => [p.tokenId, p]));
         const updated: PositionRecord[] = [];
         for (const prev of this.positions) {
@@ -236,7 +236,7 @@ export class PositionScanner {
      * Optional: Generate a text report of positions to a log file.
      * Call this at the end of the analysis pipeline.
      */
-    static logSnapshots(positions: PositionRecord[], bb?: BBResult | null, kLow?: number, kHigh?: number) {
+    logSnapshots(positions: PositionRecord[], bb?: BBResult | null, kLow?: number, kHigh?: number) {
         if (positions.length === 0) return;
         const outputs = positions.map(pos => buildLogPositionBlock(pos, TOKEN_DECIMALS, bb));
 
@@ -254,7 +254,7 @@ export class PositionScanner {
      * Dispatches to V4-specific method for UniswapV4 positions.
      * Returns null on failure.
      */
-    private static async _fetchNpmData(
+    private async _fetchNpmData(
         tokenId: string,
         dex: Dex,
         ownerWallet: string,
@@ -317,7 +317,7 @@ export class PositionScanner {
      * Fetch raw chain data for a Uniswap V4 position.
      * Reads PoolKey + PositionInfo from V4 PositionManager; computes poolId from PoolKey.
      */
-    private static async _fetchV4NpmData(
+    private async _fetchV4NpmData(
         tokenId: string,
         ownerWallet: string,
         openTimestampMs?: number,
@@ -395,28 +395,21 @@ export class PositionScanner {
     /**
      * Helper to find a pool address given two tokens and a fee.
      */
-    private static getPoolFromTokens(tokenA: string, tokenB: string, fee: number, dex: Dex): string | null {
-        const map: Record<string, string> = {
-            'PancakeSwapV3_100': config.POOLS?.PANCAKEV3_WETH_CBBTC_0_01   || '0xc211e1f853a898bd1302385ccde55f33a8c4b3f3',
-            'PancakeSwapV3_500': config.POOLS?.PANCAKEV3_WETH_CBBTC_0_05   || '0xd974d59e30054cf1abeded0c9947b0d8baf90029',
-            'UniswapV3_500':     config.POOLS?.UNISWAPV3_WETH_CBBTC_0_05   || '0x7aea2e8a3843516afa07293a10ac8e49906dabd1',
-            'UniswapV3_3000':    config.POOLS?.UNISWAPV3_WETH_CBBTC_0_3    || '0x8c7080564b5a792a33ef2fd473fba6364d5495e5',
-            'Aerodrome_85':      config.POOLS?.AERODROME_WETH_CBBTC_0_0085  || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
-            'Aerodrome_1':       config.POOLS?.AERODROME_WETH_CBBTC_0_0085  || '0x22aee3699b6a0fed71490c103bd4e5f3309891d5',
-        };
-        return map[`${dex}_${fee}`] || null;
+    private getPoolFromTokens(_tokenA: string, _tokenB: string, fee: number, dex: Dex): string | null {
+        // Aerodrome NPM 對部分倉位回傳 tickSpacing=1 而非 fee pips=85，統一對應到 85
+        const lookupPips = (dex === 'Aerodrome' && fee === 1) ? 85 : fee;
+        const entry = ucPoolList(appState.userConfig).find(
+            p => p.dex === dex && Math.round(p.fee * 1_000_000) === lookupPips
+        );
+        return entry?.address ?? null;
     }
 
-    /**
-     * 背景補齊缺少 openTimestampMs 的倉位建倉時間。
-     * 失敗超過 TIMESTAMP_MAX_FAILURES 次後標記為 -1（顯示 N/A），停止重試。
-     */
     /**
      * 背景補齊缺少 openTimestamp 的倉位。
      * 找到後立即更新 appState.userConfig 並呼叫 saveStateCallback 持久化。
      * 失敗次數已合併至 openTimestamp=-1（N/A 哨兵值），不再維護獨立 Map。
      */
-    static async fillMissingTimestamps(saveStateCallback?: () => Promise<void>): Promise<void> {
+    async fillMissingTimestamps(saveStateCallback?: () => Promise<void>): Promise<void> {
         // openTimestamp=undefined → 待查；openTimestamp=-1 → 已放棄（N/A）
         const missing = this.positions.filter(p => p.openTimestampMs === undefined);
         if (missing.length === 0) return;
@@ -466,3 +459,5 @@ export class PositionScanner {
     }
 }
 
+/** 全域單例，供 index.ts / dryrun.ts 使用 */
+export const positionScanner = new PositionScanner();

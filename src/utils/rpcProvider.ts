@@ -18,8 +18,7 @@ export async function geckoRequest<T>(fn: () => Promise<T>): Promise<T> {
     });
 }
 
-/** @deprecated 改用 geckoRequest() */
-export const geckoLimiter = _geckoQueue;
+
 
 const log = createServiceLogger('RPC');
 
@@ -84,7 +83,10 @@ export async function fetchGasCostUSD(): Promise<number> {
             rpcProvider.getFeeData(),
             axios.get(
                 `${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.WETH}`,
-                { timeout: 5000 }
+                { 
+                  timeout: 5000,
+                  headers: { 'User-Agent': config.USER_AGENT }
+                }
             ),
         ]);
         const maxFee = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;

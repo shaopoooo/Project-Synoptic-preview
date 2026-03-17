@@ -107,6 +107,7 @@ export interface PositionRecord {
     lastUpdated: number;
     openTimestampMs?: number;
     apr?: number;
+    inRangeApr?: number;
     volSource: string;
     priceSource: string;
     bbFallback: boolean;
@@ -118,12 +119,7 @@ export interface PositionRecord {
     profitRate?: number | null;
 }
 
-/** Raw discovered position — tokenId + DEX + owner, before on-chain scanning. */
-export interface RawPosition {
-    tokenId: string;
-    dex: Dex;
-    ownerWallet: string;
-}
+
 
 /** Result from FeeCalculator.fetchUnclaimedFees() */
 export interface FeeQueryResult {
@@ -195,9 +191,16 @@ export interface WalletEntry {
     positions: WalletPosition[];  // 此錢包已知的所有倉位（含配置 + 開倉時間）
 }
 
+export interface PoolConfig {
+    address: string;
+    dex: Dex;
+    fee: number;
+}
+
 /** 使用者配置（由 Telegram 指令動態管理，持久化於 state.json）。 */
 export interface UserConfig {
     wallets: WalletEntry[];
+    pools?: PoolConfig[];   // 若未設定，fallback 至 config.POOLS
     sortBy?: SortBy;        // 倉位排序鍵，預設 'size'
     intervalMinutes?: number; // 推播間隔（分鐘），預設由 config.DEFAULT_INTERVAL_MINUTES
     bbKLowVol?: number;     // BB k 值（低波動市），預設由 config.BB_K_LOW_VOL

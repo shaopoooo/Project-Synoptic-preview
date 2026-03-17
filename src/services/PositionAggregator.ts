@@ -5,7 +5,8 @@ import { config } from '../config';
 import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { getTokenPrices } from '../utils/tokenPrices';
-import { tickToPrice } from '../utils/math';
+import { TickMath } from '@uniswap/v3-sdk';
+import { tickToPrice, calculateCapitalEfficiency } from '../utils/math';
 import { getTokenDecimals, getTokenSymbol } from '../utils/tokenInfo';
 
 
@@ -54,8 +55,8 @@ export class PositionAggregator {
 
         // LP position value — Uniswap V3 sqrtPrice math
         const sqrtPriceCurrent = Number(poolStats.sqrtPriceX96) / (2 ** 96);
-        const sqrtPriceLower   = Math.sqrt(Math.pow(1.0001, Number(position.tickLower)));
-        const sqrtPriceUpper   = Math.sqrt(Math.pow(1.0001, Number(position.tickUpper)));
+        const sqrtPriceLower = Number(TickMath.getSqrtRatioAtTick(Number(position.tickLower)).toString()) / (2 ** 96);
+        const sqrtPriceUpper = Number(TickMath.getSqrtRatioAtTick(Number(position.tickUpper)).toString()) / (2 ** 96);
         const liq = Number(position.liquidity);
 
         let posAmount0Raw = 0;
@@ -111,6 +112,11 @@ export class PositionAggregator {
             regime: bb?.regime ?? 'Unknown',
             lastUpdated: Date.now(),
             apr: poolStats.apr,
+            inRangeApr: (() => {
+                if (!bb || bb.isFallback || bb.sma <= 0) return undefined;
+                const eff = calculateCapitalEfficiency(bb.upperPrice, bb.lowerPrice, bb.sma);
+                return eff !== null ? poolStats.apr * eff : undefined;
+            })(),
             volSource:   poolStats.volSource ?? 'unknown',
             priceSource: bb && !bb.isFallback ? 'The Graph / GeckoTerminal' : 'RPC (Fallback)',
             bbFallback:  bb ? !!bb.isFallback : true,
