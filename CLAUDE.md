@@ -71,13 +71,16 @@ config/
 | 部署 / Docker / Railway | `README.md` | 不在 CLAUDE.md |
 | 程式架構、模組職責、資料流 | `CLAUDE.md` | README.md 保留高階一行說明 |
 | Telegram 報告欄位邏輯 | `CLAUDE.md` | README.md 保留完整格式範例 |
-| 任務清單 | `CLAUDE.md` | 不在 README.md |
+| 未完成任務清單 | `CLAUDE.md` | 不在 README.md |
+| 已完成實作歷程 | `README.md`「開發歷程」章節 | CLAUDE.md 不保留已完成項目 |
 
 **文件同步規則**
 - **每次變更程式邏輯後，必須同步更新 CLAUDE.md 與 README.md**
-- CLAUDE.md：更新目錄結構、核心資料流、模組說明、任務清單
+- CLAUDE.md：更新目錄結構、核心資料流、模組說明；任務以 P0~P4 優先級架構管理，**完成後從條目清單刪除，對應優先級區塊標注 ✅**
 - README.md：更新環境變數、Telegram 指令、state.json schema、BBEngine 參數等使用者可感知的內容
-- 新增功能 → 兩份文件都要反映；Bug 修正 → CLAUDE.md 任務清單 `[x]`；若有使用者可見變化（指令、格式、env var）→ README.md 一起更新
+- 新增功能 → 先在 CLAUDE.md `## 5. 待處理任務` 對應優先級下以 `[ ]` 記錄；**完成後刪除條目，若該優先級下已無任何待辦則標注 ✅ 已完成**
+- Bug 修正 → 若有對應待處理任務，完成後依上述規則刪除；若無預先記錄，直接更新相關模組說明即可
+- 若有使用者可見變化（指令、格式、env var）→ README.md 一起更新
 - 禁止兩份文件出現相互矛盾的說明；主要文件先更新，另一份對應簡化
 
 **部署文件**
@@ -293,328 +296,66 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 ---
 
-## 5. 任務清單
+## 5. 待處理任務
 
-### ✅ 階段一：基礎建設（已完成）
+> P0 最緊急 → P4 待討論；完成後刪除條目，該優先級全空則標注 ✅
 
-- [x] **RPC 備援**：`src/utils/rpcProvider.ts` 實作 `FallbackProvider`（QuickNode → Alchemy → 公共節點）+ `rpcRetry`
-- [x] **config 拆分**：`env.ts` / `constants.ts` / `abis.ts` 分離，`index.ts` 統一匯出
-- [x] **README.md**：完整記錄環境變數、架構與啟動方式
+### P0 🔴 阻塞中 / 緊急修復
 
-### ✅ 階段二：多 DEX / 多錢包支援（已完成）
+✅ 已完成
 
-- [x] **新增 Aerodrome WETH/cbBTC 池**：fee=85 (0.0085%)，tickSpacing=1，NPM `0x827922...`
-- [x] **池命名統一**：全部改為 `{DEX}_{交易對}_{費率}` 格式（如 `UNISWAP_WETH_CBBTC_0_05`）
-- [x] **多錢包支援**：`env.ts` 改為 `WALLET_ADDRESS_1`、`WALLET_ADDRESS_2`... 編號變數
-- [x] **syncFromChain 多錢包迴圈**：外層錢包、內層 DEX，已同步錢包記錄於 `syncedWallets` Set
-- [x] **getPoolFromTokens 碰撞修正**：key 改為 `${dex}_${fee}`，避免同費率不同 DEX 衝突
-- [x] **dex 型別擴充**：全專案 `'Uniswap' | 'PancakeSwap'` 改為加入 `'Aerodrome'`
+### P1 🟠 高優先（近期動工）
 
-### ✅ 階段三：Bug 修正（已完成）
+- [ ] **穿倉即時告警 (Out-of-Range Alert)**：目前穿倉只能在每輪 cron 掃描時被動發現（延遲 5~30 分鐘）。應在 `ChainEventScanner` 中為重點池新增 Swap event 監聽，在記憶體內維護最新 `currentTick`，一旦偵測到 `currentTick < tickLower` 或 `currentTick > tickUpper` 立即推播 Telegram 告警。實作重點：
+  - 新增 `SwapTickHandler`（實作 `ScanHandler` 介面），訂閱目標池的 `Swap(address,address,int256,int256,uint160,uint128,int24)` event，從最後一個參數取 `tick`
+  - 僅需更新 `appState.positions` 對應倉位的 `currentTick`，不觸發完整 `runPositionScanner()`
+  - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
+  - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
-- [x] **IL 計算錯誤修正**：改用 Uniswap V3 sqrtPrice 數學計算 LP 倉位本金（`amount0 = L × (1/sqrtP_current - 1/sqrtP_upper)`）
-- [x] **Health Score 歸零修正**：連鎖修正（IL 正確後 ilRiskWeight 不再為 $1801）
-- [x] **ilUSD 型別修正**：改為 `number | null`，未設定初始本金時顯示「未設定歷史本金」
-- [x] **previousBandwidth 污染修正**：改為 `previousBandwidths: Record<string, number>`，各池獨立追蹤
-- [x] **initialized flag 改進**：改為 `syncedWallets: Set<string>`，支援熱新增錢包
-- [x] **Aerodrome slot0 ABI 修正**：新增 `AERO_POOL_ABI`（6 個回傳值，無 `feeProtocol`），`PoolScanner` 依 dex 動態選擇
-- [x] **BBEngine 重複查詢修正**：執行順序改為 BBEngine → PositionScanner，`updateAllPositions` 接收 `latestBBs` 避免重複呼叫 GeckoTerminal
-- [x] **鎖倉倉位支援**：`TRACKED_TOKEN_IDS` 結構（`tokenId → dex`），手動補入 Gauge 鎖倉的倉位
-- [x] **Aerodrome Subgraph Invalid URL 修正**：`fetchPoolVolume` 加入 `if (!config.SUBGRAPHS[dex])` guard，無 subgraph 時直接跳至 GeckoTerminal
-- [x] **Aerodrome NPM fee 欄位語意修正**：Aerodrome `positions()` 第 5 欄回傳 `tickSpacing`（非 fee pips），`getPoolFromTokens` 加入 `'Aerodrome_1'` 對應，`feeTierForStats` 強制設為 `0.000085`
-- [x] **BBEngine Aerodrome tickSpacing 修正**：`runBBEngine()` 加入 `feeTier === 0.000085` → `tickSpacing = 1`
-- [x] **Hybrid 手續費計算**：`computePendingFees` 在 PancakeSwap 上 CALL_EXCEPTION（無 `feeGrowthGlobal` selector）；改為混合策略：Aerodrome → `fetchAerodromeGaugeFees()`（voter → gauge → `stakedContains` → `pendingFees` 或 `collect.staticCall`），Uniswap/PancakeSwap → `collect.staticCall({ from: owner })`，最終 fallback `tokensOwed0/1`
-- [x] **BB lowerPrice 夾值 Bug 修正**：移除 `Math.max(0.00000001, lowerPrice)`，Aerodrome tick-ratio 價格 ~2.9e-12 被夾成 `1e-8` 導致 `tickOffsetLower < 0`，最終 BB 顯示 `99.69 ~ 0.029`（上下顛倒）；改為 `Math.max(sma - maxOffset, sma - k * stdDev)` 確保下界永遠 > 0
-- [x] **Startup 執行順序修正**：啟動時改為 `PoolScanner → PositionScanner → BBEngine → RiskManager`（`activePositions` 先填充，BBEngine 才有池子可算），5 分鐘 cron 仍維持 `BBEngine → PositionScanner` 順序（使用預計算 BB 避免重複 API）
+### P2 🟡 中優先（排程中）
 
-### ✅ 階段四：Telegram 報告優化（已完成）
+✅ 已完成
 
-- [x] **合併報告**：廢棄逐位置發送，改為 `sendConsolidatedReport` 單一訊息
-- [x] **各池收益排行**：顯示全部池子 APR 由高到低，標記所有有持倉的池子
-- [x] **排序指令**：`/sort size|apr|unclaimed|health`，狀態保存於 Bot 實例
-- [x] **倉位標頭識別**：顯示錢包尾碼（`0xabc...1234`）與 TokenId
-- [x] **手機排版優化**：`formatPositionBlock` 改為每行 ≤ 40 字元，分組顯示
-- [x] **/explain 指令**：發送完整指標計算公式說明
-- [x] **建倉時間戳**：`syncFromChain` 自動查詢 NFT mint Transfer 事件，快取於 in-memory
-- [x] **總覽區塊**：報告最上方新增總倉位 USD、Unclaimed、總獲利 USD+%（`PnlCalculator.calculatePortfolioSummary()`）
-- [x] **開倉資訊取代淨APR**：改顯示 `⏳ 開倉 X天X小時 · 獲利 +X.XX%`，邏輯集中於 `PnlCalculator.calculateOpenInfo()`
-- [x] **Breakeven 優化**：IL ≥ 0 時顯示「盈利中」取代天數
-- [x] **Compound 獨立換行**：`🔄 Compound` 另起一行，不再與 Breakeven 同行
-- [x] **價格區間樹狀格式**：`├ 你的` / `└ BB` 改善 CJK 與 ASCII 標籤的對齊問題
-- [x] **ILCalculator → PnlCalculator**：重命名並新增 `calculateOpenInfo()`、`calculatePortfolioSummary()`；錢包計數改用 `/^0x[0-9a-fA-F]{40}$/` 正則過濾
-- [x] **倉位標頭改版**：移除 APR，改顯示 `倉位 $xxx | 本金 $xxx | 健康 xx/100`；新增 `PnlCalculator.getInitialCapital(tokenId)` static method 讀取 `.env` 設定值
-- [x] **組合總覽加入本金**：`PortfolioSummary` 新增 `totalInitialCapital` 欄位，Telegram 總覽區塊顯示合計本金
+### P3 🔵 有依賴鏈（需按序執行）
 
-### ✅ 階段五：系統穩定性與強化（已完成）
+✅ 已完成
 
-- [x] **狀態持久化**：`PriceBuffer`、`volCache`、`openTimestampCache`、Bot 排序偏好 存入 `data/state.json`（`src/utils/stateManager.ts`）
-- [x] **記憶體管理**：`volCache` 集中至 `src/utils/cache.ts`，改用 `lru-cache`（max: 100）
-- [x] **動態 Gas Oracle**：`src/utils/rpcProvider.ts` 新增 `fetchGasCostUSD()`，即時取得 `maxFeePerGas × GAS_UNITS × ETH_PRICE`，5 分鐘快取；`RiskManager.analyzePosition()` 接受 `gasCostUSD?` 參數
-- [x] **Pool Address 輸入校驗**：`PoolScanner.fetchPoolStats()` 加入 `/^0x[0-9a-fA-F]{40}$/` 驗證
-- [x] **rpcRetry 補強**：除 rate-limit 外，新增對 `SERVER_ERROR`（502/503）的重試邏輯，避免公共節點瞬斷直接失敗
-- [x] **ChainEventScanner**：`src/services/ChainEventScanner.ts`，取代 `OpenTimestampService.ts`，以 `ScanHandler` 介面統一所有 `getLogs` 掃描邏輯（分塊 2000 blocks、連續失敗上限 3 次、chunk delay 100ms）；`OpenTimestampHandler` 移入此模組；`PositionScanner.syncFromChain()` 改為透過 `chainEventScanner.scan()` 批次掃描
-- [x] **Aerodrome unclaimed fees 修正**：`collect.staticCall` 補上 `{ from: owner }`，讓 `isAuthorizedForToken` 驗證通過；舊版無 from 導致 Aerodrome 手續費永遠為 $0
-- [x] **addPrice 門檻修正**：從 `< 1e-9` 改為 `<= 0`，修正 Aerodrome tick-ratio（~2.9e-12）被誤判為無效價格的問題
-- [x] **BB fallback 最小資料量**：從 `< 2` 改為 `< 5` 筆才 fallback，避免冷啟動時 std dev ≈ 0 導致 BB 帶寬接近零；fallback 標籤從 `'Unknown'` 改為 `'資料累積中'`
-- [x] **logger.ts 強化**：新增 `section()` 分隔線方法、level icon（`·` / `!` / `✖`）、INFO 訊息套用 service 顏色
-- [x] **週期分隔線**：每 5 分鐘 cron 加入 `─── 5m cycle ───` / `─── ready ───` 視覺分隔
-- [x] **訊息類別 emoji**：`⛓` 鏈上、`🌐` API 請求、`💾` 快取、`📍` 倉位、`✅` 完成、`🔄` 重新觸發
-- [x] **去除重複前綴**：移除所有訊息內 `[ServiceName]` 冗餘前綴（tag 已標示）
-- [x] **positions.log 格式重構**：改為純文字結構化格式，每筆快照排版如下：
-  - `positionLogger` 使用 `printf` 純文字格式（`src/utils/logger.ts`）
-  - `PositionRecord` 新增 `apr` 欄位，`scanPosition` 存入 `poolStats.apr`
-  - `formatPositionLog()` 改為帶時間戳標頭的結構化純文字（`src/services/PositionScanner.ts`）
-  - 每個 5 分鐘週期前輸出 `═══ [timestamp] Snapshot ═══` 分隔線
-- [x] **Aerodrome staked 手續費重構**：staked 倉位改為 `voter.gauges()` → `gauge.pendingFees(tokenId)` → `collect.staticCall({from: gauge})` → `tokensOwed` 四級 fallback；unstaked 使用 pool feeGrowth 數學計算；解決舊版 staked 倉位 unclaimed 永遠為 $0 的問題
-- [x] **第三幣獎勵支援**：`PositionRecord` 新增 `unclaimed2` / `fees2USD` / `token2Symbol`；PancakeSwap staked → `masterchef.pendingCake(tokenId)`；Aerodrome staked → `gauge.earned(depositorWallet, tokenId)`；`unclaimedFeesUSD` 已含第三幣 USD 值
-- [x] **isStaked 自動偵測**：`ownerOf` 回傳非已知錢包 → `isStaked=true`；`depositorWallet` 透過 `gauge.stakedContains()` 或 `masterchef.userPositionInfos()` 反查實際持有者
-- [x] **BBEngine EWMA stdDev**：資料 ≥ 5 筆（`MIN_CANDLES_FOR_EWMA`）時改用 EWMA（`α=0.3, β=0.7`）平滑後計算 stdDev，取代原始方差；不足時改由 30D 年化波動率換算 1H stdDev（`sma × vol / √8760`），確保冷啟動也有合理帶寬
-- [x] **k 值調整**：震盪市 `1.2 → 1.5`，趨勢市 `1.8 → 2.0`，regime 標籤以 `k ≤ 1.5` 分界
-- [x] **常數集中化**：BB 參數（`BB_K_LOW_VOL`、`BB_K_HIGH_VOL`、`BB_MAX_OFFSET_PCT`、`EWMA_ALPHA/BETA`、`MIN_CANDLES_FOR_EWMA`）、區塊掃描參數（`BLOCK_SCAN_CHUNK`、`BLOCK_LOOKBACK`、`COLLECTED_FEES_MAX_FAILURES`）、Gas 常數全數移至 `constants.ts`
-- [x] **ChainEventScanner 重構**：`OpenTimestampService.ts` 廢棄，所有 `getLogs` 掃描邏輯集中至 `ChainEventScanner.ts`；新增 `ScanHandler` 介面，未來新增事件類型無需修改核心掃描迴圈
-- [x] **Subgraph 停用**：`SUBGRAPHS` 常數清空（endpoints 已注解），所有池子直接使用 GeckoTerminal
-- [x] **INITIAL_INVESTMENT_USD 維護**：已改為 `.env` 編號變數（`INITIAL_INVESTMENT_<tokenId>`）→ 後於階段十六改為 Telegram 動態管理
-- [x] **TRACKED_TOKEN_IDS 維護**：已改為 `.env` 編號變數（`TRACKED_TOKEN_<tokenId>=<DEX>`）→ 後於階段十六改為 Telegram 動態管理
-- [x] **Round-robin RPC**：`nextProvider()` 串行呼叫自動輪換節點，分散負載
-- [x] **移除死節點**：`base.meowrpc.com` 返回 308，已從 `RPC_FALLBACKS` 移除
-- [x] **State 恢復 positions**：重啟時若 wallet 配置未變，直接從 `state.json` 恢復 tokenId 清單，跳過 `syncFromChain`（省 20-50s）
-- [x] **首次啟動 timestamp 背景補齊**：`syncFromChain(true)` 跳過 getLogs 掃描（避免掃 3M blocks 耗時 10–20 分鐘）；`PositionScanner.fillMissingTimestamps()` 在每次 5 分鐘 cron 背景非同步補齊缺少 `openTimestampMs` 的倉位，補齊後更新 `this.positions` 供下個週期顯示
-- [x] **DexScreener 價格快取**：BBEngine 的 WETH/cbBTC 價格快取 2 分鐘，同週期只打一次 API
+### P4 ⚪ 待討論後動工
 
-### ✅ 階段六：穩定性補強（已完成）
+#### IL 精算與財務模型重構
 
-- [x] **SIGTERM 優雅關機**：`index.ts` 加入 `gracefulShutdown()` handler，同時監聽 `SIGTERM`（Railway redeploy）與 `SIGINT`（Ctrl+C），觸發時呼叫 `saveState()` 寫入 `state.json` 後 `process.exit(0)`
-- [x] **PriceBuffer 冷啟動缺口**：`BBEngine.ts` 新增 `refreshPriceBuffer(poolAddress, currentTick)`；`index.ts` 啟動時在 `runPoolScanner` 完成後、`runPositionScanner` 之前，對所有 `latestPools` 補一次 `refreshPriceBuffer`，確保 buffer 的當前小時 entry 在第一次 `computeDynamicBB` 前已是最新 on-chain 價格，避免 crash 未執行 SIGTERM 時缺 1-2 筆導致 stdDev 偏低
-- [x] **GeckoTerminal 全局 rate limiter**：`geckoRequest(fn)` wrapper（`src/utils/rpcProvider.ts`）：並發 1、最小間隔 1500ms（≤ 40 req/min）；BBEngine `fetchDailyVol()` 與 PoolScanner `fetchPoolVolume()` 均改用 `geckoRequest()`；重試改指數退避（429 → `15s × attempt + jitter`，其他 → `5s × attempt + jitter`）；所有 GeckoTerminal 請求加 `User-Agent: DexBot/1.0`
-- [x] **DexScreener 呼叫補 timeout**：`PoolScanner.fetchPoolStats()` 的 DexScreener `axios.get` 補上 `{ timeout: 8000 }`
-- [x] **Telegram 錯誤通知**：`index.ts` 新增 `sendCriticalAlert(key, msg)`（30 分鐘 cooldown）；`runPoolScanner` 回傳 0 pools 及 `runPositionScanner` catch 時觸發推播
-- [x] **環境變數驗證**：`env.ts` 新增 `validateEnv()`，檢查 `BOT_TOKEN`、`CHAT_ID`、`WALLET_ADDRESS_1`；`main()` 啟動時優先呼叫，缺少則 `process.exit(1)`
-- [x] **SIGINT ×3 修正**：grammY `bot.start()` 自動註冊 SIGINT handler，導致 3 個 handler 同時跑，`state.json.tmp` rename 競態失敗；加入 `isShuttingDown` 旗標，第一個 handler 執行後其餘直接 return
-- [x] **啟動首次掃描幣價 $0 修正**：啟動順序 `PositionScanner → BBEngine`，首次 `aggregateAll` 時 `latestBBs` 為空（`bb=null`），`wethPrice / cbbtcPrice / aeroPrice` 全取到 0；`PositionAggregator` 改為 `bb=null` 時 fallback 到 `getTokenPrices()`
-- [x] **Aerodrome staked 手續費 0/0 修正**：`gauge.pendingFees()` 靜默失敗（此版本 gauge 未實作），`collect.staticCall({from:gauge})` 也回傳 0（費用由 gauge 追蹤，不在 NPM）；新增第 3 層 fallback `computePendingFees()`（pool feeGrowth 數學計算，與 unstaked 相同邏輯）
-- [x] **Timestamp 無限重試修正**：公共節點非 archive node，binary search 結果不穩定，但無失敗計數導致每 cycle 重跑；新增 `timestampFailures: Map<string, number>`，失敗超過 `config.TIMESTAMP_MAX_FAILURES`（= 3）次後寫入 `openTimestampMs = -1`（顯示 N/A），停止重試
+需先確認以下問題：
 
-### ✅ 階段七：計算精度、優化與測試（已完成）
+1. **本金定義**：`initial` 指「首次入金」還是「累計加減倉後的淨投入」？是否需支援動態加減倉紀錄？
+2. **已領取手續費**：是否需要追蹤 `collectedFeesUSD`？若需要，要掃描 `Collect` event 累加。
+3. **SDK 精算必要性**：現行誤差預計 < 1%，在沒有測試保護前是否值得優先投入？
+4. **Health Score 公式**：`50 + roi × 1000` 線性映射在極端值的表現是否符合預期？
 
-- [x] **avg30DBandwidth 修正**：`index.ts` 的 `previousBandwidths` 改為 `bandwidthWindows: Record<string, number[]>` 滾動窗口（保留最近 8640 筆 = 30D × 288 次/天），`avg30DBandwidth` 改為計算窗口均值；`BANDWIDTH_WINDOW_MAX` 移至 `constants.ts`；窗口資料納入 `state.json` 持久化，重啟後自動恢復
-- [x] **PoolScanner 平行化**：`scanAllCorePools` 改為 `Promise.allSettled` 平行掃描（移除串行 jitter delay）；GeckoTerminal 並發由 `geckoLimiter` 統一管控（≤ 2）
-- [x] **GeckoTerminal URL 統一**：`PoolScanner.fetchPoolVolume()` 改用 `config.API_URLS.GECKOTERMINAL_OHLCV`，與 BBEngine 一致
-- [x] **`latestBBs` / `latestRisks` 清理**：`runPositionScanner` 更新 `activePositions` 後，移除無對應持倉的 BB 與風險快取條目
-- [x] **Rebalance Gas 即時化**：`getRebalanceSuggestion` 新增 `gasCostUSD?` 參數；`withdrawSingleSide` 策略加入划算性前置判斷（`unclaimedFeesUSD ≤ gasCost × 2` → 降級 `wait`）；`estGasCost` 改用即時 gas；`updateAllPositions` / `scanPosition` 透傳 `gasCostUSD`，`index.ts` 在 `runPositionScanner` 中呼叫 `fetchGasCostUSD()` 提供
-- [x] **BBEngine 方向性偏移（SD offset）**：`rebalance.ts` `withdrawSingleSide` 以 `currentPrice vs sma` 方向決定偏移量（`sdOffset = 0.3σ × direction`）；強勢時中心上移，弱勢時下移，讓單邊建倉更貼近均值回歸路徑
-- [x] **rebalance.ts 死 import 移除**：`import { BBEngine }` 從未使用，改為從 `../types` import `BBResult`，消除對 BBEngine 的直接依賴
-- [x] **FeeCalculator CAKE 快取移除**：內部重複的 `fetchCakePrice()` 與 `tokenPrices.ts` 功能重疊；改為直接使用傳入的 `cakePrice` 參數
-- [x] **POOL_SCAN_LIST 集中至 config**：`scanAllCorePools()` 原本硬編碼池清單；改為讀取 `config.POOL_SCAN_LIST`，新增池子只需改 `constants.ts` 一個地方
-- [x] **BandwidthTracker 獨立工具類**：30D bandwidth 窗口原本散落在 `index.ts`；集中至 `src/utils/BandwidthTracker.ts`，提供 `update() / snapshot() / restore()`，接入 `state.json` 持久化
-- [x] **latestRisks 全域 Map 消除**：`index.ts` 維護的 `Record<string, RiskAnalysis>` 改為將 `riskAnalysis?: RiskAnalysis` 嵌入 `PositionRecord`，省去全域狀態同步
+確認後執行步驟：
 
-### ✅ 階段八：PositionScanner 解耦（已完成）
+- [ ] 以 `@uniswap/v3-sdk` `Position` 替換 `positionValueUSD` 計算
+- [ ] `PositionRecord` 新增 `collectedFeesUSD` 欄位
+- [ ] `ilUSD` 改為 `LP現值 + unclaimed + collected - 本金`
+- [ ] `RiskManager.analyzePosition` 傳入精算後 `ilUSD`
+- [ ] 補充邊界條件單元測試（依賴 P3 Jest 基礎設施）
 
-God Class 拆解為 Pipeline 架構，已完成：
+#### 回測策略模擬
 
-```
-PositionScanner.fetchAll() → RawChainPosition[]
-      ↓
-PositionAggregator.aggregateAll(rawPositions, latestBBs, latestPools)
-  └── FeeCalculator（手續費 + 第三幣獎勵）→ 基礎 PositionRecord（USD 價值 + Fee 正規化）
-      ↓
-index.ts runPositionScanner() PnL enrichment loop
-  └── PnlCalculator（initialCapital / ilUSD / openedDays / profitRate）
-      ↓
-PositionScanner.updatePositions(assembled)
-      ↓
-index.ts runRiskManager()
-  ├── RiskManager（Health Score、Drift、EOQ、avg30DBandwidth）
-  └── RebalanceService（再平衡建議，使用已計算的 breakevenDays）
-```
+需先確認以下問題：
 
-- [x] **階段一：型別集中化**：`src/types/index.ts` 集中 `PositionRecord`、`BBResult`、`RiskAnalysis`、`PoolStats`、`RebalanceSuggestion`、`RawPosition`、`RawChainPosition`、`FeeQueryResult`、`RewardsQueryResult`、`AggregateInput` 等所有共用型別
-- [x] **階段二：拆分 `FeeCalculator`**：`src/services/FeeCalculator.ts`，純 RPC 手續費計算（Uniswap / PancakeSwap / Aerodrome 三路 + 第三幣獎勵）
-- [x] **階段三：建立 `PositionAggregator`**：`src/services/PositionAggregator.ts`，接收 `RawChainPosition + BBResult + PoolStats`，只產出 USD 價值與手續費正規化的基礎 `PositionRecord`；業務指標（PnL / Risk / Rebalance）全部拉到 index.ts Pipeline 處理
-- [x] **階段四：精簡 PositionScanner**：只負責狀態管理、倉位發現、鏈上資料讀取、時間戳補齊；移除對 RiskManager / PnlCalculator / RebalanceService 的直接耦合
-- [x] **階段五：index.ts 明確化協調**：`fetchAll()` → `aggregateAll()` → PnL enrichment → `updatePositions()` → `runRiskManager()` 五段明確 Pipeline
+1. **再平衡成本模型**：slippage 使用固定比例（0.1%）還是依池子深度動態計算？
+2. **複利假設**：收取的手續費是否自動再投入 LP？
+3. **資料粒度**：GeckoTerminal 只提供 1D OHLCV，1H BB 計算是否可接受用日線代替？
+4. **回測範圍**：只支援現有池子，還是允許自訂池地址？
+5. **輸出格式**：console log、JSON export，還是 Telegram 指令觸發？
 
-目標依賴關係（已達成）：
-- `PositionScanner` → `FeeCalculator`、`ChainEventScanner`
-- `PositionAggregator` → `FeeCalculator` 只（不再 import RiskManager / PnlCalculator / rebalance）
-- `index.ts` 協調所有業務計算
+確認後執行步驟：
 
-### 🔵 階段九：架構整理與維運（待處理）
-
-- [x] **整合共用型別**：`PoolStats`、`BBResult`、`PositionRecord`、`RiskAnalysis` 及所有跨模組型別移至 `src/types/index.ts`（已於階段八完成）
-- [x] **新增 Dockerfile**：multi-stage build（builder → runner）+ `.dockerignore`；README.md 新增 Railway 部署步驟（Volume 掛載、環境變數設定）
-- [ ] **README 常見問題章節**：新增「常見錯誤排除」與「如何看 log」說明，降低部署門檻
-- [ ] **Docker Compose healthcheck**：`docker-compose.yml` 加入 `healthcheck`，讓 Docker 能偵測容器是否卡死
-- [ ] **GitHub Actions CI**：push / PR 時自動跑 `tsc --noEmit` + `jest`，防止帶有型別錯誤的程式碼合入
-
-### 🟡 階段十：IL 精算與財務模型重構（待討論）
-
-**背景**
-目前 `PnlCalculator` 的 `ilUSD` 定義為 `LP現值 + unclaimed - 本金`，`RiskManager` Breakeven 使用 `|cumulativeIL| / dailyFeesUSD`。在以下場景會失準：
-- 已收取手續費再投入後本金基數模糊
-- Aerodrome / PancakeSwap 的 `tokensOwed` 尚未 claim 時未計入 `positionValueUSD`
-- 倉位部分關閉後初始本金定義不一致
-
-**實作前需確認**
-
-1. **本金定義**：`userConfig.wallets[].positions[].initial` 指「首次入金」還是「累計加減倉後的淨投入」？目前為單一 USD 數值（透過 `/capital` 或 `/invest` 動態設定），是否改為支援動態加減倉紀錄？
-2. **已領取手續費**：`ilUSD` 目前不含已領取費用（無鏈上歷史），是否需要追蹤 `collectedFeesUSD`？若需要，要掃描 `Collect` event 累加。
-3. **SDK 精算必要性**：`@uniswap/v3-sdk` `Position` 精算結果與現行誤差預計 < 1%，在沒有測試保護前是否值得優先投入？
-4. **Health Score 公式**：`50 + roi × 1000` 線性映射在極端值（全損 / 超高報酬）的表現是否符合預期？
-
-**改進步驟（確認上述各點後執行）**
-
-- [ ] **步驟一**：以 `@uniswap/v3-sdk` `Position` 替換 `positionValueUSD` 計算（`amount0 × price0 + amount1 × price1`）
-- [ ] **步驟二**：`PositionRecord` 新增 `collectedFeesUSD` 欄位；掃描 `Collect` event 累加或由用戶手動設定
-- [ ] **步驟三**：`ilUSD` 改為 `LP現值 + unclaimed + collected - 本金`，PnL 涵蓋全部已實現收益
-- [ ] **步驟四**：`RiskManager.analyzePosition` 的 `cumulativeIL` 傳入改用精算後 `ilUSD`
-- [ ] **步驟五**：補充邊界條件單元測試（依賴階段十一），確保重構前後數字一致
-
-### 🟡 階段十一：Jest 測試覆蓋（待討論）
-
-**背景**
-`tests/` 目錄目前幾乎空白，對核心計算（IL、BB、Health Score、rebalance 策略）的任何重構都缺乏安全網，且與階段十的財務模型重構互為前置條件。
-
-**實作前需確認**
-
-1. **測試策略優先序**：建議先覆蓋「純計算函式」（BBEngine、RiskManager、PnlCalculator、rebalance.ts）再做「整合流程」；後者需要 mock RPC，成本高且 CI 不穩定。
-2. **Mock 深度**：`PositionScanner` 強耦合 RPC，建議以**階段八解耦完成**為前提才進行整合測試。
-3. **測試資料**：BB / IL 計算優先使用固定數值覆蓋邏輯邊界；真實鏈上快照測試留待後期補充。
-4. **CI RPC Key**：GitHub Actions 跑整合測試時是否需要注入 `RPC_URL` secret？純計算單元測試不需要。
-
-**改進步驟**
-
-- [ ] **步驟一**：建立測試基礎設施（`jest.config.ts`、`tsconfig.test.json`、共用 fixture helper）
-- [ ] **步驟二**：`BBEngine` 單元測試 — EWMA stdDev、k 值選取、lowerPrice 下界保護、fallback（< 5 筆資料）
-- [ ] **步驟三**：`RiskManager` 單元測試 — Health Score 邊界（capital=0、roi 極端值）、Drift 計算、EOQ threshold
-- [ ] **步驟四**：`PnlCalculator` 單元測試 — absolutePNL、openInfo、portfolioSummary（含 null capital）
-- [ ] **步驟五**：`rebalance.ts` 單元測試 — 三種策略選取邏輯、SD offset 方向、Gas 划算性降級
-- [ ] **步驟六**：GitHub Actions CI — push / PR 自動跑 `tsc --noEmit` + `jest`（純計算，不需 RPC secret）
-
-### 🟡 階段十二：回測策略模擬（待討論）
-
-**背景**
-`BacktestEngine.ts` 目前只做靜態 BB 計算，無法量化「持倉不動 vs 觸發 BB 後再平衡」的實際報酬差異。加入 simulation loop 後可在歷史資料上驗證 rebalance 策略是否划算。
-
-**實作前需確認**
-
-1. **再平衡成本模型**：每次再平衡成本 = Gas + Swap slippage。slippage 如何估算？使用固定比例（如 0.1%）還是依池子深度動態計算？
-2. **複利假設**：回測中收取的手續費是否自動再投入 LP？兩種假設結論差異顯著，需統一。
-3. **資料粒度**：GeckoTerminal 免費 API 只提供 1D OHLCV，BB 計算需要 1H。用 1D 資料時 intra-day 觸發點無法精確還原，是否可接受？
-4. **回測範圍**：僅支援現有池子還是允許輸入自訂池地址？
-5. **輸出格式**：純 console log、JSON export、還是透過 Telegram 指令觸發並回傳摘要？
-
-**改進步驟**
-
-- [ ] **步驟一**：`BacktestEngine.ts` 新增 `runSimulation(poolAddress, days)` — 從 GeckoTerminal 拉取 N 天日線 OHLCV
-- [ ] **步驟二**：實作 `HoldStrategy` — 持倉不動時的 IL + 手續費收益（基於 V3 流動性數學）
-- [ ] **步驟三**：實作 `RebalanceStrategy` — 每日收盤後判斷是否觸發 BB；觸發則扣除 Gas + slippage，以新 BB 重建倉位
-- [ ] **步驟四**：輸出比較表：`[日期 | Hold PnL | Rebalance PnL | 再平衡次數 | 累計 Gas]`
-- [ ] **步驟五**：Telegram `/backtest <days>` 指令觸發，結果以訊息回傳（文字摘要 + 關鍵數字）
-
-### ✅ 階段十三：耦合問題修復（已完成）
-
-從 log 分析與靜態依賴分析識別出的耦合問題，按優先度排列。
-
-#### 🔴 高優先（資料一致性 / 重複計算）— 已完成
-
-- [x] **PositionAggregator 重複呼叫 RiskManager（P0）**：`aggregateAll()` 內部以 `bandwidth=0` 呼叫 `RiskManager.analyzePosition()`，`runRiskManager()` 再以正確 bandwidth 呼叫，結果被覆蓋；移除 `PositionAggregator` 內的 RiskManager 呼叫，統一由 `runRiskManager()` 負責，`pos.overlapPercent/breakevenDays/healthScore` 寫回到 `appState.positions` 元素
-- [x] **PositionAggregator 職責過多（P1）**：同時呼叫 `PnlCalculator`、`RiskManager`、`RebalanceService`；拆為純聚合（`assemble()` 只計算 USD 價值與 Fee 正規化）與外層 Pipeline（index.ts 協調 PnL enrichment → Risk → Rebalance）；`gasCostUSD` 從 `AggregateInput` 移除
-- [x] **index.ts 全域狀態提取為 AppState**：`latestPools`、`activePositions`、`latestBBs`、`lastUpdates` 提取至 `src/utils/AppState.ts`（`AppState` class 單例 `appState`）；`lastUpdated` 改為 readonly 鍵防止外部直接覆蓋；新增 `pruneStaleBBs()` 取代 inline 迴圈
-- [x] **TelegramBot 直接 import 服務層（P1）**：移除 `PoolScanner`、`RiskManager`、`BBEngine`、`PnlCalculator` 等服務 import；改從 `../types` 引入型別；Bot 只接收 `entries[]`，計算邏輯從 `PositionRecord` 欄位直接讀取
-
-#### 🟡 中優先（分層違反 / 可測試性）
-
-- [ ] **PositionScanner 全靜態類**：所有方法與狀態為 `static`，無法 mock、無法並行測試；改為可實例化類（`export const positionScanner = new PositionScanner()`），為後續 Jest 覆蓋率鋪路
-- [ ] **BBEngine 全域 PriceBuffer**：`globalPriceBuffer` 為模組級單例，無法注入、無法隔離測試；改為允許注入或每池一個實例
-
-#### 🟢 低優先（重複邏輯整合）
-
-- [x] **tickToPrice 重複實作**：`PositionAggregator`、`PositionScanner`、`BBEngine` 各自實作 tick → price；集中至 `src/utils/math.ts` 的 `tickToPrice(tick, dec0, dec1)` export；`PositionAggregator` 已改用統一版本
-- [x] **Token symbol / decimal 推斷重複**：新增 `src/utils/tokenInfo.ts`（`getTokenDecimals`、`getTokenSymbol`、`TOKEN_DECIMALS`）；`PositionAggregator` 和 `PositionScanner` 均改用統一版本，移除各自的 inline `TOKEN_DEC` map
-- [ ] **Wallet 地址正則重複**：`/^0x[0-9a-fA-F]{40}$/` 散布於 `PnlCalculator`、`PoolScanner`、`TelegramBot`；集中至 `src/utils/validation.ts`
-- [ ] **分散的型別宣告**：`PnlCalculator` 和 `ChainEventScanner` 內定義並匯出了多個公用型別；依「型別管理規範」應集中至 `src/types/index.ts`
-
----
-
-### 🔴 階段十四：效能、安全與架構地雷（待處理）
-
-#### 🔴 高優先（資料安全 / 穩定性）
-
-- [x] **positions.log Health/Drift 永遠顯示預設值 0**：`logSnapshots` 在 `runPositionScanner()` 內呼叫，此時 `runRiskManager()` 尚未執行，所有 `healthScore/overlapPercent/breakevenDays` 均為初始值 0；修正：移除 `runPositionScanner()` 內的 `logSnapshots` 呼叫，改在 `runRiskManager()` 末尾（Risk + Rebalance 均完成後）呼叫，傳入 `appState.positions`
-- [x] **positions.log 時區不一致（標頭 UTC，內文本地時間差 8 小時）**：`formatPositionLog` 使用 `now.getHours()/getMinutes()`（本地時間），標頭 `logSnapshots` 使用 `toISOString()`（UTC），導致標頭顯示 08:05、內文顯示 16:05；修正：`formatPositionLog` 改用 `now.getUTCHours()/getUTCMinutes()`，全面統一 UTC
-- [x] **冷啟動 BB isFallback 未標記**：`prices1H.length < MIN_CANDLES_FOR_EWMA` 時走 vol-derived 路徑但 `isFallback` 未設為 `true`，`regime` 仍顯示 'Low Vol/High Vol'，UI 無法區分「資料累積中」與正常狀態；修正：新增 `isWarmupFallback` flag，冷啟動時設 `isFallback: true`、`regime: '資料累積中'`；log 補充 `(warmup)` 標記
-- [x] **Cron Job Overlap 競態保護**：`buildCronJob` 無 mutex lock；若單次執行超過 5 分鐘（RPC timeout 重試疊加），第二個 cron 被觸發，兩條 coroutine 同時讀寫 `appState` 與 `state.json`，可能導致資料毀損；在閉包外加入 `let isCycleRunning = false`，進入時 `if (isCycleRunning) { log.warn; return; }`，整個 cycle 包在 `try/finally` 中，結束後設回 `false`
-- [x] **aggregateAll 序列 RPC 改並行**：目前 `for...of` 逐個 `await FeeCalculator.fetchUnclaimedFees` + `fetchThirdPartyRewards`；20 個倉位即為幾十次序列 RPC，節點抖動時極易超時；改用 `p-limit`（concurrency = `config.AGGREGATE_CONCURRENCY`，預設 4）+ `Promise.allSettled`，比照 `PoolScanner` 的平行化做法；`AGGREGATE_CONCURRENCY` 集中至 `constants.ts`
-- [x] **Timestamp 背景搜尋即時儲存**：原本 `fillMissingTimestamps` 需等待下一個 cron 週期才會被 `saveState` 寫入 `state.json`，導致重啟中間若發生中斷會流失已搜尋到的資料；修正：將 `saveState` 包為 trigger callback 傳入 `fillMissingTimestamps`，每找到一筆就立刻持久化儲存。
-- [x] **啟動時的非同步 Timestamp 搜尋**：啟動 `main()` 完成所有 sync 與首次掃描、且 `isStartupComplete` 後，立刻觸發背景的 `fillMissingTimestamps()` 而非等待第一個 10m cron，加速冷啟動時新倉位資料的補齊。
-
-#### 🟡 中優先（Single Source of Truth / SRP）
-
-- [x] **RiskManager 魔術數字集中至 config**：`RiskManager.ts` 自定義 `static readonly DRIFT_WARNING_PCT = 80` 與 `RED_ALERT_BREAKEVEN_DAYS = 30`，與 `config.DRIFT_WARNING_PCT` 形成兩個真理來源；全數移至 `constants.ts`（新增 `RED_ALERT_BREAKEVEN_DAYS`、`HIGH_VOLATILITY_FACTOR`），`RiskManager` 改讀 `config.*`，移除所有 `static readonly` 常數
-- [x] **formatPositionLog 提煉至 `formatter.ts`**：`PositionScanner.ts` 塞了近 100 行 `formatPositionLog` / `formatTokenCompact`（下標零、對齊、compactAmount）；Scanner 職責是鏈上資料抓取，不該含 UI 排版；提煉至 `src/utils/formatter.ts`，`TelegramBot` 與 console logger 共用同一套工具
-- [x] **Telegram /bbk 指令**：`AppState` 新增 `bbKLowVol / bbKHighVol`（預設讀 config）；`BBEngine.computeDynamicBB` 改讀 `appState` 而非 `config`；`/bbk <low> <high>` 直接更新 `appState.bbKLowVol/bbKHighVol` 並透過 `onUserConfigChange` 持久化；positions.log 標頭與 Telegram 報告底部均顯示目前 k 值
-- [x] **Telegram /help 指令**：新增 `/help` 列出所有指令（sort / interval / bbk / explain）；更新 `/explain` 補充 BB k 值、再平衡策略、獲利率公式說明
-- [x] **關閉倉位自動剔除**：`updatePositions()` 偵測 `liquidity=0` 時加入 `closedTokenIds` Set 並移除追蹤；`syncFromChain` / `restoreDiscoveredPositions` 跳過已關閉 tokenId；`getClosedSnapshot()` / `restoreClosedTokenIds()` 接入 `state.json` 持久化，重啟不重新掃描已關倉 NFT
-
-#### 🟢 低優先（精度地雷，階段十前置）
-
-- [ ] **浮點數精度地雷（為階段十打底）**：`PositionAggregator` 用 `Math.pow(1.0001, tick)` 與 IEEE-754 雙精度計算 LP 值；大 tick 或幣價懸殊池（如 SHIB/ETH）會累積精度流失，導致 PnL 與 Uniswap 介面差距擴大；進入階段十 IL 精算前，應優先廢棄浮點數，改用 `@uniswap/v3-sdk` 的 `TickMath` 與 `Position` 物件做淨值計算
-
-### ✅ 階段十五：Uniswap V4 支援 + DEX 命名統一（已完成）
-
-- [x] **Dex 型別版本號**：`'Uniswap'` → `'UniswapV3'`；`'PancakeSwap'` → `'PancakeSwapV3'`；新增 `'UniswapV4'`、預留 `'PancakeSwapV2'`；集中至 `src/types/index.ts`
-- [x] **POOLS / NPM_ADDRESSES 常數鍵更名**：`PANCAKE_` → `PANCAKEV3_`、`UNISWAP_` → `UNISWAPV3_`、新增 `UNISWAPV4_ETH_CBBTC`；`constants.ts` Dex import 移至頂部
-- [x] **V4 合約地址**：`V4_POOL_MANAGER`、`V4_POSITION_MANAGER`、`V4_STATE_VIEW` 加入 `constants.ts`；`V4_NPM_ABI` / `V4_STATE_VIEW_ABI` 加入 `abis.ts`
-- [x] **PositionScanner V4**：`_fetchV4NpmData()` — `getPoolAndPositionInfo()` 取 PoolKey + packed PositionInfo；bits 0-23 = tickLower，bits 24-47 = tickUpper；poolId 動態計算（`keccak256(abi.encode(currency0,currency1,fee,tickSpacing,hooks))`）
-- [x] **FeeCalculator V4**：`_fetchV4Fees()` — `StateView.getPositionInfo()` + `getFeeGrowthInside()` delta 計算；`salt = bytes32(tokenId)`
-- [x] **PoolScanner V4**：`_fetchV4PoolStats()` — `StateView.getSlot0(poolId)` 取 tick / sqrtPriceX96；bytes32 poolId 驗證正規式 `/^0x[0-9a-fA-F]{64}$/`
-- [x] **tokenInfo.ts ETH native**：`address(0)` → `'ETH'`，支援 V4 ETH/cbBTC pair
-- [x] **stateManager 遷移**：`loadState()` 加入 `DEX_MIGRATION`（`PancakeSwap→PancakeSwapV3`、`Uniswap→UniswapV3`），向後相容舊 `state.json`
-- [x] **index.ts TRACKED_TOKEN_IDS 偵測**：啟動時比對 `TRACKED_TOKEN_IDS` 與 `cachedPositions`，有新增未追蹤 tokenId 時強制 `syncFromChain`（避免 restore 路徑跳過新倉位）
-
-### ✅ 階段十六：Telegram 動態配置（已完成）
-
-- [x] **錢包中心化 `UserConfig` 介面**：`src/types/index.ts` 定義 `WalletPosition { tokenId, dexType, initial, externalStake, openTimestamp, closed? }`、`WalletEntry { address, positions[] }`、`UserConfig { wallets[] }`；`appState.userConfig` 統一管理錢包、本金、外部質押、開倉時間戳、關閉狀態
-- [x] **helper 函式**：`ucWalletAddresses`、`ucInitialInvestment`、`ucGetOpenTimestamp`、`ucFindWallet`、`ucTrackedPositions`、`ucUpsertPosition`、`ucRemovePosition` — 所有讀寫通過 helper，不直接操作巢狀結構
-- [x] **openTimestamps 合併**：移除 `state.json` 的獨立 `openTimestamps` 欄位；開倉時間戳改存於 `userConfig.wallets[].positions[].openTimestamp`（`undefined` = 待查；`-1` = 查詢放棄 N/A；timestamp ms = 已取得）
-- [x] **discoveredPositions / syncedWallets 移除**：倉位發現後直接寫入 `userConfig` 的對應 wallet；`syncedWallets` 改由比對 `savedState.userConfig.wallets` 地址集合推斷
-- [x] **state.json 持久化**：`PersistedState` 新增 `userConfig?: UserConfig`；移除 `openTimestamps`、`discoveredPositions`、`syncedWallets`；`saveState()` 接收 `userConfig` 參數；`loadState()` 實作向後相容 migration（舊格式 → 新格式）
-- [x] **全專案替換**：`config.WALLET_ADDRESSES` → `ucWalletAddresses(appState.userConfig)`；`config.INITIAL_INVESTMENT_USD[tokenId]` → `ucInitialInvestment(appState.userConfig, tokenId)`；`config.TRACKED_TOKEN_IDS` → `ucTrackedPositions(appState.userConfig)`（PnlCalculator / PositionScanner / FeeCalculator / PositionAggregator / index.ts）
-- [x] **Telegram `/wallet`**：`list`（預設）/ `add <address>` / `rm <address>`；address 格式驗證；新增後即時持久化
-- [x] **Telegram `/invest`**：無參 = 列出所有倉位配置；`<addr> <tokenId> <amount> <dex>` = 同時設定本金 + `externalStake=true`（dex 必填）；amount=0 清除本金（保留 externalStake）；dex 值驗證（`VALID_DEXES`）
-- [x] **Telegram `/capital [tokenId] [amount]`**：無參 = 列出所有本金設定；`<tokenId> <amount>` = 設定/更新本金（不需地址）；amount=0 清除本金
-- [x] **Telegram `/stake [address tokenId dex]`**：無參 = 列出所有外部質押倉位；`<addr> <tokenId> <dex>` = 標記倉位為外部質押（Gauge/MasterChef）
-- [x] **Telegram `/unstake <tokenId>`**：設定 `externalStake=false`，保留本金設定
-- [x] **Telegram `/dex`**：列出 `config.VALID_DEXES` 所有支援值
-- [x] **`setUserConfigChangeCallback`**：TelegramBot 新增回呼機制；index.ts wire 後，每次 userConfig 變更立即更新 `appState.userConfig` 並呼叫 `saveState()`
-- [x] **validateEnv() 調整**：移除強制要求 `WALLET_ADDRESS_1`（wallets 可從 state.json 恢復）
-
-### ✅ 階段十七：常數集中化與型別架構整理（已完成）
-
-- [x] **`UserConfig` 型別移至 `src/types/index.ts`**：`WalletPosition`、`WalletEntry`、`UserConfig` 集中於 `src/types/index.ts`；所有模組直接從 `../types` import，`AppState.ts` 移除 re-export
-- [x] **`UserConfig` 新增 Telegram 可修改欄位**：`sortBy?: SortBy`、`intervalMinutes?: number`、`bbKLowVol?: number`、`bbKHighVol?: number` — 所有 Telegram 可設定的全域變數統一收進 `userConfig`
-- [x] **`VALID_DEXES` 移至 `constants.ts`**：移除 `TelegramBot.ts` 的 inline `const VALID_DEXES`；改由 `config.VALID_DEXES` 讀取；確保 DEX 驗證邏輯與型別定義同源
-- [x] **`DEX_MIGRATION` 移至 `constants.ts`**：移除 `stateManager.ts` 的 inline `const DEX_MIGRATION`；改由 `config.DEX_MIGRATION` 讀取
-- [x] **`saveState` 簡化**：移除獨立的 `sortBy`、`intervalMinutes`、`bbKLowVol`、`bbKHighVol`、`closedTokenIds` 參數（均已在 `userConfig` 內）；最終簽名 `saveState(priceBuffer, bandwidthWindows?, userConfig?)`
-- [x] **`PersistedState` 清理**：舊版頂層欄位 `sortBy`、`intervalMinutes`、`bbKLowVol`、`bbKHighVol` 標記 `@deprecated`；`loadState` 自動遷移至 `userConfig` 對應欄位
-- [x] **`setBbkCallback` / `getSortBy` / `setSortBy` 移除**：`TelegramBotService` 移除獨立的 bbk callback 及 sortBy getter/setter；`/bbk` 直接更新 `appState` 並呼叫 `onUserConfigChange`；`/sort` 透過 `onUserConfigChange` 持久化
-- [x] **restore 邏輯集中化**：`index.ts` 啟動恢復只需讀取 `savedState.userConfig`，不再從頂層欄位讀取 bbK / sortBy / intervalMinutes
-
-### ✅ 階段十八：型別集中化、欄位重命名與指令重構（已完成）
-
-- [x] **所有共用 interface 集中至 `src/types/index.ts`**：移除各服務/工具模組的 `export type { ... }` 死 re-export（`BBEngine`、`PoolScanner`、`FeeCalculator`、`RiskManager`、`ChainEventScanner`、`PnlCalculator`、`tokenPrices`、`cache`、`AppState`）；`TokenPrices`、`OpenInfo`、`PortfolioSummary`、`ScanRequest`、`ScanHandler`、`BBVolEntry` 均移入 `types/index.ts`
-- [x] **`WalletEntry.dex[]` → `WalletEntry.positions[]`**：欄位語意明確，避免與 `PoolStats.dex` / `PositionRecord.dex` 混淆
-- [x] **`WalletPosition.tracked` → `WalletPosition.externalStake`**：明確表達「倉位質押於外部合約（Gauge/MasterChef），不在錢包 NFT balance 中」
-- [x] **`closedTokenIds[]` 移除，改用 `WalletPosition.closed?: boolean`**：關閉狀態自包含於倉位物件；`PositionScanner.closedTokenIds` Set 保留作 O(1) in-memory 查找，啟動時由 `restoreFromUserConfig()` 從 `userConfig.wallets[].positions[].closed` 重建；`stateManager` migration 保留向後相容
-- [x] **`saveState` 最終簡化至 3 參數**：移除 `closedTokenIds` 獨立參數
-- [x] **Telegram `/capital [tokenId] [amount]`**：新增純本金設定指令，不需要地址（透過 `ucFindWallet` 查找）
-- [x] **Telegram `/stake <address> <tokenId> <dex>`**：新增外部質押登記指令（純 `externalStake=true`，不含本金）
-- [x] **Telegram `/unstake <tokenId>`**：取代 `/untrack`，設定 `externalStake=false`
-- [x] **Telegram `/dex`**：顯示 `config.VALID_DEXES` 清單
-- [x] **`/invest` dexArg 必填**：移除 `UniswapV3` 預設值，避免靜默設錯 DEX
-- [x] **無錢包冷啟動**：移除 `validateEnv` 強制要求 `WALLET_ADDRESS_1`；`main()` 無錢包時跳過掃描等待 `/wallet add`
-- [x] **新增錢包自動觸發 chain scan**：`onUserConfigChange` 偵測新錢包後背景執行 `syncFromChain`，完成後儲存 `state.json`
+- [ ] `BacktestEngine.ts` 新增 `runSimulation(poolAddress, days)`
+- [ ] 實作 `HoldStrategy`（持倉不動的 IL + 手續費收益）
+- [ ] 實作 `RebalanceStrategy`（每日收盤觸發 BB 判斷，扣除 Gas + slippage）
+- [ ] 輸出比較表：`[日期 | Hold PnL | Rebalance PnL | 再平衡次數 | 累計 Gas]`
+- [ ] Telegram `/backtest <days>` 指令
 
 ---
 

@@ -1,10 +1,12 @@
 import { Bot } from 'grammy';
 import { config } from '../config';
-import { PoolStats, BBResult, PositionRecord, RiskAnalysis, SortBy, Dex, UserConfig } from '../types';
+import { PoolStats, BBResult, PositionRecord, RiskAnalysis, SortBy, Dex, UserConfig, PoolConfig } from '../types';
 import { createServiceLogger } from '../utils/logger';
 import { getTokenPrices } from '../utils/tokenPrices';
 import { buildTelegramPositionBlock, fmtInterval } from '../utils/formatter';
-import { appState, ucWalletAddresses, ucInitialInvestment, ucTrackedPositions, ucUpsertPosition, ucRemovePosition, ucFindWallet } from '../utils/AppState';
+import { appState, ucTrackedPositions, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
+import { isValidWalletAddress, isValidPoolAddress, isValidPoolV4Id } from '../utils/validation';
+import { calculateCapitalEfficiency } from '../utils/math';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -13,7 +15,7 @@ export const VALID_INTERVALS = [10, 20, 30, 60, 120, 180, 240, 360, 480, 720, 14
 export type IntervalMinutes = typeof VALID_INTERVALS[number];
 
 export function minutesToCron(min: number): string {
-    if (min < 60)   return `*/${min} * * * *`;
+    if (min < 60) return `*/${min} * * * *`;
     if (min === 1440) return `0 0 * * *`;
     return `0 */${min / 60} * * *`;
 }
@@ -65,6 +67,10 @@ export class TelegramBotService {
                 `/wallet rm &lt;address&gt; — 移除錢包\n\n` +
                 `<b>🔀 DEX</b>\n` +
                 `/dex — 列出所有支援的 DEX\n\n` +
+                `<b>🏊 池清單</b>\n` +
+                `/pool — 列出監測池\n` +
+                `/pool add &lt;address&gt; &lt;dex&gt; &lt;fee%&gt; — 新增池\n` +
+                `/pool rm &lt;address&gt; — 移除池\n\n` +
                 `<b>💰 本金</b>\n` +
                 `/capital — 列出所有本金設定\n` +
                 `/capital &lt;tokenId&gt; &lt;amount&gt; — 設定/更新本金（不需地址）\n\n` +
@@ -136,7 +142,12 @@ export class TelegramBotService {
                 `<b>再平衡策略</b>\n` +
                 `等待回歸 — 偏離小，無需行動\n` +
                 `DCA 定投 — 偏離中，用手續費補倉\n` +
-                `撤資單邊建倉 — 偏離大，單幣掛單等回歸`;
+                `撤資單邊建倉 — 偏離大，單幣掛單等回歸\n\n` +
+                `<b>區間 APR（In-Range APR）</b>\n` +
+                `= 池子全範 APR × 資金效率乘數\n` +
+                `資金效率 = 1 / (√(BB上軌/SMA) - √(BB下軌/SMA))\n` +
+                `BB 區間越窄 → 效率越高 → 區間 APR 越大\n` +
+                `僅在 BB 非 fallback 時顯示；報告與池排行均呈現`;
             ctx.reply(msg, { parse_mode: 'HTML' });
         });
 
@@ -182,13 +193,13 @@ export class TelegramBotService {
                 ctx.reply('❌ 格式錯誤。用法: <code>/bbk &lt;low&gt; &lt;high&gt;</code>', { parse_mode: 'HTML' });
                 return;
             }
-            const kLow  = parseFloat(parts[0]);
+            const kLow = parseFloat(parts[0]);
             const kHigh = parseFloat(parts[1]);
             if (isNaN(kLow) || isNaN(kHigh) || kLow <= 0 || kHigh <= 0 || kLow > kHigh) {
                 ctx.reply('❌ 數值無效。low 與 high 需為正數且 low ≤ high');
                 return;
             }
-            appState.bbKLowVol  = kLow;
+            appState.bbKLowVol = kLow;
             appState.bbKHighVol = kHigh;
             const newCfg = { ...appState.userConfig, bbKLowVol: kLow, bbKHighVol: kHigh };
             if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
@@ -225,7 +236,7 @@ export class TelegramBotService {
             }
 
             if (sub === 'add') {
-                if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+                if (!isValidWalletAddress(addr)) {
                     ctx.reply('❌ 無效地址格式。請輸入 0x 開頭的 42 位十六進位地址。');
                     return;
                 }
@@ -242,7 +253,7 @@ export class TelegramBotService {
             }
 
             if (sub === 'rm') {
-                if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+                if (!isValidWalletAddress(addr)) {
                     ctx.reply('❌ 無效地址格式。');
                     return;
                 }
@@ -260,6 +271,85 @@ export class TelegramBotService {
             }
 
             ctx.reply('❌ 用法:\n/wallet — 列出錢包\n/wallet add &lt;address&gt;\n/wallet rm &lt;address&gt;', { parse_mode: 'HTML' });
+        });
+
+        // ── /pool（池清單管理）──────────────────────────────────────────────
+        this.bot.command('pool', async (ctx) => {
+            const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+            const sub = parts[0]?.toLowerCase() ?? '';
+
+            const effectivePools = ucPoolList(appState.userConfig);
+            const isCustomized = !!(appState.userConfig.pools && appState.userConfig.pools.length > 0);
+
+            if (!sub || sub === 'list') {
+                const lines = effectivePools.map((p, i) => {
+                    const feePct = `${(p.fee * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+                    const addrShort = `${p.address.slice(0, 10)}…`;
+                    return `${i + 1}. ${p.dex} ${feePct}  <code>${addrShort}</code>`;
+                });
+                const src = isCustomized ? '（自訂）' : '（預設）';
+                ctx.reply(
+                    `🏊 <b>監測池清單 ${src}</b>\n\n${lines.join('\n')}\n\n` +
+                    `用法:\n/pool add &lt;address&gt; &lt;dex&gt; &lt;fee%&gt;\n/pool rm &lt;address&gt;`,
+                    { parse_mode: 'HTML' }
+                );
+                return;
+            }
+
+            if (sub === 'add') {
+                const addr = parts[1] ?? '';
+                const dex = parts[2] as Dex | undefined;
+                const feeRaw = parts[3] ?? '';
+
+                if (!isValidPoolAddress(addr) && !isValidPoolV4Id(addr)) {
+                    ctx.reply('❌ 無效地址格式。V3 需 42 位，V4 poolId 需 66 位（bytes32）。');
+                    return;
+                }
+                if (!dex || !config.VALID_DEXES.includes(dex)) {
+                    ctx.reply(`❌ 無效 DEX。可用值: ${config.VALID_DEXES.join(' / ')}`);
+                    return;
+                }
+                const feeNum = parseFloat(feeRaw) / 100;
+                if (!feeRaw || isNaN(feeNum) || feeNum <= 0) {
+                    ctx.reply('❌ 無效費率。請輸入百分比，如 <code>0.3</code> 代表 0.3%', { parse_mode: 'HTML' });
+                    return;
+                }
+                const addrLower = addr.toLowerCase();
+                if (effectivePools.some(p => p.address.toLowerCase() === addrLower)) {
+                    ctx.reply(`⚠️ 此池已在清單中: <code>${addr.slice(0, 20)}…</code>`, { parse_mode: 'HTML' });
+                    return;
+                }
+                const newPool: PoolConfig = { address: addr, dex, fee: feeNum };
+                const newPools = [...effectivePools, newPool];
+                const newCfg = { ...appState.userConfig, pools: newPools };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+                const feePct = `${(feeNum * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+                ctx.reply(`✅ 已新增池: ${dex} ${feePct}\n<code>${addr}</code>`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            if (sub === 'rm') {
+                const addr = parts[1] ?? '';
+                if (!addr) {
+                    ctx.reply('❌ 用法: /pool rm &lt;address&gt;', { parse_mode: 'HTML' });
+                    return;
+                }
+                const addrLower = addr.toLowerCase();
+                const filtered = effectivePools.filter(p => p.address.toLowerCase() !== addrLower);
+                if (filtered.length === effectivePools.length) {
+                    ctx.reply(`⚠️ 找不到此池: <code>${addr.slice(0, 20)}…</code>`, { parse_mode: 'HTML' });
+                    return;
+                }
+                const newCfg = { ...appState.userConfig, pools: filtered };
+                if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
+                ctx.reply(`✅ 已移除池: <code>${addr.slice(0, 20)}…</code>`, { parse_mode: 'HTML' });
+                return;
+            }
+
+            ctx.reply(
+                '❌ 用法:\n/pool — 列出池清單\n/pool add &lt;address&gt; &lt;dex&gt; &lt;fee%&gt;\n/pool rm &lt;address&gt;',
+                { parse_mode: 'HTML' }
+            );
         });
 
         // ── /invest（合併 track 功能）────────────────────────────────────────
@@ -307,10 +397,10 @@ export class TelegramBotService {
             // ── 解析與驗證 ───────────────────────────────────────────────────
             const address = parts[0];
             const tokenId = parts[1];
-            const amount  = parseFloat(parts[2]);
-            const dexArg  = parts[3] as Dex;
+            const amount = parseFloat(parts[2]);
+            const dexArg = parts[3] as Dex;
 
-            if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+            if (!isValidWalletAddress(address)) {
                 ctx.reply('❌ 無效錢包地址（需為 0x 開頭的 42 位十六進位）');
                 return;
             }
@@ -329,8 +419,8 @@ export class TelegramBotService {
 
             // ── Upsert ───────────────────────────────────────────────────────
             const newCfg = ucUpsertPosition(appState.userConfig, address, tokenId, {
-                initial:  amount,
-                dexType:  dexArg,
+                initial: amount,
+                dexType: dexArg,
                 externalStake: true,
             });
             if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
@@ -374,9 +464,9 @@ export class TelegramBotService {
 
             const address = parts[0];
             const tokenId = parts[1];
-            const dexArg  = parts[2] as Dex;
+            const dexArg = parts[2] as Dex;
 
-            if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
+            if (!isValidWalletAddress(address)) {
                 ctx.reply('❌ 無效錢包地址（需為 0x 開頭的 42 位十六進位）');
                 return;
             }
@@ -525,16 +615,16 @@ export class TelegramBotService {
         });
 
         // ── 總覽區塊 ──────────────────────────────────────────────
-        const totalPositionUSD    = entries.reduce((s, e) => s + e.position.positionValueUSD, 0);
-        const totalUnclaimedUSD   = entries.reduce((s, e) => s + e.position.unclaimedFeesUSD, 0);
+        const totalPositionUSD = entries.reduce((s, e) => s + e.position.positionValueUSD, 0);
+        const totalUnclaimedUSD = entries.reduce((s, e) => s + e.position.unclaimedFeesUSD, 0);
         const totalInitialCapital = entries.reduce((s, e) => s + (e.position.initialCapital ?? 0), 0);
-        const pnlValues           = entries.map(e => e.position.ilUSD);
-        const totalPnL            = pnlValues.every(v => v !== null)
+        const pnlValues = entries.map(e => e.position.ilUSD);
+        const totalPnL = pnlValues.every(v => v !== null)
             ? pnlValues.reduce((s, v) => s + (v ?? 0), 0) : null;
-        const totalPnLPct         = (totalPnL !== null && totalInitialCapital > 0)
+        const totalPnLPct = (totalPnL !== null && totalInitialCapital > 0)
             ? (totalPnL / totalInitialCapital) * 100 : null;
-        const walletCount         = new Set(
-            entries.map(e => e.position.ownerWallet).filter(w => /^0x[0-9a-fA-F]{40}$/.test(w))
+        const walletCount = new Set(
+            entries.map(e => e.position.ownerWallet).filter(w => isValidWalletAddress(w))
         ).size;
         const fmtUSD = (v: number) => v >= 0 ? `+$${v.toFixed(1)}` : `-$${Math.abs(v).toFixed(1)}`;
 
@@ -570,7 +660,15 @@ export class TelegramBotService {
                 const aprPct = (p.apr * 100).toFixed(1);
                 const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(0)}K` : `$${p.tvlUSD.toFixed(0)}`;
                 const tag = activePoolIds.has(p.id.toLowerCase()) ? ' ◀ 你的倉位' : '';
-                msg += `\n${rank} ${label} — APR <b>${aprPct}%</b> | TVL ${tvl}${tag}`;
+                const bb = appState.bbs[p.id.toLowerCase()];
+                let inRangeTag = '';
+                if (bb && !bb.isFallback && bb.sma > 0) {
+                    const eff = calculateCapitalEfficiency(bb.upperPrice, bb.lowerPrice, bb.sma);
+                    if (eff !== null) {
+                        inRangeTag = ` → 區間 <b>${(p.apr * eff * 100).toFixed(1)}%</b>`;
+                    }
+                }
+                msg += `\n${rank} ${label} — APR <b>${aprPct}%</b>${inRangeTag} | TVL ${tvl}${tag}`;
             });
         }
 
