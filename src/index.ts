@@ -281,9 +281,11 @@ async function main() {
   botService.setPositionScanner(positionScanner);
   botService.setRescheduleCallback(reschedule);
   botService.setUserConfigChangeCallback(async (cfg) => {
-    // 在更新前記錄舊錢包清單，用來偵測新增錢包
+    // 在更新前記錄舊錢包清單與已追蹤的 tokenId，用來偵測新增項目
     const prevWalletSet = new Set(ucWalletAddresses(appState.userConfig).map(w => w.toLowerCase()));
+    const prevTrackedIds = new Set(ucTrackedPositions(appState.userConfig).map(t => t.tokenId));
     const addedWallets = ucWalletAddresses(cfg).filter(w => !prevWalletSet.has(w.toLowerCase()));
+    const addedTracked = ucTrackedPositions(cfg).filter(t => !prevTrackedIds.has(t.tokenId));
 
     appState.userConfig = cfg;
     // bbKLowVol / bbKHighVol 在 userConfig 更新後同步到 appState runtime 欄位（BBEngine 使用）
@@ -299,12 +301,15 @@ async function main() {
     const investments = cfg.wallets.reduce((s, w) => s + w.positions.filter(p => p.initial > 0).length, 0);
     log.info(`💾 userConfig updated & saved — wallets: ${wallets.length}, investments: ${investments}, tracked: ${tracked.length}`);
 
-    // 有新增錢包 → 背景觸發 chain scan 自動發現倉位，完成後更新 state.json
-    if (addedWallets.length > 0) {
-      log.info(`🔍 新錢包偵測到，背景觸發 chain scan: ${addedWallets.join(', ')}`);
+    // 有新增錢包或新增 externalStake 倉位 → 背景觸發 chain scan
+    if (addedWallets.length > 0 || addedTracked.length > 0) {
+      const reason = addedWallets.length > 0
+        ? `新錢包: ${addedWallets.join(', ')}`
+        : `新追蹤倉位: ${addedTracked.map(t => `#${t.tokenId}`).join(', ')}`;
+      log.info(`🔍 ${reason}，背景觸發 chain scan`);
       positionScanner.syncFromChain(true)
         .then(() => saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig))
-        .catch(e => log.error(`Auto sync (new wallet): ${e}`));
+        .catch(e => log.error(`Auto sync (new tracked): ${e}`));
     }
   });
   botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
