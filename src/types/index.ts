@@ -9,6 +9,7 @@ export interface PoolStats {
     dex: Dex;
     feeTier: number;
     apr: number;
+    farmApr?: number;       // CAKE/AERO emission APR (staking rewards), undefined if not applicable
     tvlUSD: number;
     dailyFeesUSD: number;
     tick: number;

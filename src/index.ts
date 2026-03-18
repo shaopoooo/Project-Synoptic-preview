@@ -278,6 +278,7 @@ async function main() {
   validateEnv();
   log.section('DexInfoBot startup');
 
+  botService.setPositionScanner(positionScanner);
   botService.setRescheduleCallback(reschedule);
   botService.setUserConfigChangeCallback(async (cfg) => {
     // 在更新前記錄舊錢包清單，用來偵測新增錢包

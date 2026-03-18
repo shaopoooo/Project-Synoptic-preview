@@ -233,6 +233,74 @@ export class PositionScanner {
     }
 
     /**
+     * Validate and execute an unstake request.
+     * Returns a result object so TelegramBot only needs to format the message.
+     *
+     * Outcomes:
+     *  'closed'       — liquidity=0, marked closed automatically
+     *  'still_staked' — NFT still in Gauge, unstake blocked
+     *  'ok'           — externalStake cleared, will be picked up by wallet scan
+     *  'not_found'    — tokenId not in userConfig
+     */
+    async unstake(tokenId: string): Promise<
+        | { status: 'closed' }
+        | { status: 'still_staked'; owner: string }
+        | { status: 'ok' }
+        | { status: 'not_found' }
+        | { status: 'chain_error'; error: string }
+    > {
+        const walletAddr = ucFindWallet(appState.userConfig, tokenId);
+        if (!walletAddr) return { status: 'not_found' };
+
+        const walletPos = appState.userConfig.wallets
+            .flatMap(w => w.positions)
+            .find(p => p.tokenId === tokenId);
+        const dex = walletPos?.dexType ?? 'Aerodrome';
+        const npmAddr = config.NPM_ADDRESSES[dex];
+
+        if (npmAddr) {
+            try {
+                const npm = new ethers.Contract(npmAddr, config.NPM_ABI, nextProvider());
+                const [posData, owner] = await Promise.all([
+                    rpcRetry(() => npm.positions(tokenId), `positions(${tokenId})`),
+                    rpcRetry(() => npm.ownerOf(tokenId), `ownerOf(${tokenId})`).catch(() => null),
+                ]);
+
+                if (Number(posData.liquidity) === 0) {
+                    this.closedTokenIds.add(tokenId);
+                    appState.userConfig = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { externalStake: false, closed: true });
+                    this.positions = this.positions.filter(p => p.tokenId !== tokenId);
+                    log.info(`#${tokenId} unstake: liquidity=0, marked closed`);
+                    return { status: 'closed' };
+                }
+
+                const knownWallets = ucWalletAddresses(appState.userConfig).map(a => a.toLowerCase());
+                if (owner && !knownWallets.includes(owner.toLowerCase())) {
+                    log.warn(`#${tokenId} unstake blocked: NFT still in ${owner}`);
+                    return { status: 'still_staked', owner };
+                }
+            } catch (e: any) {
+                // NFT burned: Aerodrome reverts "ID", ERC721 reverts "nonexistent token"
+                const msg: string = e.message ?? '';
+                const isBurned = msg.includes('"ID"') || msg.includes('nonexistent token');
+                if (isBurned) {
+                    this.closedTokenIds.add(tokenId);
+                    appState.userConfig = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { externalStake: false, closed: true });
+                    this.positions = this.positions.filter(p => p.tokenId !== tokenId);
+                    log.info(`#${tokenId} unstake: NFT burned, marked closed`);
+                    return { status: 'closed' };
+                }
+                log.warn(`#${tokenId} unstake chain check failed: ${e.message}`);
+                return { status: 'chain_error', error: e.message };
+            }
+        }
+
+        appState.userConfig = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { externalStake: false });
+        log.info(`#${tokenId} unstake: externalStake cleared`);
+        return { status: 'ok' };
+    }
+
+    /**
      * Optional: Generate a text report of positions to a log file.
      * Call this at the end of the analysis pipeline.
      */
@@ -307,8 +375,20 @@ export class PositionScanner {
                 tickSpacing,
                 openTimestampMs,
             };
-        } catch (error) {
-            log.error(`npm fetch failed  #${tokenId} (${dex}): ${error}`);
+        } catch (error: any) {
+            const msg: string = error?.message ?? '';
+            const isBurned = msg.includes('"ID"') || msg.includes('nonexistent token');
+            if (isBurned) {
+                const walletAddr = ucFindWallet(appState.userConfig, tokenId);
+                if (walletAddr) {
+                    this.closedTokenIds.add(tokenId);
+                    appState.userConfig = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { closed: true });
+                    this.positions = this.positions.filter(p => p.tokenId !== tokenId);
+                    log.info(`#${tokenId} NFT burned — auto-closed, removed from tracking`);
+                }
+            } else {
+                log.error(`npm fetch failed  #${tokenId} (${dex}): ${error}`);
+            }
             return null;
         }
     }

@@ -108,9 +108,10 @@ export const constants = {
 
     // ── Contract Addresses on Base ────────────────────────────────────────
     AERO_VOTER_ADDRESS: '0x16613524e02ad97eDfeF371bC883F2F5d6C480A5',
-    // PancakeSwap V3 MasterChef — 質押 LP NFT 取得 CAKE 獎勵
-    // ⚠️ 請至 https://docs.pancakeswap.finance/developers/smart-contracts/pancakeswap-exchange/v3-contracts 確認 Base 部署地址
-    PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0x22d7937d7c8f96bbe426f5ce592c462b69c5e57d',
+    // PancakeSwap V3 MasterChef — 質押 LP NFT 取得 CAKE 獎勵（Base 已驗證地址）
+    PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3',
+    // cakePerSecond scaling: getLatestPeriodInfo 回傳值需除以 1e30 才是實際 CAKE/s
+    MASTERCHEF_CAKE_PER_SEC_PRECISION: BigInt('1000000000000000000000000000000'), // 1e30
 
     NPM_ADDRESSES: {
         UniswapV3: '0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1',

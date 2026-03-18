@@ -188,7 +188,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 
 1. **PoolScanner**：從 DexScreener 取得 TVL；GeckoTerminal 取得成交量（The Graph subgraph 已停用）；計算各池 APR
 2. **BBEngine**：先行計算所有池的布林通道（避免 PositionScanner 重複呼叫 GeckoTerminal），維護 in-memory 小時價格緩衝區，計算 20 SMA + EWMA 平滑 stdDev（α=0.3, β=0.7）+ 動態 k 值，產出建議 Tick 區間
-3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `userConfig` 中標記 `tracked=true` 的鎖倉倉位）；自動偵測 `isStaked`（ownerOf 回傳合約地址）；追蹤第三幣獎勵（CAKE via MasterChef `pendingCake`、AERO via gauge `earned`）；Aerodrome staked 手續費走 `gauge.pendingFees` → `collect.staticCall` → `tokensOwed` 四級策略；首次發現倉位時透過 `ChainEventScanner` 批次查鏈取得建倉時間戳並寫回 `userConfig`
+3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `userConfig` 中標記 `tracked=true` 的鎖倉倉位）；自動偵測 `isStaked`（ownerOf 回傳合約地址）；追蹤第三幣獎勵（CAKE via MasterChef `pendingCake`、AERO via gauge `earned`）；Aerodrome staked 手續費走 `gauge.pendingFees` → `collect.staticCall` → `tokensOwed` 三級策略；NFT 已 burn（`positions()` 拋出 `"ID"` 或 `"nonexistent token"`）時自動標記 `closed=true` 並停止掃描；首次發現倉位時透過 `ChainEventScanner` 批次查鏈取得建倉時間戳並寫回 `userConfig`
 4. **RiskManager**：取得即時 Gas 費用（`fetchGasCostUSD`）；計算 Health Score、IL Breakeven Days、動態 EOQ Compound Threshold、drift 警告
 5. **TelegramBot**：合併所有倉位為單一報告推播，支援 `/sort` 排序切換
 
@@ -233,7 +233,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 ⚠️ DRIFT 重疊 71.3% (建議依 BB 重建倉)
 
 📊 各池收益排行:
-🥇 PancakeSwap 0.01% — APR 67.2% → 區間 335.8% | TVL $1,234K ◀ 你的倉位
+🥇 PancakeSwap 0.01% — APR 15.43%(手續費7.45%+農場7.98%) → 區間 77.2% | TVL $7,612K ◀ 你的倉位
 🥈 Aerodrome 0.0085% — APR 29.4% → 區間 147.0% | TVL $987K ◀ 你的倉位
 🥉 Uniswap 0.05% — APR 18.6% → 區間 93.0% | TVL $543K
 
@@ -274,6 +274,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 | `/invest <addr> <tokenId> <amount>` | 設定本金（USD）；amount=0 清除本金 |
 | `/invest <addr> <tokenId> <amount> <dex>` | 設定本金並標記為鎖倉（`tracked=true`），dex 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `PancakeSwapV2` / `Aerodrome` |
 | `/untrack <tokenId>` | 取消鎖倉標記（`tracked=false`），保留本金設定 |
+| `/unstake <tokenId>` | NFT 已從 Gauge/MasterChef 取回錢包後，清除 `externalStake` 標記並恢復正常掃描；若 NFT 仍在合約中會拒絕操作；若 NFT 已被 burn 或 `liquidity=0` 則自動標記為已關閉 |
 
 ---
 
@@ -379,9 +380,12 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 ## 資料來源優先順序
 
 **成交量 / APR**
-1. GeckoTerminal OHLCV Day（最多 3 次重試，10s 延遲；The Graph subgraph 已停用）
-2. 過期快取（stale cache）
-3. 零值
+1. GeckoTerminal OHLCV Day（最多 3 次重試，指數退避；DexScreener h24 常漏算 CL pool 成交量，僅作最終備援）
+2. DexScreener h24（GeckoTerminal 無資料時使用）
+3. 過期快取（stale cache）
+4. 零值
+
+> APR 公式：`(avgDailyVol × feeTier / TVL) × 365`；`avgDailyVol = (gecko24h + gecko7dAvg) / 2`（兩者皆有時）。PancakeSwap V3 另計算 CAKE 排放 APR（MasterChef V3 `getLatestPeriodInfo`）並疊加顯示。
 
 **BB 波動率**
 1. GeckoTerminal OHLCV Day（30 天）
