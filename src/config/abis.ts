@@ -22,6 +22,8 @@ export const abis = {
     PANCAKE_MASTERCHEF_V3_ABI: [
         'function pendingCake(uint256 tokenId) external view returns (uint256)',
         'function userPositionInfos(uint256 tokenId) external view returns (uint128 liquidity, uint128 boostLiquidity, int24 tickLower, int24 tickUpper, uint256 rewardGrowthInside, uint256 reward, address user, uint256 pid, uint256 boostMultiplier)',
+        // Farm APR 計算：回傳值 cakePerSecond 需除以 1e30；endTime < now 代表 period 已過期
+        'function getLatestPeriodInfo(address v3Pool) external view returns (uint256 cakePerSecond, uint256 endTime)',
     ],
 
     // Aerodrome Voter — gauges(pool) → gauge address

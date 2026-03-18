@@ -7,6 +7,7 @@ import { buildTelegramPositionBlock, fmtInterval } from '../utils/formatter';
 import { appState, ucTrackedPositions, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
 import { isValidWalletAddress, isValidPoolAddress, isValidPoolV4Id } from '../utils/validation';
 import { calculateCapitalEfficiency } from '../utils/math';
+import type { PositionScanner } from '../services/PositionScanner';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -25,6 +26,11 @@ export class TelegramBotService {
     private chatId: string;
     private onReschedule: ((minutes: number) => void) | null = null;
     private onUserConfigChange: ((cfg: UserConfig) => Promise<void>) | null = null;
+    private positionScanner!: PositionScanner;
+
+    setPositionScanner(scanner: PositionScanner) {
+        this.positionScanner = scanner;
+    }
 
     setRescheduleCallback(cb: (minutes: number) => void) {
         this.onReschedule = cb;
@@ -363,6 +369,7 @@ export class TelegramBotService {
                 const lines: string[] = [];
                 for (const wallet of appState.userConfig.wallets) {
                     for (const pos of wallet.positions) {
+                        if (pos.closed) continue;
                         if (pos.initial === 0 && !pos.externalStake) continue;
                         const wShort = `<code>${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}</code>`;
                         const inv = pos.initial > 0 ? `$${pos.initial.toFixed(2)}` : '未設定';
@@ -378,7 +385,7 @@ export class TelegramBotService {
                         { parse_mode: 'HTML' }
                     );
                 } else {
-                    ctx.reply(`💰 <b>倉位配置（${lines.length} 筆）</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
+                    ctx.reply(`💰 <b>倉位配置（${lines.length} 筆，已關倉不顯示）</b>\n\n${lines.join('\n')}`, { parse_mode: 'HTML' });
                 }
                 return;
             }
@@ -503,14 +510,24 @@ export class TelegramBotService {
                 }
                 return;
             }
-            const walletAddr = ucFindWallet(appState.userConfig, tokenId);
-            if (!walletAddr) {
+            const result = await this.positionScanner.unstake(tokenId);
+            if (result.status === 'not_found') {
                 ctx.reply(`⚠️ #${tokenId} 不在質押清單中`);
                 return;
             }
-            const newCfg = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { externalStake: false });
-            if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
-            ctx.reply(`✅ #${tokenId} 已取消外部質押標記`);
+            if (result.status === 'still_staked') {
+                ctx.reply(`⚠️ #${tokenId} NFT 仍在 Gauge（<code>${result.owner.slice(0, 10)}…</code>），無法取消追蹤。\n請先在鏈上 unstake 後再執行此指令。`, { parse_mode: 'HTML' });
+                return;
+            }
+            if (result.status === 'chain_error') {
+                ctx.reply(`⚠️ #${tokenId} 鏈上確認失敗，已略過檢查並取消質押標記。`);
+            } else if (result.status === 'closed') {
+                ctx.reply(`✅ #${tokenId} 已取消質押標記，liquidity=0 → 自動標記為已關倉`);
+                return;
+            } else {
+                ctx.reply(`✅ #${tokenId} 已取消外部質押標記，下次掃描將從錢包重新追蹤`);
+            }
+            if (this.onUserConfigChange) await this.onUserConfigChange(appState.userConfig);
         });
 
         // ── /capital ──────────────────────────────────────────────────────────
@@ -575,10 +592,28 @@ export class TelegramBotService {
             log.warn(`Message: ${message}`);
             return;
         }
-        try {
-            await this.bot.api.sendMessage(this.chatId, message, { parse_mode: 'HTML' });
-        } catch (error) {
-            log.error(`Failed to send telegram message: ${error}`);
+        const TELEGRAM_MAX_LEN = 4096;
+        const chunks: string[] = [];
+        if (message.length <= TELEGRAM_MAX_LEN) {
+            chunks.push(message);
+        } else {
+            // Split on newlines, never mid-tag
+            const lines = message.split('\n');
+            let current = '';
+            for (const line of lines) {
+                const candidate = current ? `${current}\n${line}` : line;
+                if (candidate.length > TELEGRAM_MAX_LEN) {
+                    if (current) chunks.push(current);
+                    current = line;
+                } else {
+                    current = candidate;
+                }
+            }
+            if (current) chunks.push(current);
+            log.warn(`Message split into ${chunks.length} parts (original ${message.length} chars)`);
+        }
+        for (const chunk of chunks) {
+            await this.bot.api.sendMessage(this.chatId, chunk, { parse_mode: 'HTML' });
         }
     }
 
@@ -657,7 +692,11 @@ export class TelegramBotService {
             allPools.forEach((p, i) => {
                 const rank = medals[i] ?? '　';
                 const label = `${p.dex} ${(p.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
-                const aprPct = (p.apr * 100).toFixed(1);
+                const feeAprPct = (p.apr * 100).toFixed(2);
+                const totalApr = p.apr + (p.farmApr ?? 0);
+                const aprStr = p.farmApr !== undefined
+                    ? `APR <b>${(totalApr * 100).toFixed(2)}%</b>(手續費${feeAprPct}%+農場${(p.farmApr * 100).toFixed(2)}%)`
+                    : `APR <b>${feeAprPct}%</b>`;
                 const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(0)}K` : `$${p.tvlUSD.toFixed(0)}`;
                 const tag = activePoolIds.has(p.id.toLowerCase()) ? ' ◀ 你的倉位' : '';
                 const bb = appState.bbs[p.id.toLowerCase()];
@@ -665,10 +704,10 @@ export class TelegramBotService {
                 if (bb && !bb.isFallback && bb.sma > 0) {
                     const eff = calculateCapitalEfficiency(bb.upperPrice, bb.lowerPrice, bb.sma);
                     if (eff !== null) {
-                        inRangeTag = ` → 區間 <b>${(p.apr * eff * 100).toFixed(1)}%</b>`;
+                        inRangeTag = ` → 區間 <b>${(totalApr * eff * 100).toFixed(1)}%</b>`;
                     }
                 }
-                msg += `\n${rank} ${label} — APR <b>${aprPct}%</b>${inRangeTag} | TVL ${tvl}${tag}`;
+                msg += `\n${rank} ${label} — ${aprStr}${inRangeTag} | TVL ${tvl}${tag}`;
             });
         }
 

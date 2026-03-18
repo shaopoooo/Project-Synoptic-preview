@@ -161,11 +161,12 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 
 ### PoolScanner（`src/services/PoolScanner.ts`）
 
-- **資料來源**：DexScreener（TVL）→ GeckoTerminal（所有池子，The Graph subgraph 已停用）
-- **APR 公式**：`APR = (24h 手續費 / TVL) × 365`，24h 手續費 = 7D 加權均量 × 費率
+- **資料來源**：DexScreener（TVL）→ GeckoTerminal OHLCV（成交量主要來源；DexScreener h24 常漏算 CL pool 成交量，僅作最終備援）；The Graph subgraph 可選啟用（設 `SUBGRAPH_API_KEY` 環境變數後自動啟用，優先級高於 GeckoTerminal）
+- **APR 公式**：`APR = (avgDailyVol × feeTier / TVL) × 365`；`avgDailyVol = (gecko24h + gecko7dAvg) / 2`（兩者都有時）
+- **Farm APR**：`_fetchPancakeFarmApr()` 對 PancakeSwapV3 額外呼叫 MasterChef V3 `getLatestPeriodInfo(poolAddress)`；`farmApr = (cakePerSec × 86400 × 365 × cakePrice) / tvlUSD`；`cakePerSec = raw / 1e30`；period 過期時回傳 0；`PoolStats.farmApr` 為 optional
 - **池清單**：由 `config.POOL_SCAN_LIST`（`constants.ts`）統一定義，新增池子只需改此處；完整地址見 README.md
 - **UniswapV4 支援**：`_fetchV4PoolStats()` 透過 `StateView.getSlot0(poolId)` 取得當前 tick / sqrtPriceX96；poolId 為 bytes32，驗證改用 `/^0x[0-9a-fA-F]{64}$/`
-- **關鍵函式**：`scanAllCorePools()` → `fetchPoolStats()` → `fetchPoolVolume()`
+- **關鍵函式**：`scanAllCorePools()` → `fetchPoolStats()` → `fetchPoolVolume()` → `_fetchPancakeFarmApr()`
 
 ### BBEngine（`src/services/BBEngine.ts`）
 
@@ -192,17 +193,19 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **UniswapV4 支援**：`_fetchV4NpmData()` 透過 V4 PositionManager 的 `getPoolAndPositionInfo(tokenId)` 取得 PoolKey + packed PositionInfo；PositionInfo packed uint256 解碼：bits 0-23 = tickLower（int24），bits 24-47 = tickUpper（int24）；poolId 由 `keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))` 動態計算
 - **Gauge / MasterChef 鎖倉**：`TRACKED_TOKEN_<tokenId>=<DEX>` 手動追蹤質押倉位（DEX 值：`UniswapV3` / `UniswapV4` / `PancakeSwapV3` / `Aerodrome`）；`isStaked` 欄位自動偵測（ownerOf 回傳非已知錢包 → staked）；`depositorWallet` 追蹤實際持有者
 - **關閉倉位自動剔除**：`updatePositions()` 確認 `liquidity=0` 時，將 tokenId 加入 `closedTokenIds` Set 並設 `WalletPosition.closed = true`（透過 `ucUpsertPosition`）；`syncFromChain` 和 `restoreDiscoveredPositions` 均跳過 closed 倉位；重啟後由 `restoreFromUserConfig()` 從 `userConfig.wallets[].positions[].closed` 重建 Set，不重新掃描已關倉 NFT
+- **Burned NFT 自動偵測**：`_fetchNpmData()` 捕捉 `positions()` 或 `ownerOf()` 拋出含 `"ID"` 或 `"nonexistent token"` 的錯誤時，自動將 tokenId 加入 `closedTokenIds`、設 `closed=true`、從 `positions` 陣列移除，停止後續重試；不需等待使用者手動呼叫 `/unstake`
+- **`unstake()` 方法**：供 TelegramBot `/unstake` 指令呼叫，負責鏈上驗證後清除 `externalStake`；回傳 discriminated union：`{ status: 'closed' }` / `{ status: 'still_staked'; owner }` / `{ status: 'ok' }` / `{ status: 'not_found' }` / `{ status: 'chain_error'; error }`；若鏈上 `liquidity=0` 或 NFT 已 burned 則自動關倉；若 `ownerOf` 仍是合約（NFT 還在 Gauge）則回傳 `still_staked` 阻止操作；**TelegramBot 只格式化結果，不包含任何鏈上查詢邏輯**
 - **Drift 門檻**：實際區間與 BB 區間重合度 < 80% 時推播 `STRATEGY_DRIFT_WARNING`
 - **手續費計算**：委託 `FeeCalculator`（見下方），PositionScanner 不直接呼叫合約計算費用
 - **timestamp 失敗保護**：`timestampFailures` Map 記錄各 tokenId 失敗次數；超過 `config.TIMESTAMP_MAX_FAILURES`（= 3）後寫入 `openTimestampMs = -1`（顯示 N/A），停止重試
 - **注意**：Aerodrome `positions()` 第 5 欄回傳 `tickSpacing`（非 fee pips）
-- **關鍵函式**：`fetchAll()` / `updatePositions()` / `syncFromChain(skipTimestampScan?)` / `fillMissingTimestamps()` / `restoreDiscoveredPositions()` / `restoreFromUserConfig()`
+- **關鍵函式**：`fetchAll()` / `updatePositions()` / `syncFromChain(skipTimestampScan?)` / `fillMissingTimestamps()` / `restoreDiscoveredPositions()` / `restoreFromUserConfig()` / `unstake(tokenId)`
 
 ### FeeCalculator（`src/services/FeeCalculator.ts`）
 
 - **職責**：純 RPC 手續費計算，與 PositionScanner 解耦
 - **UniswapV4**：`StateView.getPositionInfo(poolId, positionManager, tickLower, tickUpper, salt)` 取得 `lastFgX128`；`StateView.getFeeGrowthInside(poolId, tickLower, tickUpper)` 取得當前 `fgX128`；`fees = liquidity × sub256(current, last) / 2^128`；`salt = bytes32(tokenId)`
-- **Aerodrome staked fallback 鏈**：`voter.gauges()` → `gauge.pendingFees(tokenId)` → `collect.staticCall({from: gauge})` → `tokensOwed`（第 3 級 `computePendingFees()` 暫時停用：`0x22AEe369` pool 在公共節點不支援 `feeGrowthGlobal` / `ticks()`，CALL_EXCEPTION 每次浪費 6+ 次 retry）
+- **Aerodrome staked fallback 鏈**：`voter.gauges()` → `gauge.pendingFees(tokenId)` → `collect.staticCall({from: gauge})` → `tokensOwed`（`computePendingFees()` 已永久移除：Aerodrome pool 在公共節點不支援 `feeGrowthGlobal` / `ticks()`，每次掃描浪費 6+ 次 RPC retry）
 - **Aerodrome unstaked**：`computePendingFees()`（pool feeGrowth 數學計算）
 - **UniswapV3 / PancakeSwapV3**：`collect.staticCall({ from: owner })`，最終 fallback `tokensOwed0/1`
 - **第三幣獎勵**：PancakeSwapV3 staked → `masterchef.pendingCake(tokenId)`；Aerodrome staked → `gauge.earned(depositorWallet, tokenId)`
@@ -252,6 +255,9 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - **淨損益 vs 無常損失**：`💸 淨損益` = LP現值 + Unclaimed - 本金（含手續費）；`無常損失` = LP現值 - 本金（純市價波動）
 - **鎖倉 icon**：`isStaked = true` 的倉位在 tokenId 後顯示 `🔒`
 - **BB k 值顯示**：報告底部顯示目前 `k_low / k_high`（`appState.bbKLowVol / bbKHighVol`）
+- **`sendAlert(message)`**：直接呼叫 `bot.api.sendMessage`，不 try/catch（錯誤向上拋出，不靜默吞掉）；訊息超過 4096 字元時自動按換行拆分成多段發送
+- **池排行 APR 格式**：有 `farmApr` 時顯示 `APR <b>Z.XX%</b>(手續費X.XX%+農場Y.XX%)`（小數點後兩位）；無 `farmApr` 時僅顯示 `APR <b>Z.XX%</b>`；In-Range APR 以 `totalApr`（手續費 + 農場）為底數計算效率乘數
+- **`/unstake` 架構原則**：TelegramBot 只格式化 `positionScanner.unstake(tokenId)` 的回傳結果，不包含任何鏈上查詢或狀態變更邏輯；`setPositionScanner(scanner)` 方法於 `index.ts` 啟動時注入
 
 **指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/bbk [low high]` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
 
@@ -312,9 +318,23 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
   - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
+- [ ] **Aerodrome Gauge Emissions APR**：目前 Aerodrome APR 只含手續費，缺少 AERO Token 排放部分（實際佔總 APR 大宗）。需在 `PoolScanner` 中對 Gauge 合約補兩個 `staticCall`：
+  - `gauge.rewardRate()` → 每秒 AERO 排放量
+  - `gauge.totalSupply()` → 已質押 LP 總量
+  - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
+  - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
+
 ### P2 🟡 中優先（排程中）
 
-✅ 已完成
+- [ ] **BBEngine 帶寬優化（區間太窄）**：目前 EWMA 過度平滑（β=0.7）導致方差嚴重低估，加上缺乏 stdDev 下限，低波動期帶寬可能崩塌至 ±0.5%，遠小於實際日內波動。分兩步實作：
+  - **步驟一（改動小）**：加 stdDev 下限 — `stdDev1H = Math.max(ewmaStdDev, volDerivedStdDev)`，確保帶寬不低於 30D 歷史波動率暗示的最小值；新增常數 `BB_MIN_BAND_PCT`（建議 0.03），`halfBand = Math.max(k × stdDev1H, sma × BB_MIN_BAND_PCT)`
+  - **步驟二（改動中）**：對原始價格計算方差（不對 EWMA 平滑後的序列算），EWMA 只用來平滑 SMA 趨勢，不影響方差估計
+  - 調整後觀察 1~2 天，若仍太窄再加步驟二；同時補充對應單元測試驗證帶寬下限
+
+- [ ] **毒性交易流偵測 (Toxic Order Flow)**：依賴 P1 `SwapTickHandler` 基礎設施，在同一 Swap event 監聽上加統計邏輯。在 5 分鐘滾動窗口內若同向 Swap 比率 > 80%（token0→token1 或反向）且淨流量 > 池 TVL 的 X%，觸發 `🚨 毒性交易流警報` 建議短期撤回流動性。需先確認：
+  - **「大額」門檻**：相對 TVL 百分比（建議 0.5%）或固定 USD 金額？
+  - **時間窗口**：5 分鐘 vs 15 分鐘，影響誤報率
+  - 實作時新增 `ToxicFlowDetector`，`RiskAnalysis` 新增 `toxicFlowWarning` 欄位
 
 ### P3 🔵 有依賴鏈（需按序執行）
 
@@ -345,9 +365,11 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 1. **再平衡成本模型**：slippage 使用固定比例（0.1%）還是依池子深度動態計算？
 2. **複利假設**：收取的手續費是否自動再投入 LP？
-3. **資料粒度**：GeckoTerminal 只提供 1D OHLCV，1H BB 計算是否可接受用日線代替？
+3. **資料粒度**：GeckoTerminal 只提供 1D OHLCV，1H BB 計算是否可接受用日線代替？（日線替代會產生系統性偏差）
 4. **回測範圍**：只支援現有池子，還是允許自訂池地址？
 5. **輸出格式**：console log、JSON export，還是 Telegram 指令觸發？
+6. **IL 計算**：逐日需模擬每個時間點的 sqrtPrice 數學計算 LP 現值，複雜度高
+7. **Gas 成本**：歷史 Gas 費用難取得，是否接受固定值（如 $2/次）作為估計？
 
 確認後執行步驟：
 

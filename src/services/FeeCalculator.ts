@@ -95,30 +95,8 @@ export class FeeCalculator {
                         }
                     }
 
-                    // 第 3 級 fallback：pool feeGrowth 數學計算（與 unstaked path 相同邏輯）
-                    // staked 倉位的 feeGrowthInside0LastX128 仍由 NPM 正確記錄，pool 層的
-                    // feeGrowthGlobal 也持續累積，差值即為累積 pending fees。
-                    if (!pendingFeesOk) {
-                        try {
-                            const { fees0, fees1 } = await this.computePendingFees(
-                                poolAddress, dex, poolTick,
-                                position.tickLower, position.tickUpper,
-                                BigInt(position.liquidity),
-                                BigInt(position.feeGrowthInside0LastX128),
-                                BigInt(position.feeGrowthInside1LastX128),
-                                BigInt(position.tokensOwed0),
-                                BigInt(position.tokensOwed1),
-                            );
-                            unclaimed0 = fees0;
-                            unclaimed1 = fees1;
-                            log.info(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [staked.pool.feeGrowth]`);
-                            source = 'pool.feeGrowth';
-                            pendingFeesOk = true;
-                        } catch (e: any) {
-                            log.warn(`#${tokenId} staked aero feeGrowth fallback failed: ${e.message}`);
-                        }
-                    }
-
+                    // 第 3 級 feeGrowth 數學計算已停用：Aerodrome pool 在公共節點不支援
+                    // feeGrowthGlobal / ticks()，CALL_EXCEPTION 每次浪費 6+ 次 retry。
                     if (!pendingFeesOk) {
                         unclaimed0 = BigInt(position.tokensOwed0);
                         unclaimed1 = BigInt(position.tokensOwed1);

@@ -175,21 +175,15 @@ export class PoolScanner {
             const gecko7DVol = volData.avg7d;
             const volSource = volData.source;
 
-            // 4. Multi-Source Volume Verification
-            let verified24hVol = dailyVolumeUSD;
-            if (geckoDailyVol > 0 && dailyVolumeUSD > 0) {
-                const ratio = Math.max(geckoDailyVol, dailyVolumeUSD) / Math.min(geckoDailyVol, dailyVolumeUSD);
-                if (ratio > 2) {
-                    verified24hVol = Math.min(geckoDailyVol, dailyVolumeUSD);
-                } else {
-                    verified24hVol = (geckoDailyVol + dailyVolumeUSD) / 2;
-                }
-            } else if (geckoDailyVol > 0) {
-                verified24hVol = geckoDailyVol;
-            }
+            // 4. Volume source: GeckoTerminal OHLCV is primary (covers full DEX activity).
+            // DexScreener h24 frequently under-counts volume for concentrated liquidity pools
+            // and is only used as last resort when GeckoTerminal returns nothing.
+            const verified24hVol = geckoDailyVol > 0 ? geckoDailyVol : dailyVolumeUSD;
 
-            // 5. Compute APR using 7-day weighted or average volume
-            const avgDailyVolume = gecko7DVol > 0 ? (verified24hVol + gecko7DVol) / 2 : verified24hVol;
+            // 5. Blend with 7D average when available
+            const avgDailyVolume = gecko7DVol > 0
+                ? (verified24hVol + gecko7DVol) / 2
+                : verified24hVol;
             dailyFeesUSD = avgDailyVolume * feeTierVal;
 
             if (tvlUSD > 0) {
@@ -198,11 +192,17 @@ export class PoolScanner {
                 log.warn(`TVL=0  ${poolAddress.slice(0, 10)}  APR skipped`);
             }
 
+            // 6. Farm APR (PancakeSwap only — CAKE emissions via MasterChef V3)
+            const farmApr = dex === 'PancakeSwapV3' && tvlUSD > 0
+                ? await this._fetchPancakeFarmApr(poolAddress, tvlUSD)
+                : undefined;
+
             return {
                 id: poolAddress.toLowerCase(),
                 dex,
                 feeTier: feeTierVal,
                 apr,
+                farmApr,
                 tvlUSD,
                 dailyFeesUSD,
                 tick,
@@ -212,6 +212,42 @@ export class PoolScanner {
         } catch (error) {
             log.error(`fetchPoolStats failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
             return null;
+        }
+    }
+
+    /**
+     * Fetch CAKE emission APR for a PancakeSwap V3 pool via MasterChef V3.
+     * cakePerSecond from getLatestPeriodInfo is scaled by 1e30.
+     * Returns undefined if no active period or contract call fails.
+     */
+    private static async _fetchPancakeFarmApr(
+        poolAddress: string,
+        tvlUSD: number,
+    ): Promise<number | undefined> {
+        try {
+            const mc = new ethers.Contract(
+                config.PANCAKE_MASTERCHEF_V3,
+                config.PANCAKE_MASTERCHEF_V3_ABI,
+                nextProvider(),
+            );
+            const info = await rpcRetry(
+                () => mc.getLatestPeriodInfo(poolAddress),
+                `getLatestPeriodInfo(${poolAddress.slice(0, 10)})`,
+            );
+            const endTime = Number(info.endTime);
+            if (endTime < Date.now() / 1000) {
+                log.info(`🍰 farmApr=0  ${poolAddress.slice(0, 10)}  period expired`);
+                return 0;
+            }
+            // cakePerSecond is stored scaled by 1e30
+            const cakePerSec = Number(info.cakePerSecond) / Number(config.MASTERCHEF_CAKE_PER_SEC_PRECISION);
+            const { cakePrice } = await import('../utils/tokenPrices').then(m => m.getTokenPrices());
+            const farmApr = (cakePerSec * 86400 * 365 * cakePrice) / tvlUSD;
+            log.info(`🍰 farmApr  ${poolAddress.slice(0, 10)}  cps=${cakePerSec.toFixed(6)} cake/s  apr=${(farmApr * 100).toFixed(2)}%`);
+            return farmApr;
+        } catch (e: any) {
+            log.warn(`farmApr fetch failed  ${poolAddress.slice(0, 10)}: ${e.message}`);
+            return undefined;
         }
     }
 
@@ -260,18 +296,13 @@ export class PoolScanner {
             const gecko7DVol = volData.avg7d;
             const volSource = volData.source;
 
-            // 4. Volume reconciliation
-            let verified24hVol = dailyVolumeUSD;
-            if (geckoDailyVol > 0 && dailyVolumeUSD > 0) {
-                const ratio = Math.max(geckoDailyVol, dailyVolumeUSD) / Math.min(geckoDailyVol, dailyVolumeUSD);
-                verified24hVol = ratio > 2
-                    ? Math.min(geckoDailyVol, dailyVolumeUSD)
-                    : (geckoDailyVol + dailyVolumeUSD) / 2;
-            } else if (geckoDailyVol > 0) {
-                verified24hVol = geckoDailyVol;
-            }
+            // 4. Volume source: GeckoTerminal OHLCV is primary; DexScreener h24 as last resort
+            const verified24hVol = geckoDailyVol > 0 ? geckoDailyVol : dailyVolumeUSD;
 
-            const avgDailyVolume = gecko7DVol > 0 ? (verified24hVol + gecko7DVol) / 2 : verified24hVol;
+            // 5. Blend with 7D average when available
+            const avgDailyVolume = gecko7DVol > 0
+                ? (verified24hVol + gecko7DVol) / 2
+                : verified24hVol;
             const dailyFeesUSD = avgDailyVolume * feeTierVal;
             const apr = tvlUSD > 0 ? (dailyFeesUSD / tvlUSD) * 365 : 0;
 
