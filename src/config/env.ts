@@ -11,7 +11,8 @@ export const env = {
     })(),
     SUBGRAPH_API_KEY: process.env.SUBGRAPH_API_KEY || '',
     BOT_TOKEN: process.env.BOT_TOKEN || '',
-    CHAT_ID: process.env.CHAT_ID || ''
+    CHAT_ID: process.env.CHAT_ID || '',
+    FAST_STARTUP: process.env.FAST_STARTUP === 'true',
 };
 
 /** 驗證必填環境變數，缺少時輸出錯誤並中止程式。

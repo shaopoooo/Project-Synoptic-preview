@@ -281,9 +281,11 @@ async function main() {
   botService.setPositionScanner(positionScanner);
   botService.setRescheduleCallback(reschedule);
   botService.setUserConfigChangeCallback(async (cfg) => {
-    // 在更新前記錄舊錢包清單，用來偵測新增錢包
+    // 在更新前記錄舊錢包清單與已追蹤的 tokenId，用來偵測新增項目
     const prevWalletSet = new Set(ucWalletAddresses(appState.userConfig).map(w => w.toLowerCase()));
+    const prevTrackedIds = new Set(ucTrackedPositions(appState.userConfig).map(t => t.tokenId));
     const addedWallets = ucWalletAddresses(cfg).filter(w => !prevWalletSet.has(w.toLowerCase()));
+    const addedTracked = ucTrackedPositions(cfg).filter(t => !prevTrackedIds.has(t.tokenId));
 
     appState.userConfig = cfg;
     // bbKLowVol / bbKHighVol 在 userConfig 更新後同步到 appState runtime 欄位（BBEngine 使用）
@@ -299,12 +301,15 @@ async function main() {
     const investments = cfg.wallets.reduce((s, w) => s + w.positions.filter(p => p.initial > 0).length, 0);
     log.info(`💾 userConfig updated & saved — wallets: ${wallets.length}, investments: ${investments}, tracked: ${tracked.length}`);
 
-    // 有新增錢包 → 背景觸發 chain scan 自動發現倉位，完成後更新 state.json
-    if (addedWallets.length > 0) {
-      log.info(`🔍 新錢包偵測到，背景觸發 chain scan: ${addedWallets.join(', ')}`);
+    // 有新增錢包或新增 externalStake 倉位 → 背景觸發 chain scan
+    if (addedWallets.length > 0 || addedTracked.length > 0) {
+      const reason = addedWallets.length > 0
+        ? `新錢包: ${addedWallets.join(', ')}`
+        : `新追蹤倉位: ${addedTracked.map(t => `#${t.tokenId}`).join(', ')}`;
+      log.info(`🔍 ${reason}，背景觸發 chain scan`);
       positionScanner.syncFromChain(true)
         .then(() => saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig))
-        .catch(e => log.error(`Auto sync (new wallet): ${e}`));
+        .catch(e => log.error(`Auto sync (new tracked): ${e}`));
     }
   });
   botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
@@ -360,17 +365,22 @@ async function main() {
       await positionScanner.syncFromChain(true);
     }
 
-    await runTokenPriceFetcher();
-    await runPoolScanner();
+    const fastStartup = config.FAST_STARTUP;
+    if (fastStartup) {
+      log.info('⚡ FAST_STARTUP=true — skipping initial scan, first cron cycle fires in 5s');
+    } else {
+      await runTokenPriceFetcher();
+      await runPoolScanner();
 
-    if (savedState) {
-      for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
-      log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+      if (savedState) {
+        for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
+        log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+      }
+
+      await runPositionScanner();
+      await runBBEngine();
+      await runRiskManager();
     }
-
-    await runPositionScanner();
-    await runBBEngine();
-    await runRiskManager();
   }
 
   isStartupComplete = true;
@@ -382,11 +392,41 @@ async function main() {
   );
 
   await triggerStateSave();
-  // await runBotService().catch((e) => log.error(`Startup report: ${e}`));
   log.info(`startup complete — scheduler enabled (interval: ${currentIntervalMinutes}m)`);
   log.section('ready');
 
   scheduledTask = buildCronJob();
+
+  // FAST_STARTUP: 5 秒後立即觸發第一輪 cron，不等到下一個整點
+  if (config.FAST_STARTUP) {
+    setTimeout(() => {
+      log.info('⚡ FAST_STARTUP: triggering first cycle now');
+      if (isCycleRunning) {
+        log.warn('⚡ FAST_STARTUP: cycle already running, skipping');
+        return;
+      }
+      isCycleRunning = true;
+      scheduledTask?.stop();
+      scheduledTask = buildCronJob();
+      // 直接執行一次 cron 邏輯（受 isCycleRunning 保護，與 cron 互斥）
+      Promise.resolve().then(async () => {
+        try {
+          await runTokenPriceFetcher().catch(e => log.error(`FastStartup TokenPrice: ${e}`));
+          await runPoolScanner().catch(e => log.error(`FastStartup PoolScanner: ${e}`));
+          if (appState.pools.length > 0) {
+            for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
+          }
+          await runPositionScanner().catch(e => log.error(`FastStartup PositionScanner: ${e}`));
+          await runBBEngine().catch(e => log.error(`FastStartup BBEngine: ${e}`));
+          await runRiskManager().catch(e => log.error(`FastStartup RiskManager: ${e}`));
+          await runBotService().catch(e => log.error(`FastStartup BotService: ${e}`));
+          await triggerStateSave();
+        } finally {
+          isCycleRunning = false;
+        }
+      });
+    }, 5000);
+  }
 
   // 開始搜尋遺失的時間戳記 (背景執行)
   positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));

@@ -50,6 +50,7 @@
 | `WALLET_ADDRESS_2` | 否 | 第二個監測錢包地址（可繼續增加 `_3`, `_4`...） |
 | `BOT_TOKEN` | 是 | Telegram Bot Token（從 [@BotFather](https://t.me/BotFather) 取得） |
 | `CHAT_ID` | 是 | Telegram 接收推播的 Chat ID |
+| `FAST_STARTUP` | 否 | 設為 `true` 時跳過啟動時的完整初始掃描（TokenPrice → PoolScanner → PositionScanner → BBEngine → RiskManager），改為 5 秒後直接進入第一輪 cron 週期。適合本地開發快速進入循環，避免每次重啟都要等待 2~3 分鐘的初始掃描；**不建議在生產環境啟用**（第一輪報告前 BB 與風險指標尚未計算完成） |
 
 > `INITIAL_INVESTMENT_<tokenId>` 與 `TRACKED_TOKEN_<tokenId>` 已移除。本金與鎖倉設定改透過 Telegram `/invest` 指令管理，並持久化至 `state.json`。
 

@@ -113,12 +113,13 @@ export async function rpcRetry<T>(fn: () => Promise<T>, label: string, retries =
             const errMsg = (error?.message || '').toLowerCase();
             const infoMsg = (error?.info?.error?.message || '').toLowerCase();
 
+            // "missing revert data" with data=null means the RPC returned nothing (node glitch),
+            // NOT a real contract revert — only treat it as permanent when data="0x" or reason is set.
             const isExecutionRevert =
                 infoMsg.includes('execution reverted') ||
                 errMsg.includes('execution reverted') ||
-                errMsg.includes('missing revert data') ||
-                // CALL_EXCEPTION with empty data ("0x") is also a permanent revert
-                (error.code === 'CALL_EXCEPTION' && (error.data === '0x' || error.reason !== undefined));
+                // CALL_EXCEPTION with empty data ("0x") or a reason string is a permanent revert
+                (error.code === 'CALL_EXCEPTION' && (error.data === '0x' || (error.reason != null)));
 
             // -32002: RPC node timeout on getLogs (complex filter / large range)
             // 可重試，但不算一般 rate-limit，不需特別加速 backoff
