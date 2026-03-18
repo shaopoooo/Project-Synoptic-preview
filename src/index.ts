@@ -365,17 +365,22 @@ async function main() {
       await positionScanner.syncFromChain(true);
     }
 
-    await runTokenPriceFetcher();
-    await runPoolScanner();
+    const fastStartup = config.FAST_STARTUP;
+    if (fastStartup) {
+      log.info('⚡ FAST_STARTUP=true — skipping initial scan, first cron cycle fires in 5s');
+    } else {
+      await runTokenPriceFetcher();
+      await runPoolScanner();
 
-    if (savedState) {
-      for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
-      log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+      if (savedState) {
+        for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
+        log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+      }
+
+      await runPositionScanner();
+      await runBBEngine();
+      await runRiskManager();
     }
-
-    await runPositionScanner();
-    await runBBEngine();
-    await runRiskManager();
   }
 
   isStartupComplete = true;
@@ -387,11 +392,41 @@ async function main() {
   );
 
   await triggerStateSave();
-  // await runBotService().catch((e) => log.error(`Startup report: ${e}`));
   log.info(`startup complete — scheduler enabled (interval: ${currentIntervalMinutes}m)`);
   log.section('ready');
 
   scheduledTask = buildCronJob();
+
+  // FAST_STARTUP: 5 秒後立即觸發第一輪 cron，不等到下一個整點
+  if (config.FAST_STARTUP) {
+    setTimeout(() => {
+      log.info('⚡ FAST_STARTUP: triggering first cycle now');
+      if (isCycleRunning) {
+        log.warn('⚡ FAST_STARTUP: cycle already running, skipping');
+        return;
+      }
+      isCycleRunning = true;
+      scheduledTask?.stop();
+      scheduledTask = buildCronJob();
+      // 直接執行一次 cron 邏輯（受 isCycleRunning 保護，與 cron 互斥）
+      Promise.resolve().then(async () => {
+        try {
+          await runTokenPriceFetcher().catch(e => log.error(`FastStartup TokenPrice: ${e}`));
+          await runPoolScanner().catch(e => log.error(`FastStartup PoolScanner: ${e}`));
+          if (appState.pools.length > 0) {
+            for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
+          }
+          await runPositionScanner().catch(e => log.error(`FastStartup PositionScanner: ${e}`));
+          await runBBEngine().catch(e => log.error(`FastStartup BBEngine: ${e}`));
+          await runRiskManager().catch(e => log.error(`FastStartup RiskManager: ${e}`));
+          await runBotService().catch(e => log.error(`FastStartup BotService: ${e}`));
+          await triggerStateSave();
+        } finally {
+          isCycleRunning = false;
+        }
+      });
+    }, 5000);
+  }
 
   // 開始搜尋遺失的時間戳記 (背景執行)
   positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));

@@ -119,7 +119,7 @@ export async function rpcRetry<T>(fn: () => Promise<T>, label: string, retries =
                 infoMsg.includes('execution reverted') ||
                 errMsg.includes('execution reverted') ||
                 // CALL_EXCEPTION with empty data ("0x") or a reason string is a permanent revert
-                (error.code === 'CALL_EXCEPTION' && (error.data === '0x' || error.reason !== undefined));
+                (error.code === 'CALL_EXCEPTION' && (error.data === '0x' || (error.reason != null)));
 
             // -32002: RPC node timeout on getLogs (complex filter / large range)
             // 可重試，但不算一般 rate-limit，不需特別加速 backoff
