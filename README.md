@@ -217,6 +217,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 📈 區間 APR 335.8% (效率 5.0×)
 ⌛  Breakeven 盈利中 · 獲利 +1.82%
 💸 淨損益 +$18.2 🟢 | 無常損失 -$13.0 🔴
+🪙 0.0₃2719 WETH | 0.0₅774 cbBTC
 🔄 未領取手續費 $4.62 ✅ > $0.1
      0.0₃2719 WETH ($0.56)
      0.0₅774 cbBTC ($0.54)
@@ -230,6 +231,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 💼 倉位 $7,800 | 本金 $8,000 | 健康 61/100
 ⌛  Breakeven 22天
 💸 淨損益 -$95.0 🔴
+🪙 0.1513 WETH | 0.0₂581 cbBTC
 🔄 未領取手續費 $2.10 ❌ < $5.8
 ⚠️ DRIFT 重疊 71.3% (建議依 BB 重建倉)
 
@@ -249,6 +251,7 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 - `⏳ 開倉`：需透過 `/invest` 設定本金且倉位有建倉時間戳；`· 獲利 +X.XX%` 在本金已設時顯示
 - `🔒`：倉位 NFT 已質押至 Gauge / MasterChef（`isStaked = true`）
 - `無常損失`：在 `💸 淨損益` 同行，僅當初始本金已設時顯示
+- `🪙 持倉數量`：LP 倉位中實際持有的 token0 / token1 數量，由 sqrtPrice 數學計算，使用下標零緊湊格式
 - 未領取手續費逐幣明細：各幣種金額 > 0 時顯示，使用下標零緊湊格式（如 `0.0₃2719 WETH`）
 - `⚠️ RED_ALERT`：IL Breakeven Days > 30 天，建議減倉
 - `⚠️ HIGH_VOLATILITY_AVOID`：當前頻寬 > 2× 30D 平均頻寬，建議觀望

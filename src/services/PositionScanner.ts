@@ -64,6 +64,7 @@ export class PositionScanner {
             minPrice: '0', maxPrice: '0',
             currentTick: 0, currentPriceStr: '0',
             positionValueUSD: 0,
+            amount0: 0, amount1: 0,
             unclaimed0: '0', unclaimed1: '0', unclaimed2: '0',
             unclaimedFeesUSD: 0, fees0USD: 0, fees1USD: 0, fees2USD: 0,
             token2Symbol: '', isStaked: false,

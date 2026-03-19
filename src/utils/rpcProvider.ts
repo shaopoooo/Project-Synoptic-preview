@@ -3,6 +3,7 @@ import axios from 'axios';
 import pLimit from 'p-limit';
 import { config } from '../config';
 import { createServiceLogger } from './logger';
+import { normalizeRawAmount } from './math';
 
 /** GeckoTerminal 速率控制（免費 API：並發 1，最小間隔 1500ms） */
 const _geckoQueue = pLimit(1);
@@ -92,7 +93,7 @@ export async function fetchGasCostUSD(): Promise<number> {
         const maxFee = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;
         const ethPrice = parseFloat(ethRes.data?.pairs?.[0]?.priceUsd ?? '0');
         if (maxFee > 0n && ethPrice > 0) {
-            const gasCostETH = Number(maxFee * config.GAS_UNITS_COMPOUND) / 1e18;
+            const gasCostETH = normalizeRawAmount((maxFee * config.GAS_UNITS_COMPOUND).toString(), config.TOKEN_DECIMALS.ETH);
             const usd = gasCostETH * ethPrice;
             gasCostCache = { usd, expiresAt: Date.now() + config.GAS_COST_CACHE_TTL_MS };
             log.info(`⛽ gas $${usd.toFixed(4)} (${(Number(maxFee) / 1e9).toFixed(4)} gwei × ${config.GAS_UNITS_COMPOUND} units)`);

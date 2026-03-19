@@ -9,6 +9,7 @@ import { isValidWalletAddress, isValidPoolAddress, isValidPoolV4Id } from '../ut
 import { calculateCapitalEfficiency } from '../utils/math';
 import type { PositionScanner } from '../services/PositionScanner';
 
+const FMT = config.FMT;
 const log = createServiceLogger('TelegramBot');
 
 /** 允許的排程間隔（分鐘）：10 的倍數且能整除 1440，起始對齊每日 00:00 */
@@ -289,7 +290,7 @@ export class TelegramBotService {
 
             if (!sub || sub === 'list') {
                 const lines = effectivePools.map((p, i) => {
-                    const feePct = `${(p.fee * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+                    const feePct = `${(p.fee * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
                     const addrShort = `${p.address.slice(0, 10)}…`;
                     return `${i + 1}. ${p.dex} ${feePct}  <code>${addrShort}</code>`;
                 });
@@ -329,7 +330,7 @@ export class TelegramBotService {
                 const newPools = [...effectivePools, newPool];
                 const newCfg = { ...appState.userConfig, pools: newPools };
                 if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
-                const feePct = `${(feeNum * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
+                const feePct = `${(feeNum * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
                 ctx.reply(`✅ 已新增池: ${dex} ${feePct}\n<code>${addr}</code>`, { parse_mode: 'HTML' });
                 return;
             }
@@ -372,7 +373,7 @@ export class TelegramBotService {
                         if (pos.closed) continue;
                         if (pos.initial === 0 && !pos.externalStake) continue;
                         const wShort = `<code>${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}</code>`;
-                        const inv = pos.initial > 0 ? `$${pos.initial.toFixed(2)}` : '未設定';
+                        const inv = pos.initial > 0 ? `$${pos.initial.toFixed(FMT.USD_CENTS)}` : '未設定';
                         const track = pos.externalStake ? `🔒 ${pos.dexType}` : '';
                         lines.push(`${wShort} #<code>${pos.tokenId}</code>  本金 ${inv}  ${track}`.trimEnd());
                     }
@@ -434,7 +435,7 @@ export class TelegramBotService {
 
             // ── 確認訊息 ─────────────────────────────────────────────────────
             const wShort = `${address.slice(0, 6)}…${address.slice(-4)}`;
-            const invMsg = amount > 0 ? `本金 <b>$${amount.toFixed(2)}</b>` : '本金已清除';
+            const invMsg = amount > 0 ? `本金 <b>$${amount.toFixed(FMT.USD_CENTS)}</b>` : '本金已清除';
             ctx.reply(`✅ #${tokenId} (${wShort})  ${invMsg}  🔒 externalStake=${dexArg}`, { parse_mode: 'HTML' });
         });
 
@@ -540,7 +541,7 @@ export class TelegramBotService {
                     for (const pos of wallet.positions) {
                         if (pos.closed || pos.initial === 0) continue;
                         const wShort = `<code>${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}</code>`;
-                        lines.push(`${wShort} #<code>${pos.tokenId}</code>  本金 <b>$${pos.initial.toFixed(2)}</b>`);
+                        lines.push(`${wShort} #<code>${pos.tokenId}</code>  本金 <b>$${pos.initial.toFixed(FMT.USD_CENTS)}</b>`);
                     }
                 }
                 if (lines.length === 0) {
@@ -572,7 +573,7 @@ export class TelegramBotService {
             const newCfg = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { initial: amount });
             if (this.onUserConfigChange) await this.onUserConfigChange(newCfg);
 
-            const msg = amount > 0 ? `本金已設為 <b>$${amount.toFixed(2)}</b>` : '本金已清除';
+            const msg = amount > 0 ? `本金已設為 <b>$${amount.toFixed(FMT.USD_CENTS)}</b>` : '本金已清除';
             ctx.reply(`✅ #${tokenId}  ${msg}`, { parse_mode: 'HTML' });
         });
     }
@@ -661,11 +662,11 @@ export class TelegramBotService {
         const walletCount = new Set(
             entries.map(e => e.position.ownerWallet).filter(w => isValidWalletAddress(w))
         ).size;
-        const fmtUSD = (v: number) => v >= 0 ? `+$${v.toFixed(1)}` : `-$${Math.abs(v).toFixed(1)}`;
+        const fmtUSD = (v: number) => v >= 0 ? `+$${v.toFixed(FMT.USD_TENTH)}` : `-$${Math.abs(v).toFixed(FMT.USD_TENTH)}`;
 
         let msg = `<b>[${timeStr}] 倉位監控報告 (${sorted.length} 個倉位 | 排序: ${config.SORT_LABELS[sortBy]} ↓)</b>`;
         msg += `\n\n📊 <b>總覽</b>  ${entries.length} 倉位 · ${walletCount} 錢包`;
-        msg += `\n💼 總倉位 <b>$${totalPositionUSD.toFixed(0)}</b>  |  本金 <b>$${totalInitialCapital.toFixed(0)}</b>  |  Unclaimed <b>$${totalUnclaimedUSD.toFixed(1)}</b>`;
+        msg += `\n💼 總倉位 <b>$${totalPositionUSD.toFixed(FMT.USD_WHOLE)}</b>  |  本金 <b>$${totalInitialCapital.toFixed(FMT.USD_WHOLE)}</b>  |  Unclaimed <b>$${totalUnclaimedUSD.toFixed(FMT.USD_TENTH)}</b>`;
 
         // 即時幣價（由獨立 tokenPrices 模組提供，不依賴 BBEngine 是否成功）
         const tp = getTokenPrices();
@@ -675,7 +676,7 @@ export class TelegramBotService {
         if (totalPnL !== null) {
             const icon = totalPnL >= 0 ? '🟢' : '🔴';
             const pctStr = totalPnLPct !== null
-                ? ` (${totalPnLPct >= 0 ? '+' : ''}${totalPnLPct.toFixed(2)}%)`
+                ? ` (${totalPnLPct >= 0 ? '+' : ''}${totalPnLPct.toFixed(FMT.PCT_HUNDREDTH)}%)`
                 : '';
             msg += `\n💰 總獲利 <b>${fmtUSD(totalPnL)}${pctStr}</b> ${icon}`;
         }
@@ -691,20 +692,20 @@ export class TelegramBotService {
             msg += `\n📊 <b>各池收益排行:</b>`;
             allPools.forEach((p, i) => {
                 const rank = medals[i] ?? '　';
-                const label = `${p.dex} ${(p.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`;
-                const feeAprPct = (p.apr * 100).toFixed(2);
+                const label = `${p.dex} ${(p.feeTier * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
+                const feeAprPct = (p.apr * 100).toFixed(FMT.PCT_HUNDREDTH);
                 const totalApr = p.apr + (p.farmApr ?? 0);
                 const aprStr = p.farmApr !== undefined
-                    ? `APR <b>${(totalApr * 100).toFixed(2)}%</b>(手續費${feeAprPct}%+農場${(p.farmApr * 100).toFixed(2)}%)`
+                    ? `APR <b>${(totalApr * 100).toFixed(FMT.PCT_HUNDREDTH)}%</b>(手續費${feeAprPct}%+農場${(p.farmApr * 100).toFixed(FMT.PCT_HUNDREDTH)}%)`
                     : `APR <b>${feeAprPct}%</b>`;
-                const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(0)}K` : `$${p.tvlUSD.toFixed(0)}`;
+                const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(FMT.USD_WHOLE)}K` : `$${p.tvlUSD.toFixed(FMT.USD_WHOLE)}`;
                 const tag = activePoolIds.has(p.id.toLowerCase()) ? ' ◀ 你的倉位' : '';
                 const bb = appState.bbs[p.id.toLowerCase()];
                 let inRangeTag = '';
                 if (bb && !bb.isFallback && bb.sma > 0) {
                     const eff = calculateCapitalEfficiency(bb.upperPrice, bb.lowerPrice, bb.sma);
                     if (eff !== null) {
-                        inRangeTag = ` → 區間 <b>${(totalApr * eff * 100).toFixed(1)}%</b>`;
+                        inRangeTag = ` → 區間 <b>${(totalApr * eff * 100).toFixed(FMT.PCT_TENTH)}%</b>`;
                     }
                 }
                 msg += `\n${rank} ${label} — ${aprStr}${inRangeTag} | TVL ${tvl}${tag}`;

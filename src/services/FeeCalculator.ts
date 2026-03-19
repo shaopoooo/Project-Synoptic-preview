@@ -4,6 +4,7 @@ import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
 import { FeeQueryResult, RewardsQueryResult, Dex } from '../types';
+import { normalizeRawAmount } from '../utils/math';
 
 
 const log = createServiceLogger('FeeCalculator');
@@ -180,7 +181,7 @@ export class FeeCalculator {
                     const earned: bigint = await gauge.earned(depositorWallet, tokenId);
                     unclaimed2 = BigInt(earned);
                     if (unclaimed2 > 0n) {
-                        const aeroNormalized = Number(unclaimed2) / 1e18;
+                        const aeroNormalized = normalizeRawAmount(unclaimed2.toString(), config.TOKEN_DECIMALS.AERO);
                         fees2USD = aeroNormalized * aeroPrice;
                         token2Symbol = 'AERO';
                         log.info(`💸 #${tokenId} AERO  ${aeroNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [gauge.earned]`);
@@ -204,7 +205,7 @@ export class FeeCalculator {
                     unclaimed2 = BigInt(pending);
                     if (unclaimed2 > 0n) {
                         const resolvedCakePrice = cakePrice;
-                        const cakeNormalized = Number(unclaimed2) / 1e18;
+                        const cakeNormalized = normalizeRawAmount(unclaimed2.toString(), config.TOKEN_DECIMALS.CAKE);
                         fees2USD = cakeNormalized * resolvedCakePrice;
                         token2Symbol = 'CAKE';
                         log.info(`💸 #${tokenId} CAKE  ${cakeNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [${addr.slice(0, 10)}]`);

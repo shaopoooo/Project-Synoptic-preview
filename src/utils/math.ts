@@ -2,6 +2,28 @@
  * Fixed-point BigInt math utility to replace decimal.js
  */
 
+/**
+ * Normalize a float raw amount (from sqrtPrice math) by token decimals.
+ * posAmountRaw is already a JS number, so standard division is sufficient.
+ */
+export function normalizeAmount(rawFloat: number, decimals: number): number {
+    return rawFloat / Math.pow(10, decimals);
+}
+
+/**
+ * Normalize a BigInt-string raw amount (e.g. unclaimed fees from contract) by token decimals.
+ * Uses BigInt arithmetic to avoid precision loss before converting to float.
+ * Result is a JS number (fine for display/USD calculation at this scale).
+ */
+export function normalizeRawAmount(rawStr: string, decimals: number): number {
+    if (!rawStr || rawStr === '0') return 0;
+    const raw = BigInt(rawStr);
+    const scale = BigInt(10) ** BigInt(decimals);
+    const whole = raw / scale;
+    const frac  = raw % scale;
+    return Number(whole) + Number(frac) / Math.pow(10, decimals);
+}
+
 export function tickToRatio(tick: number): number {
     return Math.pow(1.0001, tick);
 }

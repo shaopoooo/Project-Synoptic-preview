@@ -85,6 +85,8 @@ export interface PositionRecord {
     currentTick: number;
     currentPriceStr: string;
     positionValueUSD: number;
+    amount0: number;  // normalized token0 amount in LP position
+    amount1: number;  // normalized token1 amount in LP position
 
     // Fees & IL
     unclaimed0: string;

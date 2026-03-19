@@ -93,6 +93,31 @@ export const constants = {
         { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
+    // ── Token Decimals ────────────────────────────────────────────────────
+    // Single source of truth for ERC-20 decimal places.
+    // All normalization (raw BigInt → float) must read from here.
+    TOKEN_DECIMALS: {
+        WETH:  18,
+        ETH:   18,
+        cbBTC: 8,
+        CAKE:  18,
+        AERO:  18,
+    } as Record<string, number>,
+
+    // ── Display Precision ─────────────────────────────────────────────────
+    // Centralised toFixed() values — all display formatting must read from here.
+    FMT: {
+        PRICE:         8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
+        TOKEN_AMOUNT:  6,   // normalised token qty in log lines (CAKE, AERO, etc.)
+        USD_WHOLE:     0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
+        USD_TENTH:     1,   // USD to $0.1         (PnL, unclaimed total, APR log)
+        USD_CENTS:     2,   // USD to $0.01        (fee detail per token, gas cost, investment)
+        USD_MILLI:     3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
+        PCT_TENTH:     1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
+        PCT_HUNDREDTH: 2,   // % to 0.01           (Telegram APR ranking, ROI / profit rate)
+        FEE_TIER:      4,   // fee tier display    ("0.0085%")
+    },
+
     // ── Math Config ───────────────────────────────────────────────────────
     DECIMAL_PRECISION: 18n,
 
