@@ -6,10 +6,10 @@ import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { getTokenPrices } from '../utils/tokenPrices';
 import { TickMath } from '@uniswap/v3-sdk';
-import { tickToPrice, calculateCapitalEfficiency } from '../utils/math';
+import { tickToPrice, calculateCapitalEfficiency, normalizeAmount, normalizeRawAmount } from '../utils/math';
 import { getTokenDecimals, getTokenSymbol } from '../utils/tokenInfo';
 
-
+const FMT = config.FMT;
 const log = createServiceLogger('PositionAggregator');
 
 export class PositionAggregator {
@@ -32,8 +32,8 @@ export class PositionAggregator {
         const dec0 = getTokenDecimals(t0);
         const dec1 = getTokenDecimals(t1);
 
-        const fee0Normalized = Number(unclaimed0) / Math.pow(10, dec0);
-        const fee1Normalized = Number(unclaimed1) / Math.pow(10, dec1);
+        const fee0Normalized = normalizeRawAmount(unclaimed0.toString(), dec0);
+        const fee1Normalized = normalizeRawAmount(unclaimed1.toString(), dec1);
 
         // bb may be null on the very first startup scan (PositionScanner runs before BBEngine).
         // Fall back to getTokenPrices() which was already refreshed by runTokenPriceFetcher.
@@ -46,12 +46,12 @@ export class PositionAggregator {
         const unclaimedFeesUSD = (fee0Normalized * price0) + (fee1Normalized * price1) + fees2USD;
 
         const tp = (tick: number) => tickToPrice(tick, dec0, dec1);
-        const minPrice    = tp(Number(position.tickLower)).toFixed(8);
-        const maxPrice    = tp(Number(position.tickUpper)).toFixed(8);
-        const currentPrice = tp(poolStats.tick).toFixed(8);
+        const minPrice    = tp(Number(position.tickLower)).toFixed(FMT.PRICE);
+        const maxPrice    = tp(Number(position.tickUpper)).toFixed(FMT.PRICE);
+        const currentPrice = tp(poolStats.tick).toFixed(FMT.PRICE);
 
-        const bbMinPrice = bb ? tp(bb.tickLower).toFixed(8) : undefined;
-        const bbMaxPrice = bb ? tp(bb.tickUpper).toFixed(8) : undefined;
+        const bbMinPrice = bb ? tp(bb.tickLower).toFixed(FMT.PRICE) : undefined;
+        const bbMaxPrice = bb ? tp(bb.tickUpper).toFixed(FMT.PRICE) : undefined;
 
         // LP position value — Uniswap V3 sqrtPrice math
         const sqrtPriceCurrent = Number(poolStats.sqrtPriceX96) / (2 ** 96);
@@ -70,9 +70,9 @@ export class PositionAggregator {
             posAmount1Raw = liq * (sqrtPriceCurrent - sqrtPriceLower);
         }
 
-        const positionValueUSD =
-            (posAmount0Raw / Math.pow(10, dec0)) * price0 +
-            (posAmount1Raw / Math.pow(10, dec1)) * price1;
+        const amount0 = normalizeAmount(posAmount0Raw, dec0);
+        const amount1 = normalizeAmount(posAmount1Raw, dec1);
+        const positionValueUSD = amount0 * price0 + amount1 * price1;
 
         // ilUSD / initialCapital / openedDays / openedHours / profitRate are filled by
         // runPositionScanner() in index.ts via PnlCalculator after aggregateAll() returns.
@@ -96,6 +96,8 @@ export class PositionAggregator {
             currentTick: poolStats.tick,
             currentPriceStr: currentPrice,
             positionValueUSD,
+            amount0,
+            amount1,
             unclaimed0: unclaimed0.toString(),
             unclaimed1: unclaimed1.toString(),
             unclaimed2: unclaimed2.toString(),

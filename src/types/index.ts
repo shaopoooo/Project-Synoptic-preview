@@ -85,6 +85,8 @@ export interface PositionRecord {
     currentTick: number;
     currentPriceStr: string;
     positionValueUSD: number;
+    amount0: number;  // normalized token0 amount in LP position
+    amount1: number;  // normalized token1 amount in LP position
 
     // Fees & IL
     unclaimed0: string;
@@ -122,6 +124,25 @@ export interface PositionRecord {
 
 
 
+/**
+ * Shape of the NPM positions() return value (V3/V4/PancakeSwap/Aerodrome).
+ * V3/PancakeSwap/Aerodrome: fee/tick/liquidity come as bigint from ethers v6.
+ * V4: tick/fee are number (decoded from packed PositionInfo); liquidity is bigint.
+ * Callers must use Number()/BigInt() for arithmetic to handle both cases.
+ */
+export interface NpmPositionData {
+    token0: string;
+    token1: string;
+    fee: number | bigint;
+    tickLower: number | bigint;
+    tickUpper: number | bigint;
+    liquidity: number | bigint;
+    feeGrowthInside0LastX128: bigint;
+    feeGrowthInside1LastX128: bigint;
+    tokensOwed0: bigint;
+    tokensOwed1: bigint;
+}
+
 /** Result from FeeCalculator.fetchUnclaimedFees() */
 export interface FeeQueryResult {
     unclaimed0: bigint;
@@ -145,7 +166,7 @@ export interface AggregateInput {
     owner: string;
     depositorWallet: string;
     isStaked: boolean;
-    position: any;
+    position: NpmPositionData;
     poolAddress: string;
     poolStats: PoolStats;
     bb: BBResult | null;
@@ -165,7 +186,7 @@ export interface RawChainPosition {
     ownerWallet: string;       // original wallet (from syncFromChain / manual)
     owner: string;             // ownerOf() result — may be a gauge contract
     isStaked: boolean;
-    position: any;             // NPM positions() return value
+    position: NpmPositionData; // NPM positions() return value
     poolAddress: string;
     feeTier: number;           // raw NPM fee field (e.g. 100, 500, 85, 1)
     feeTierForStats: number;   // normalized (e.g. 0.000085 for Aerodrome)

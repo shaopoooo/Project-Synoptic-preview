@@ -58,7 +58,7 @@ export const constants = {
     BB_K_LOW_VOL: 1.8,   // 震盪市 (vol < threshold)
     BB_K_HIGH_VOL: 2.5,   // 趨勢市 (vol >= threshold)
     BB_VOL_THRESHOLD: 0.50,  // 年化波動率分界
-    BB_MAX_OFFSET_PCT: 0.15, // 帶寬上限 ±10%
+    BB_MAX_OFFSET_PCT: 0.15, // 帶寬上限 ±15%
     BB_HOURLY_WINDOW: 20,    // getPrices 最後 N 小時
     BB_FALLBACK_K: 2.0,
     BB_FALLBACK_VOL: 0.5,
@@ -93,12 +93,36 @@ export const constants = {
         { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
+    // ── Token Decimals ────────────────────────────────────────────────────
+    // Single source of truth for ERC-20 decimal places.
+    // All normalization (raw BigInt → float) must read from here.
+    TOKEN_DECIMALS: {
+        WETH:  18,
+        ETH:   18,
+        cbBTC: 8,
+        CAKE:  18,
+        AERO:  18,
+    } as Record<string, number>,
+
+    // ── Display Precision ─────────────────────────────────────────────────
+    // Centralised toFixed() values — all display formatting must read from here.
+    FMT: {
+        PRICE:         8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
+        TOKEN_AMOUNT:  6,   // normalised token qty in log lines (CAKE, AERO, etc.)
+        USD_WHOLE:     0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
+        USD_TENTH:     1,   // USD to $0.1         (PnL, unclaimed total, APR log)
+        USD_CENTS:     2,   // USD to $0.01        (fee detail per token, gas cost, investment)
+        USD_MILLI:     3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
+        PCT_TENTH:     1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
+        PCT_HUNDREDTH: 2,   // % to 0.01           (Telegram APR ranking, ROI / profit rate)
+        FEE_TIER:      4,   // fee tier display    ("0.0085%")
+    },
+
     // ── Math Config ───────────────────────────────────────────────────────
     DECIMAL_PRECISION: 18n,
 
     // ── Position Tracking ─────────────────────────────────────────────────
     EOQ_THRESHOLD: 5,  // Unclaimed fees threshold in USD
-    CAPITAL: 20000,    // Total deployed capital in USD for scaling calculations
     DRIFT_WARNING_PCT: 80,          // Overlap % below which to show drift warning
     RED_ALERT_BREAKEVEN_DAYS: 30,   // IL Breakeven Days 超過此值觸發 RED_ALERT
     HIGH_VOLATILITY_FACTOR: 2,      // currentBandwidth > factor × avg30D 觸發 HIGH_VOLATILITY_AVOID
@@ -109,7 +133,7 @@ export const constants = {
     // ── Contract Addresses on Base ────────────────────────────────────────
     AERO_VOTER_ADDRESS: '0x16613524e02ad97eDfeF371bC883F2F5d6C480A5',
     // PancakeSwap V3 MasterChef — 質押 LP NFT 取得 CAKE 獎勵（Base 已驗證地址）
-    PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3',
+    PANCAKE_MASTERCHEF_V3: env.PANCAKE_MASTERCHEF_V3,
     // cakePerSecond scaling: getLatestPeriodInfo 回傳值需除以 1e30 才是實際 CAKE/s
     MASTERCHEF_CAKE_PER_SEC_PRECISION: BigInt('1000000000000000000000000000000'), // 1e30
 

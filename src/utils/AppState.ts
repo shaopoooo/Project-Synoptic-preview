@@ -88,7 +88,7 @@ export function ucUpsertPosition(
             externalStake: update.externalStake ?? false,
             openTimestamp: update.openTimestamp,
         };
-        return { wallets: [...cfg.wallets, { address: walletAddress, positions: [newPos] }] };
+        return { ...cfg, wallets: [...cfg.wallets, { address: walletAddress, positions: [newPos] }] };
     }
 
     const wallet = cfg.wallets[walletIdx];
@@ -113,7 +113,7 @@ export function ucUpsertPosition(
     const newWallets = cfg.wallets.map((w, i) =>
         i === walletIdx ? { ...w, positions: newPositions } : w
     );
-    return { wallets: newWallets };
+    return { ...cfg, wallets: newWallets };
 }
 
 /** 從所有 wallet 中移除指定 tokenId 的 WalletPosition */
@@ -121,7 +121,7 @@ export function ucRemovePosition(cfg: UserConfig, tokenId: string): UserConfig {
     return {
         wallets: cfg.wallets.map(w => ({
             ...w,
-            dex: w.positions.filter(p => p.tokenId !== tokenId),
+            positions: w.positions.filter(p => p.tokenId !== tokenId),
         })),
     };
 }

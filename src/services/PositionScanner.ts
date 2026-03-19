@@ -2,9 +2,10 @@ import { ethers } from 'ethers';
 import { config } from '../config';
 import { appState, ucWalletAddresses, ucTrackedPositions, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../utils/formatter';
-import { BBResult, RawChainPosition, Dex } from '../types';
+import { BBResult, RawChainPosition, Dex, NpmPositionData } from '../types';
 import { createServiceLogger, positionLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
+import { feeTierToTickSpacing } from '../utils/math';
 import { findMintTimestampMs } from './ChainEventScanner';
 import { PositionRecord } from '../types';
 import { TOKEN_DECIMALS } from '../utils/tokenInfo';
@@ -64,6 +65,7 @@ export class PositionScanner {
             minPrice: '0', maxPrice: '0',
             currentTick: 0, currentPriceStr: '0',
             positionValueUSD: 0,
+            amount0: 0, amount1: 0,
             unclaimed0: '0', unclaimed1: '0', unclaimed2: '0',
             unclaimedFeesUSD: 0, fees0USD: 0, fees1USD: 0, fees2USD: 0,
             token2Symbol: '', isStaked: false,
@@ -336,7 +338,7 @@ export class PositionScanner {
             const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
 
             const owner = await rpcRetry(() => npmContract.ownerOf(tokenId), `${dex}.ownerOf(${tokenId})`);
-            const position = await rpcRetry(() => npmContract.positions(tokenId), `${dex}.positions(${tokenId})`);
+            const position = await rpcRetry(() => npmContract.positions(tokenId), `${dex}.positions(${tokenId})`) as NpmPositionData;
 
             const feeTier = Number(position.fee);
             const oShort = `${owner.slice(0, 6)}…${owner.slice(-4)}`;
@@ -349,15 +351,11 @@ export class PositionScanner {
             }
 
             // Aerodrome NPM 回傳的是 tickSpacing（非 fee pips），需個別轉換
-            let tickSpacing = 60;
             let feeTierForStats = feeTier / 1000000;
-            if (feeTier === 100) tickSpacing = 1;
-            else if (feeTier === 500) tickSpacing = 10;
-            else if (feeTier === 85) tickSpacing = 1;
-            else if (dex === 'Aerodrome' && feeTier === 1) {
-                tickSpacing = 1;
-                feeTierForStats = 0.000085;
+            if (dex === 'Aerodrome' && feeTier === 1) {
+                feeTierForStats = 0.000085; // Aerodrome returns tickSpacing=1 as fee field
             }
+            const tickSpacing = feeTierToTickSpacing(feeTierForStats);
 
             const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(w => w.toLowerCase() === owner.toLowerCase());
             const isStaked = !ownerIsWallet;

@@ -13,6 +13,7 @@ export const env = {
     BOT_TOKEN: process.env.BOT_TOKEN || '',
     CHAT_ID: process.env.CHAT_ID || '',
     FAST_STARTUP: process.env.FAST_STARTUP === 'true',
+    PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3',
 };
 
 /** 驗證必填環境變數，缺少時輸出錯誤並中止程式。

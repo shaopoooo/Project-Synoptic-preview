@@ -100,7 +100,7 @@ src/
 │   └── index.ts                # 共用型別定義（PositionRecord、BBResult、RiskAnalysis、RawPosition 等）
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
-│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas）
+│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas、TOKEN_DECIMALS、FMT 顯示精度）
 │   ├── abis.ts                 # 合約 ABI（NPM、Pool、Aero Voter/Gauge）
 │   └── index.ts                # 統一匯出入口
 ├── services/
@@ -119,7 +119,7 @@ src/
 │   └── BacktestEngine.ts       # 歷史回測引擎
 └── utils/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
-    ├── math.ts                 # BigInt 固定精度數學工具
+    ├── math.ts                 # BigInt 固定精度數學工具（normalizeAmount / normalizeRawAmount / tickToPrice / calculateCapitalEfficiency）
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + nextProvider() + fetchGasCostUSD()
     ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）+ dex 命名自動遷移
@@ -127,7 +127,7 @@ src/
     ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
     ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol / userConfig）；re-exports WalletPosition / WalletEntry / UserConfig from types/
     ├── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol / TOKEN_DECIMALS）
-    └── formatter.ts            # 文字格式化工具（compactAmount、formatPositionLog，TelegramBot 與 logger 共用）
+    └── formatter.ts            # 文字格式化工具（compactAmount、formatPositionLog，TelegramBot 與 logger 共用）；所有 toFixed 統一讀 `config.FMT.*`
 ```
 
 ### 核心資料流
@@ -217,6 +217,7 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **輸入**：`rawPositions, latestBBs, latestPools, gasCostUSD`
 - **內部呼叫**：`FeeCalculator`、`RiskManager`、`PnlCalculator`、`rebalance`
 - **幣價 fallback**：`bb` 為 null 時（啟動首次掃描），fallback 到 `getTokenPrices()` 取得 WETH / cbBTC / CAKE / AERO 價格，避免啟動時幣價全為 $0
+- **token 數量**：`assemble()` 計算並儲存正規化持倉數量 `amount0 = normalizeAmount(posAmount0Raw, dec0)`、`amount1 = normalizeAmount(posAmount1Raw, dec1)`，供 Telegram 🪙 行與 position.log Holdings 行顯示
 - **關鍵函式**：`aggregateAll(rawPositions, latestBBs, latestPools, gasCostUSD)` / `assemble(input)`
 
 ### BandwidthTracker（`src/utils/BandwidthTracker.ts`）
@@ -273,6 +274,7 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - `💼 倉位`：`positionValueUSD`；`本金`：`initialCapital ?? N/A`；`健康`：`healthScore/100`
 - `⌛ Breakeven`：`ilUSD >= 0` → 顯示「盈利中」；否則顯示 `breakevenDays` 天數
 - `💸 淨損益`：`ilUSD`（LP現值 + Unclaimed - 本金）；`無常損失`：`positionValueUSD - initialCapital`
+- `🪙 持倉數量`：`amount0` / `amount1`（PositionAggregator 組裝時計算並儲存的正規化 token 數量）
 - `🔄 未領取`：`unclaimedFeesUSD`；`✅/❌` 比較 `compoundThreshold`；逐幣明細各幣 > 0 才顯示
 - `🔒`：`isStaked = true`
 - `⚠️ RED_ALERT`：`breakevenDays > config.RED_ALERT_BREAKEVEN_DAYS`
@@ -324,12 +326,53 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
+- [ ] **Aerodrome TVL 鏈上修正**：DexScreener 對 Aerodrome CL 池回傳的是 gauge 質押量而非全池 TVL（實測低估約 5x，$820K vs $4.1M），導致 APR 高估與 In-Range APR 倍率失真。應改為鏈上直接讀 token balance 計算 TVL：
+  - `IERC20(pool.token0()).balanceOf(poolAddress) × token0Price`
+  - `+ IERC20(pool.token1()).balanceOf(poolAddress) × token1Price`
+  - 需額外 2 次 RPC call；token price 使用現有 `getTokenPrices()` 提供的 WETH / cbBTC 幣價
+  - 修正後 APR 分母正確，Telegram 池排行 TVL 與 Aerodrome DEX UI 一致
+
+- [ ] **跨池遷移建議（Migration Suggestion）**：在 Telegram 池排行中，自動計算持倉池與更高 APR 池之間的遷移回本天數，當回本天數 ≤ 30 天時標注「建議移倉」。實作重點：
+  - 門檻公式：`最低 APR 差 = 遷移成本 / (倉位 × 30天)`；Base 鏈遷移成本約 $1（透過 `fetchGasCostUSD()` 動態取得）
+  - 掃描 `appState.pools` 找出同交易對中 APR 最高的池，與持倉池比較
+  - 回本天數 = `遷移成本 / (倉位 × APR差 / 365)`
+  - Telegram 格式：在池排行對應池後附加 `💡 移倉回本 X 天`（僅當回本 ≤ 30 天時顯示）
+  - 依賴 Aerodrome TVL 鏈上修正（上方條目）完成後數字才準確
+
+- [ ] **rebalance.ts 重構（階段一）**：現行實作有多個問題，按優先序修正：
+  1. **notes 覆蓋 bug**：`withdrawSingleSide` 分支 Gas 過高時設 `notes =`「等待費用累積」（line 170），但 line 175 的 `notes =` 無條件覆蓋，降級訊息永遠消失。修正：降級後提前 `return`，或將 line 175-178 移入 `else` 區塊
+  2. **Tick 對齊缺失**：`singleSideMin / singleSideMax` 輸出浮點價格，未做 `Math.round(tick / tickSpacing) * tickSpacing` 對齊。鏈上 V3 開倉邊界必須是 tickSpacing 整數倍，直接拿去前端會遇到 Out of Tick Spacing 報錯。需將丟失的 `tickSpacing` 加回參數（JSDoc 有記載但簽名中不存在）
+  3. **UI 字串外洩至業務層**：`notes` 在 Service 內直接組裝中文字串，阻礙多語系與未來自動執行解析。應將結構化數據回傳（`actionToken`、`targetRebalanceValueUSD`、`singleSideMin/Max`），字串組裝移至 `TelegramBot.ts` formatter
+  4. **魔術數字**：`0.3 * sd`（SD offset 係數）、`gasCost * 2`（降級門檻）應提取至 `constants.ts`；`toFixed` hardcode 改用 `FMT.*`
+  5. **價格單位混用**：`newBB.minPriceRatio / maxPriceRatio` 是 raw tick-ratio，`currentPrice` 是 decimal-adjusted；DCA notes 顯示的數值與 UI 的 `bbMinPrice/bbMaxPrice` 不同單位。應改用傳入的 `bbLowerAdj / bbUpperAdj`
+
+- [ ] **`PositionRecord` 拆分為子型別**：27 個欄位過多，建議拆為 `PositionCore`（身份 + 鏈上快照）/ `PositionFees`（手續費 + unclaimed）/ `PositionMetrics`（風險指標）/ `PositionMeta`（顯示 / 元數據），再以 `PositionRecord = PositionCore & PositionFees & PositionMetrics & PositionMeta`（intersection type）組合。影響所有 consumer，需全面更新。
+
+- [ ] **`unclaimed0/1/2` 語意釐清**：目前 `unclaimed0/1/2` 儲存 BigInt 序列化字串（`bigint.toString()`），語意與顯示用的 USD 欄位混淆。建議改名 `unclaimedRaw0/1/2` 或在 JSDoc 明確標注「raw bigint string from contract」，與 `unclaimedFeesUSD`、`fees0USD` 等 USD 欄位語意區隔。
+
+- [ ] **`activeTasks` busy-wait 改為 Promise-based 等待**：`runBotService()` 的 `while (activeTasks > 0) { await sleep(1000) }` polling 不優雅，且若某個 runner 的 `finally` 未被執行（例如強制終止）會永遠阻塞。改法：將各 runner 的 Promise 存入陣列，`runBotService` 改接收 `Promise.all(runners)` 作為前置條件；或使用 semaphore pattern（`p-limit` 已引入）。
+
+- [ ] **`FAST_STARTUP` 補充單元測試**：`setTimeout + Promise + isCycleRunning` 三者交錯，邏輯難以用人工驗證。應補充 Jest 測試：模擬 `FAST_STARTUP=true` 確認首次 cron 在 5 秒內觸發；模擬 `isCycleRunning=true` 時新 cycle 被跳過；模擬排程重疊時的競態條件。
+
+- [ ] **`dryrun.ts` 中殘留的 tickSpacing 映射**：`feeTierToTickSpacing()` 已提取至 `utils/math.ts`，但 `dryrun.ts` 可能仍有 inline 版本，需確認並統一使用共用函式。
+
+- [ ] **提取 `sub256` / `MAX_UINT128` 為共用常數**：`FeeCalculator.ts` 中 `sub256` helper 在 `_fetchV4Fees` 和 `computePendingFees` 各定義一次（DRY 違規），`MAX_UINT128` 在 L82 和 L132 重複定義。應提取至 `utils/math.ts`
+
+- [ ] **FeeCalculator 空 `catch {}` 修正**：Aerodrome gauge fallback 鏈內多個空 `catch {}` 靜默吞掉錯誤（L60、L220），不利偵錯。應改為 `catch (e) { log.debug(...) }`
+
+- [ ] **`TelegramBot.ts` 拆分重構**：724 行巨型檔案含 12 個指令 handler + 報告組裝 + 格式化。建議拆分為 `bot/commands/` 目錄（每個指令獨立）+ `bot/reportBuilder.ts`（`sendConsolidatedReport` 邏輯）
+
 ### P2 🟡 中優先（排程中）
 
 - [ ] **BBEngine 帶寬優化（區間太窄）**：目前 EWMA 過度平滑（β=0.7）導致方差嚴重低估，加上缺乏 stdDev 下限，低波動期帶寬可能崩塌至 ±0.5%，遠小於實際日內波動。分兩步實作：
   - **步驟一（改動小）**：加 stdDev 下限 — `stdDev1H = Math.max(ewmaStdDev, volDerivedStdDev)`，確保帶寬不低於 30D 歷史波動率暗示的最小值；新增常數 `BB_MIN_BAND_PCT`（建議 0.03），`halfBand = Math.max(k × stdDev1H, sma × BB_MIN_BAND_PCT)`
   - **步驟二（改動中）**：對原始價格計算方差（不對 EWMA 平滑後的序列算），EWMA 只用來平滑 SMA 趨勢，不影響方差估計
   - 調整後觀察 1~2 天，若仍太窄再加步驟二；同時補充對應單元測試驗證帶寬下限
+
+- [ ] **rebalance.ts 帶寬輔助決策（階段二）**：依賴 P1 穿倉告警的 `SwapTickHandler` 基礎設施。在決策樹入口加帶寬防護層：若當前 `currentBandwidth > avg30D × HIGH_VOLATILITY_FACTOR`（毒性交易流 / 異常單邊行情），強制覆寫為 `wait` 策略，避免在飛刀行情下掛單接盤。實作重點：
+  - `getRebalanceSuggestion()` 新增 `currentBandwidth` 與 `avg30DBandwidth` 參數（由 `bandwidthTracker` 提供）
+  - 帶寬過高時提前回傳 `{ recommendedStrategy: 'wait', strategyName: '高波動觀望' }`
+  - 依賴 P2 毒性交易流偵測完成後可共用同一帶寬數據
 
 - [ ] **毒性交易流偵測 (Toxic Order Flow)**：依賴 P1 `SwapTickHandler` 基礎設施，在同一 Swap event 監聽上加統計邏輯。在 5 分鐘滾動窗口內若同向 Swap 比率 > 80%（token0→token1 或反向）且淨流量 > 池 TVL 的 X%，觸發 `🚨 毒性交易流警報` 建議短期撤回流動性。需先確認：
   - **「大額」門檻**：相對 TVL 百分比（建議 0.5%）或固定 USD 金額？
@@ -340,7 +383,26 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 ✅ 已完成
 
+### P3 🔵 有依賴鏈（需按序執行）
+
+- [ ] **為 `position: any` 定義型別**：`AggregateInput.position` 與 `RawChainPosition.position` 使用 `any`，應定義 `V3PositionData` / `V4PositionData` union type，消除跨模組型別盲區
+
+- [ ] **補充 utils 層單元測試**：目前僅 `BBEngine`、`RiskManager`、`PnlCalculator`、`rebalance` 有測試。需補充 `stateManager`（遷移邏輯）、`AppState`（ucUpsertPosition / ucRemovePosition）、`formatter`（compactAmount / buildPositionBlock）、`validation`、`math` 的單元測試
+
 ### P4 ⚪ 待討論後動工
+
+#### rebalance.ts 數學引擎升級（階段三）
+
+需先確認以下問題：
+
+1. **SDK 替換必要性**：`Math.sqrt` 在極窄區間（18 dec vs 8 dec 混搭池）是否有實際精度問題？需要實測確認誤差量級
+2. **Delta 輸出格式**：`suggestedHedgeDelta` 應輸出 token 數量還是 USD 名目值？需對接永續合約 API
+
+確認後執行步驟：
+
+- [ ] 以 `@uniswap/v3-sdk` `TickMath` 替換 `Math.sqrt` sqrtPrice 推算，確保極端匯率精度
+- [ ] `RebalanceSuggestion` 新增 `suggestedHedgeDelta`（多/空頭暴露量），供未來 Delta-Neutral 整合（對應方向一）
+- [ ] 將 `calculateV3TokenValueRatio` 的浮點平方根改為 SDK `Position` 精算，消除 `deficitRatio` 誤差
 
 #### IL 精算與財務模型重構
 
@@ -378,6 +440,13 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - [ ] 實作 `RebalanceStrategy`（每日收盤觸發 BB 判斷，扣除 Gas + slippage）
 - [ ] 輸出比較表：`[日期 | Hold PnL | Rebalance PnL | 再平衡次數 | 累計 Gas]`
 - [ ] Telegram `/backtest <days>` 指令
+
+#### 其他待討論項目
+
+- [ ] **PositionRecord 型別拆分**：目前 27 個欄位超大，可考慮拆成 `PositionCore` + `PositionRisk` + `PositionMetadata` 子型別，降低認知負擔
+- [ ] **統一 RPC provider 機制**：`rpcProvider`（FallbackProvider）僅在 `fetchGasCostUSD` 使用，其他地方用 `nextProvider()`（round-robin），兩套機制共存不一致
+- [ ] **`constants.ts` 文件校正**：`BB_MAX_OFFSET_PCT: 0.15` 註解寫 `±10%` 但實際值 15%；`CAPITAL: 20000` 疑似 dead constant（未使用）
+- [ ] **`tokenPrices.ts` 個別錯誤處理**：四個平行 DexScreener API 呼叫使用 `Promise.all`，一個失敗全部失敗；應改 `Promise.allSettled` 讓部分失敗時其餘幣價仍可更新
 
 ---
 
