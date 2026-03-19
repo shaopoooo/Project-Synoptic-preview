@@ -15,6 +15,8 @@ import { bandwidthTracker } from './utils/BandwidthTracker';
 import { appState, ucWalletAddresses, ucTrackedPositions, ucPoolList } from './utils/AppState';
 import { config, validateEnv } from './config';
 import { PoolStats, BBResult, PositionRecord, PositionState, RiskAnalysis } from './types';
+import { LRUCache } from 'lru-cache';
+import { feeTierToTickSpacing } from './utils/math';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
@@ -63,7 +65,7 @@ function reschedule(minutes: number) {
 }
 
 // 嚴重錯誤告警（每類每 30 分鐘至多一次，避免洗版）
-const alertCooldowns = new Map<string, number>();
+const alertCooldowns = new LRUCache<string, number>({ max: 50 });
 const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 async function sendCriticalAlert(key: string, message: string) {
   const last = alertCooldowns.get(key) ?? 0;
@@ -154,11 +156,7 @@ async function runBBEngine() {
     }
 
     for (const [poolAddress, poolData] of poolsToProcess.entries()) {
-      let posTickSpacing = 10;
-      if (poolData.feeTier === 0.0001) posTickSpacing = 1;
-      else if (poolData.feeTier === 0.003) posTickSpacing = 60;
-      else if (poolData.feeTier === 0.000085) posTickSpacing = 1; // Aerodrome 0.0085%
-
+      const posTickSpacing = feeTierToTickSpacing(poolData.feeTier);
       const bb = await BBEngine.computeDynamicBB(poolData.id, poolData.dex, posTickSpacing, poolData.tick);
       if (bb) appState.bbs[poolAddress] = bb;
     }

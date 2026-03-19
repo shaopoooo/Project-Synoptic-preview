@@ -346,6 +346,22 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   4. **魔術數字**：`0.3 * sd`（SD offset 係數）、`gasCost * 2`（降級門檻）應提取至 `constants.ts`；`toFixed` hardcode 改用 `FMT.*`
   5. **價格單位混用**：`newBB.minPriceRatio / maxPriceRatio` 是 raw tick-ratio，`currentPrice` 是 decimal-adjusted；DCA notes 顯示的數值與 UI 的 `bbMinPrice/bbMaxPrice` 不同單位。應改用傳入的 `bbLowerAdj / bbUpperAdj`
 
+- [ ] **`PositionRecord` 拆分為子型別**：27 個欄位過多，建議拆為 `PositionCore`（身份 + 鏈上快照）/ `PositionFees`（手續費 + unclaimed）/ `PositionMetrics`（風險指標）/ `PositionMeta`（顯示 / 元數據），再以 `PositionRecord = PositionCore & PositionFees & PositionMetrics & PositionMeta`（intersection type）組合。影響所有 consumer，需全面更新。
+
+- [ ] **`unclaimed0/1/2` 語意釐清**：目前 `unclaimed0/1/2` 儲存 BigInt 序列化字串（`bigint.toString()`），語意與顯示用的 USD 欄位混淆。建議改名 `unclaimedRaw0/1/2` 或在 JSDoc 明確標注「raw bigint string from contract」，與 `unclaimedFeesUSD`、`fees0USD` 等 USD 欄位語意區隔。
+
+- [ ] **`activeTasks` busy-wait 改為 Promise-based 等待**：`runBotService()` 的 `while (activeTasks > 0) { await sleep(1000) }` polling 不優雅，且若某個 runner 的 `finally` 未被執行（例如強制終止）會永遠阻塞。改法：將各 runner 的 Promise 存入陣列，`runBotService` 改接收 `Promise.all(runners)` 作為前置條件；或使用 semaphore pattern（`p-limit` 已引入）。
+
+- [ ] **`FAST_STARTUP` 補充單元測試**：`setTimeout + Promise + isCycleRunning` 三者交錯，邏輯難以用人工驗證。應補充 Jest 測試：模擬 `FAST_STARTUP=true` 確認首次 cron 在 5 秒內觸發；模擬 `isCycleRunning=true` 時新 cycle 被跳過；模擬排程重疊時的競態條件。
+
+- [ ] **`dryrun.ts` 中殘留的 tickSpacing 映射**：`feeTierToTickSpacing()` 已提取至 `utils/math.ts`，但 `dryrun.ts` 可能仍有 inline 版本，需確認並統一使用共用函式。
+
+- [ ] **提取 `sub256` / `MAX_UINT128` 為共用常數**：`FeeCalculator.ts` 中 `sub256` helper 在 `_fetchV4Fees` 和 `computePendingFees` 各定義一次（DRY 違規），`MAX_UINT128` 在 L82 和 L132 重複定義。應提取至 `utils/math.ts`
+
+- [ ] **FeeCalculator 空 `catch {}` 修正**：Aerodrome gauge fallback 鏈內多個空 `catch {}` 靜默吞掉錯誤（L60、L220），不利偵錯。應改為 `catch (e) { log.debug(...) }`
+
+- [ ] **`TelegramBot.ts` 拆分重構**：724 行巨型檔案含 12 個指令 handler + 報告組裝 + 格式化。建議拆分為 `bot/commands/` 目錄（每個指令獨立）+ `bot/reportBuilder.ts`（`sendConsolidatedReport` 邏輯）
+
 ### P2 🟡 中優先（排程中）
 
 - [ ] **BBEngine 帶寬優化（區間太窄）**：目前 EWMA 過度平滑（β=0.7）導致方差嚴重低估，加上缺乏 stdDev 下限，低波動期帶寬可能崩塌至 ±0.5%，遠小於實際日內波動。分兩步實作：
@@ -366,6 +382,12 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 ### P3 🔵 有依賴鏈（需按序執行）
 
 ✅ 已完成
+
+### P3 🔵 有依賴鏈（需按序執行）
+
+- [ ] **為 `position: any` 定義型別**：`AggregateInput.position` 與 `RawChainPosition.position` 使用 `any`，應定義 `V3PositionData` / `V4PositionData` union type，消除跨模組型別盲區
+
+- [ ] **補充 utils 層單元測試**：目前僅 `BBEngine`、`RiskManager`、`PnlCalculator`、`rebalance` 有測試。需補充 `stateManager`（遷移邏輯）、`AppState`（ucUpsertPosition / ucRemovePosition）、`formatter`（compactAmount / buildPositionBlock）、`validation`、`math` 的單元測試
 
 ### P4 ⚪ 待討論後動工
 
@@ -418,6 +440,13 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - [ ] 實作 `RebalanceStrategy`（每日收盤觸發 BB 判斷，扣除 Gas + slippage）
 - [ ] 輸出比較表：`[日期 | Hold PnL | Rebalance PnL | 再平衡次數 | 累計 Gas]`
 - [ ] Telegram `/backtest <days>` 指令
+
+#### 其他待討論項目
+
+- [ ] **PositionRecord 型別拆分**：目前 27 個欄位超大，可考慮拆成 `PositionCore` + `PositionRisk` + `PositionMetadata` 子型別，降低認知負擔
+- [ ] **統一 RPC provider 機制**：`rpcProvider`（FallbackProvider）僅在 `fetchGasCostUSD` 使用，其他地方用 `nextProvider()`（round-robin），兩套機制共存不一致
+- [ ] **`constants.ts` 文件校正**：`BB_MAX_OFFSET_PCT: 0.15` 註解寫 `±10%` 但實際值 15%；`CAPITAL: 20000` 疑似 dead constant（未使用）
+- [ ] **`tokenPrices.ts` 個別錯誤處理**：四個平行 DexScreener API 呼叫使用 `Promise.all`，一個失敗全部失敗；應改 `Promise.allSettled` 讓部分失敗時其餘幣價仍可更新
 
 ---
 

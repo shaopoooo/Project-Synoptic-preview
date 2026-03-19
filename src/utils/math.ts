@@ -24,6 +24,16 @@ export function normalizeRawAmount(rawStr: string, decimals: number): number {
     return Number(whole) + Number(frac) / Math.pow(10, decimals);
 }
 
+/**
+ * Map normalized feeTier (e.g. 0.0001, 0.003) to Uniswap V3-style tickSpacing.
+ * Used by both runBBEngine (index.ts) and PositionScanner._fetchNpmData.
+ */
+export function feeTierToTickSpacing(feeTier: number): number {
+    if (feeTier === 0.0001 || feeTier === 0.000085) return 1;
+    if (feeTier === 0.003) return 60;
+    return 10; // default: covers 0.05% and other pools
+}
+
 export function tickToRatio(tick: number): number {
     return Math.pow(1.0001, tick);
 }

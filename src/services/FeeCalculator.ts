@@ -3,7 +3,7 @@ import { config } from '../config';
 import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { FeeQueryResult, RewardsQueryResult, Dex } from '../types';
+import { FeeQueryResult, RewardsQueryResult, Dex, NpmPositionData } from '../types';
 import { normalizeRawAmount } from '../utils/math';
 
 
@@ -20,14 +20,14 @@ export class FeeCalculator {
         owner: string,
         ownerIsWallet: boolean,
         poolAddress: string,
-        position: any,
+        position: NpmPositionData,
         poolTick: number,
         isStaked: boolean,
         npmAddress: string,
     ): Promise<FeeQueryResult> {
         // UniswapV4: fees computed from StateView feeGrowth math (V4 has no collect())
         if (dex === 'UniswapV4') {
-            return this._fetchV4Fees(tokenId, poolAddress, position.tickLower, position.tickUpper, BigInt(position.liquidity), owner);
+            return this._fetchV4Fees(tokenId, poolAddress, Number(position.tickLower), Number(position.tickUpper), BigInt(position.liquidity), owner);
         }
 
         const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
@@ -108,7 +108,7 @@ export class FeeCalculator {
                     // Unstaked: pool feeGrowth math
                     const { fees0, fees1 } = await this.computePendingFees(
                         poolAddress, dex, poolTick,
-                        position.tickLower, position.tickUpper,
+                        Number(position.tickLower), Number(position.tickUpper),
                         BigInt(position.liquidity),
                         BigInt(position.feeGrowthInside0LastX128),
                         BigInt(position.feeGrowthInside1LastX128),

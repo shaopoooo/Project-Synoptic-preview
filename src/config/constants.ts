@@ -58,7 +58,7 @@ export const constants = {
     BB_K_LOW_VOL: 1.8,   // 震盪市 (vol < threshold)
     BB_K_HIGH_VOL: 2.5,   // 趨勢市 (vol >= threshold)
     BB_VOL_THRESHOLD: 0.50,  // 年化波動率分界
-    BB_MAX_OFFSET_PCT: 0.15, // 帶寬上限 ±10%
+    BB_MAX_OFFSET_PCT: 0.15, // 帶寬上限 ±15%
     BB_HOURLY_WINDOW: 20,    // getPrices 最後 N 小時
     BB_FALLBACK_K: 2.0,
     BB_FALLBACK_VOL: 0.5,
@@ -123,7 +123,6 @@ export const constants = {
 
     // ── Position Tracking ─────────────────────────────────────────────────
     EOQ_THRESHOLD: 5,  // Unclaimed fees threshold in USD
-    CAPITAL: 20000,    // Total deployed capital in USD for scaling calculations
     DRIFT_WARNING_PCT: 80,          // Overlap % below which to show drift warning
     RED_ALERT_BREAKEVEN_DAYS: 30,   // IL Breakeven Days 超過此值觸發 RED_ALERT
     HIGH_VOLATILITY_FACTOR: 2,      // currentBandwidth > factor × avg30D 觸發 HIGH_VOLATILITY_AVOID
@@ -134,7 +133,7 @@ export const constants = {
     // ── Contract Addresses on Base ────────────────────────────────────────
     AERO_VOTER_ADDRESS: '0x16613524e02ad97eDfeF371bC883F2F5d6C480A5',
     // PancakeSwap V3 MasterChef — 質押 LP NFT 取得 CAKE 獎勵（Base 已驗證地址）
-    PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3',
+    PANCAKE_MASTERCHEF_V3: env.PANCAKE_MASTERCHEF_V3,
     // cakePerSecond scaling: getLatestPeriodInfo 回傳值需除以 1e30 才是實際 CAKE/s
     MASTERCHEF_CAKE_PER_SEC_PRECISION: BigInt('1000000000000000000000000000000'), // 1e30
 
