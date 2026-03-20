@@ -89,8 +89,11 @@ export interface PositionRecord {
     amount1: number;  // normalized token1 amount in LP position
 
     // Fees & IL
+    /** Raw BigInt string from contract; must normalize via normalizeRawAmount() before display */
     unclaimed0: string;
+    /** Raw BigInt string from contract; must normalize via normalizeRawAmount() before display */
     unclaimed1: string;
+    /** Raw BigInt string from contract; must normalize via normalizeRawAmount() before display */
     unclaimed2: string;
     unclaimedFeesUSD: number;
     fees0USD: number;

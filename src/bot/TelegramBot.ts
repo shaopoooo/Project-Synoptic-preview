@@ -699,7 +699,8 @@ export class TelegramBotService {
                     ? `APR <b>${(totalApr * 100).toFixed(FMT.PCT_HUNDREDTH)}%</b>(手續費${feeAprPct}%+農場${(p.farmApr * 100).toFixed(FMT.PCT_HUNDREDTH)}%)`
                     : `APR <b>${feeAprPct}%</b>`;
                 const tvl = p.tvlUSD >= 1000 ? `$${(p.tvlUSD / 1000).toFixed(FMT.USD_WHOLE)}K` : `$${p.tvlUSD.toFixed(FMT.USD_WHOLE)}`;
-                const tag = activePoolIds.has(p.id.toLowerCase()) ? ' ◀ 你的倉位' : '';
+                const isMyPool = activePoolIds.has(p.id.toLowerCase());
+                const tag = isMyPool ? ' ◀ 你的倉位' : '';
                 const bb = appState.bbs[p.id.toLowerCase()];
                 let inRangeTag = '';
                 if (bb && !bb.isFallback && bb.sma > 0) {
@@ -708,7 +709,31 @@ export class TelegramBotService {
                         inRangeTag = ` → 區間 <b>${(totalApr * eff * 100).toFixed(FMT.PCT_TENTH)}%</b>`;
                     }
                 }
-                msg += `\n${rank} ${label} — ${aprStr}${inRangeTag} | TVL ${tvl}${tag}`;
+                // Migration suggestion: check if there's a higher-APR pool when this is my pool
+                let migrationTag = '';
+                if (isMyPool) {
+                    const myEntry = entries.find(e => e.position.poolAddress.toLowerCase() === p.id.toLowerCase());
+                    if (myEntry) {
+                        const posValue = myEntry.position.positionValueUSD;
+                        const myTotalApr = totalApr;
+                        const bestAlt = allPools
+                            .filter(alt => alt.id.toLowerCase() !== p.id.toLowerCase())
+                            .sort((a, b) => (b.apr + (b.farmApr ?? 0)) - (a.apr + (a.farmApr ?? 0)))[0];
+                        if (bestAlt) {
+                            const altTotalApr = bestAlt.apr + (bestAlt.farmApr ?? 0);
+                            const aprDiff = altTotalApr - myTotalApr;
+                            if (aprDiff > 0 && posValue > 0) {
+                                const gasCostUSD = 1; // ~$1 on Base
+                                const dailyExtraIncome = posValue * aprDiff / 365;
+                                const paybackDays = dailyExtraIncome > 0 ? Math.ceil(gasCostUSD / dailyExtraIncome) : Infinity;
+                                if (paybackDays <= 30) {
+                                    migrationTag = ` 💡 移倉回本 ${paybackDays} 天`;
+                                }
+                            }
+                        }
+                    }
+                }
+                msg += `\n${rank} ${label} — ${aprStr}${inRangeTag} | TVL ${tvl}${tag}${migrationTag}`;
             });
         }
 

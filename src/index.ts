@@ -27,6 +27,10 @@ let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 
 let isCycleRunning = false;
 
+function triggerStateSave() {
+  return saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig);
+}
+
 function buildCronJob() {
   return cron.schedule(minutesToCron(currentIntervalMinutes), async () => {
     if (isCycleRunning) {
@@ -36,20 +40,8 @@ function buildCronJob() {
     isCycleRunning = true;
     try {
       log.section(`${currentIntervalMinutes}m cycle`);
-      await runTokenPriceFetcher().catch((e) => log.error(`Cron TokenPriceFetcher: ${e}`));
-      await runPoolScanner().catch((e) => log.error(`Cron PoolScanner: ${e}`));
-      await runBBEngine().catch((e) => log.error(`Cron BBEngine: ${e}`));
-      await runPositionScanner().catch((e) => log.error(`Cron PositionScanner: ${e}`));
-      await runRiskManager().catch((e) => log.error(`Cron RiskManager: ${e}`));
-      await runBotService().catch((e) => log.error(`Cron BotService: ${e}`));
-      const triggerStateSave = async () => saveState(
-        getPriceBufferSnapshot(),
-        bandwidthTracker.snapshot(),
-        appState.userConfig,
-      );
-      await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
+      await runCycle();
       log.section('cycle end');
-      positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
     } finally {
       isCycleRunning = false;
     }
@@ -74,7 +66,6 @@ async function sendCriticalAlert(key: string, message: string) {
   await botService.sendAlert(`🚨 <b>DexBot 告警</b>\n${message}`).catch(() => { });
 }
 
-let activeTasks = 0;
 let isStartupComplete = false;
 
 // 0. Token Price Fetcher
@@ -88,7 +79,6 @@ async function runTokenPriceFetcher() {
 
 // 1. Pool Scanner
 async function runPoolScanner() {
-  activeTasks++;
   try {
     const pools = await PoolScanner.scanAllCorePools(ucPoolList(appState.userConfig));
     if (pools.length === 0) {
@@ -104,12 +94,11 @@ async function runPoolScanner() {
     log.info(`✅ pools(${appState.pools.length})  top: ${top.dex} ${(top.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}% — APR ${(top.apr * 100).toFixed(1)}%  TVL ${topTvl}`);
   } catch (error) {
     log.error(`PoolScanner: ${error}`);
-  } finally { activeTasks--; }
+  }
 }
 
 // 2. Position Scanner — fetchAll → aggregateAll → enrich PnL → updatePositions
 async function runPositionScanner() {
-  activeTasks++;
   try {
     const rawPositions = await positionScanner.fetchAll();
     const assembled = await PositionAggregator.aggregateAll(rawPositions, appState.bbs, appState.pools);
@@ -139,12 +128,11 @@ async function runPositionScanner() {
   } catch (error) {
     log.error(`PositionScanner: ${error}`);
     await sendCriticalAlert('position_scanner_failed', `所有倉位掃描失敗，本週期資料未更新。\n錯誤: ${error}`);
-  } finally { activeTasks--; }
+  }
 }
 
 // 3. BBEngine
 async function runBBEngine() {
-  activeTasks++;
   try {
     const poolsToProcess = new Map<string, PoolStats>();
 
@@ -164,12 +152,11 @@ async function runBBEngine() {
     log.info(`✅ BB bands computed for ${poolsToProcess.size} pool(s)`);
   } catch (error) {
     log.error(`BBEngine: ${error}`);
-  } finally { activeTasks--; }
+  }
 }
 
 // 4. RiskManager + Rebalance
 async function runRiskManager() {
-  activeTasks++;
   try {
     const gasCostUSD = await fetchGasCostUSD().catch(() => config.DEFAULT_GAS_COST_USD);
     for (const pos of appState.positions) {
@@ -227,7 +214,22 @@ async function runRiskManager() {
     positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol);
   } catch (error) {
     log.error(`RiskManager: ${error}`);
-  } finally { activeTasks--; }
+  }
+}
+
+// ── 標準週期執行序列（cron 與 FAST_STARTUP 共用）────────────────────────────
+// 順序：TokenPrice → Pool → BB → Position → Risk → Bot → save → fillTimestamps
+// 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
+// 首次啟動（無倉位）由 main() 的初始掃描路徑處理，不走此函式。
+async function runCycle() {
+  await runTokenPriceFetcher().catch((e) => log.error(`TokenPrice: ${e}`));
+  await runPoolScanner().catch((e) => log.error(`PoolScanner: ${e}`));
+  await runBBEngine().catch((e) => log.error(`BBEngine: ${e}`));
+  await runPositionScanner().catch((e) => log.error(`PositionScanner: ${e}`));
+  await runRiskManager().catch((e) => log.error(`RiskManager: ${e}`));
+  await runBotService().catch((e) => log.error(`BotService: ${e}`));
+  await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
+  positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
 }
 
 // 5. Telegram Bot Reporting
@@ -235,11 +237,6 @@ async function runBotService() {
   if (!isStartupComplete) {
     log.info('[BotService] Skipped: Initial data sync not complete yet.');
     return;
-  }
-
-  while (activeTasks > 0) {
-    log.info(`[BotService] Waiting for ${activeTasks} active services to complete...`);
-    await new Promise(r => setTimeout(r, 1000));
   }
 
   try {
@@ -383,19 +380,13 @@ async function main() {
 
   isStartupComplete = true;
 
-  const triggerStateSave = async () => saveState(
-    getPriceBufferSnapshot(),
-    bandwidthTracker.snapshot(),
-    appState.userConfig,
-  );
-
   await triggerStateSave();
   log.info(`startup complete — scheduler enabled (interval: ${currentIntervalMinutes}m)`);
   log.section('ready');
 
   scheduledTask = buildCronJob();
 
-  // FAST_STARTUP: 5 秒後立即觸發第一輪 cron，不等到下一個整點
+  // FAST_STARTUP: 5 秒後立即觸發第一輪完整週期，不等到下一個整點
   if (config.FAST_STARTUP) {
     setTimeout(() => {
       log.info('⚡ FAST_STARTUP: triggering first cycle now');
@@ -404,25 +395,10 @@ async function main() {
         return;
       }
       isCycleRunning = true;
-      scheduledTask?.stop();
-      scheduledTask = buildCronJob();
-      // 直接執行一次 cron 邏輯（受 isCycleRunning 保護，與 cron 互斥）
-      Promise.resolve().then(async () => {
-        try {
-          await runTokenPriceFetcher().catch(e => log.error(`FastStartup TokenPrice: ${e}`));
-          await runPoolScanner().catch(e => log.error(`FastStartup PoolScanner: ${e}`));
-          if (appState.pools.length > 0) {
-            for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
-          }
-          await runPositionScanner().catch(e => log.error(`FastStartup PositionScanner: ${e}`));
-          await runBBEngine().catch(e => log.error(`FastStartup BBEngine: ${e}`));
-          await runRiskManager().catch(e => log.error(`FastStartup RiskManager: ${e}`));
-          await runBotService().catch(e => log.error(`FastStartup BotService: ${e}`));
-          await triggerStateSave();
-        } finally {
-          isCycleRunning = false;
-        }
-      });
+      Promise.resolve()
+        .then(runCycle)
+        .catch((e) => log.error(`FastStartup cycle: ${e}`))
+        .finally(() => { isCycleRunning = false; });
     }, 5000);
   }
 
@@ -437,11 +413,7 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true;
   log.info(`${signal} received — saving state before exit`);
   try {
-    await saveState(
-      getPriceBufferSnapshot(),
-      bandwidthTracker.snapshot(),
-      appState.userConfig,
-    );
+    await triggerStateSave();
     log.info('✅ state saved — exiting');
   } catch (e) {
     log.error(`graceful shutdown save failed: ${e}`);

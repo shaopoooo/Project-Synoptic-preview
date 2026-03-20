@@ -6,6 +6,7 @@ import { createServiceLogger } from '../utils/logger';
 import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../utils/rpcProvider';
 import { PoolStats, Dex } from '../types';
 import { POOL_ADDRESS_RE, POOL_V4_ID_RE } from '../utils/validation';
+import { getTokenPrices } from '../utils/tokenPrices';
 
 
 const log = createServiceLogger('PoolScanner');
@@ -169,6 +170,12 @@ export class PoolScanner {
                 log.warn(`DexScreener no pair data  ${poolAddress.slice(0, 10)}`);
             }
 
+            // Aerodrome: DexScreener under-reports TVL (~5x); use on-chain token balances instead
+            if (dex === 'Aerodrome') {
+                const onChainTVL = await PoolScanner._fetchAerodromeTVL(poolAddress);
+                if (onChainTVL !== null && onChainTVL > 0) tvlUSD = onChainTVL;
+            }
+
             // 3. Fetch Volume from The Graph / GeckoTerminal with fallback and caching
             const volData = await fetchPoolVolume(poolAddress, dex);
             const geckoDailyVol = volData.daily;
@@ -248,6 +255,56 @@ export class PoolScanner {
         } catch (e: any) {
             log.warn(`farmApr fetch failed  ${poolAddress.slice(0, 10)}: ${e.message}`);
             return undefined;
+        }
+    }
+
+    /**
+     * Fetch Aerodrome pool TVL from on-chain token balances.
+     * DexScreener reports only gauge-staked TVL (~5x lower than actual pool TVL).
+     * Reads token0/token1 balances directly from the pool contract instead.
+     * Returns null if token prices are unavailable (non-WETH/cbBTC pools).
+     */
+    private static async _fetchAerodromeTVL(
+        poolAddress: string,
+    ): Promise<number | null> {
+        try {
+            const poolInfoAbi = [
+                'function token0() view returns (address)',
+                'function token1() view returns (address)',
+            ];
+            const erc20Abi = [
+                'function balanceOf(address) view returns (uint256)',
+                'function decimals() view returns (uint8)',
+            ];
+            const poolInfo = new ethers.Contract(poolAddress, poolInfoAbi, nextProvider());
+            const [token0Addr, token1Addr]: [string, string] = await Promise.all([
+                rpcRetry(() => poolInfo.token0(), 'aero.token0'),
+                rpcRetry(() => poolInfo.token1(), 'aero.token1'),
+            ]);
+            const t0 = new ethers.Contract(token0Addr, erc20Abi, nextProvider());
+            const t1 = new ethers.Contract(token1Addr, erc20Abi, nextProvider());
+            const [bal0, dec0, bal1, dec1] = await Promise.all([
+                rpcRetry(() => t0.balanceOf(poolAddress), 'erc20.bal0'),
+                rpcRetry(() => t0.decimals(), 'erc20.dec0'),
+                rpcRetry(() => t1.balanceOf(poolAddress), 'erc20.bal1'),
+                rpcRetry(() => t1.decimals(), 'erc20.dec1'),
+            ]);
+            const prices = await getTokenPrices();
+            const priceMap: Record<string, number> = {
+                [config.TOKEN_ADDRESSES.WETH.toLowerCase()]:  prices.ethPrice,
+                [config.TOKEN_ADDRESSES.CBBTC.toLowerCase()]: prices.cbbtcPrice,
+            };
+            const p0 = priceMap[token0Addr.toLowerCase()];
+            const p1 = priceMap[token1Addr.toLowerCase()];
+            if (p0 === undefined || p1 === undefined) return null;
+            const amount0 = Number(BigInt(bal0)) / Math.pow(10, Number(dec0));
+            const amount1 = Number(BigInt(bal1)) / Math.pow(10, Number(dec1));
+            const tvl = amount0 * p0 + amount1 * p1;
+            log.info(`Aerodrome on-chain TVL  ${poolAddress.slice(0, 10)}  $${tvl.toFixed(0)}`);
+            return tvl;
+        } catch (e: any) {
+            log.warn(`Aerodrome on-chain TVL failed  ${poolAddress.slice(0, 10)}: ${e.message}`);
+            return null;
         }
     }
 
