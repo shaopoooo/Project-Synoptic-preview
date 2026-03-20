@@ -120,6 +120,12 @@ export const constants = {
 
     // ── Math Config ───────────────────────────────────────────────────────
     DECIMAL_PRECISION: 18n,
+    /** 2^128 - 1  (max value of a uint128, used in collect.staticCall amount caps) */
+    MAX_UINT128: 2n ** 128n - 1n,
+    /** 2^128  (fixed-point denominator for X128 fee-growth values) */
+    Q128: 2n ** 128n,
+    /** 2^256  (modulus for unsigned 256-bit wrapping subtraction) */
+    U256: 2n ** 256n,
 
     // ── Position Tracking ─────────────────────────────────────────────────
     EOQ_THRESHOLD: 5,  // Unclaimed fees threshold in USD
@@ -146,6 +152,17 @@ export const constants = {
         Aerodrome: '0x827922686190790b37229fd06084350E74485b72',
     } as Record<string, string>,
 
+    // ── Fee Tier → Tick Spacing mapping ──────────────────────────────────
+    // Source of truth for all feeTier → tickSpacing conversions.
+    // Used by feeTierToTickSpacing() in utils/math.ts.
+    FEE_TIER_TICK_SPACING: {
+        0.000085: 1,
+        0.00009:  1,
+        0.0001:   1,
+        0.003:    60,
+    } as Record<number, number>,
+    FEE_TIER_TICK_SPACING_DEFAULT: 10,   // covers 0.05% and other pools
+
     // ── Rebalance Thresholds ──────────────────────────────────────────────
     REBALANCE_DRIFT_MIN_PCT: 5,          // 觸發再平衡的最小偏離 %
     REBALANCE_WAIT_DRIFT_PCT: 10,        // 偏離 < 此值 → 等待回歸策略
@@ -154,6 +171,8 @@ export const constants = {
     REBALANCE_PRICE_UPPER_MARGIN: 0.9999, // 單邊建倉：上限安全邊際
     REBALANCE_PRICE_LOWER_MARGIN: 1.0001, // 單邊建倉：下限安全邊際
     REBALANCE_GAS_COST_USD: 0.1,         // 單次 rebalance 估算 Gas（USD）
+    REBALANCE_SD_OFFSET_RATIO: 0.3,      // SD offset 係數（單邊建倉中心點偏移量）
+    REBALANCE_GAS_THRESHOLD_MULTIPLE: 2, // Gas 降級門檻乘數（unclaimed × 此值 > gas 才執行）
 
     // ── Telegram Bot ──────────────────────────────────────────────────────
     SORT_LABELS: {

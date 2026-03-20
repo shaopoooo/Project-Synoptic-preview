@@ -3,6 +3,8 @@ import { createServiceLogger } from '../utils/logger';
 import { config } from '../config';
 import { RebalanceSuggestion } from '../types';
 
+const FMT = config.FMT;
+
 
 const log = createServiceLogger('RebalanceService');
 
@@ -76,17 +78,18 @@ export class RebalanceService {
         try {
             const gasCost = gasCostUSD ?? config.REBALANCE_GAS_COST_USD;
 
-            // 方向性偏移：以 currentPrice 相對 SMA 的偏差方向決定單邊建倉中心點偏移量
-            // sd = 1σ 價格標準差（由 BB 帶寬反推）；offset = 0.3σ × 方向
-            const sd = currentBB.k > 0 ? (currentBB.upperPrice - currentBB.sma) / currentBB.k : 0;
-            const sdOffset = 0.3 * sd * (currentPrice > currentBB.sma ? 1 : -1);
-
             // 步驟 1: 計算超出百分比 (driftPercent)
             // 使用 decimal-adjusted 的 BB 邊界（與 currentPrice 同單位），
             // 避免與 BBResult.upperPrice/lowerPrice（raw tick-ratio）或 minPriceRatio/maxPriceRatio（USD）混用。
             const bbLower = bbLowerAdj ?? 0;
             const bbUpper = bbUpperAdj ?? 0;
             if (bbLower === 0 || bbUpper === 0) return null; // BB 尚未就緒
+
+            // 方向性偏移：以 currentPrice 相對 BB 中心的偏差方向決定單邊建倉中心點偏移量
+            // 使用 decimal-adjusted 邊界計算，避免 raw tick-ratio 與顯示價格混用
+            const bbMidAdj = (bbLower + bbUpper) / 2;
+            const sdAdj = currentBB.k > 0 ? (bbUpper - bbMidAdj) / currentBB.k : 0;
+            const sdOffset = config.REBALANCE_SD_OFFSET_RATIO * sdAdj * (currentPrice > bbMidAdj ? 1 : -1);
             let driftPercent = 0;
             if (currentPrice > bbUpper) {
                 driftPercent = ((currentPrice - bbUpper) / bbUpper) * 100;
@@ -114,7 +117,8 @@ export class RebalanceService {
                 recommendedStrategy = 'dca';
                 strategyName = 'DCA 定投平衡';
                 // 為了完美補齊倉位，我們需要精算 BBEngine 建議的新區間 (newBB) 實際上需要多少的 Token0/Token1 比例
-                const targetRatio = calculateV3TokenValueRatio(currentPrice, newBB.minPriceRatio, newBB.maxPriceRatio);
+                // 使用 decimal-adjusted 的 bbLower/bbUpper，與 currentPrice 同單位
+                const targetRatio = calculateV3TokenValueRatio(currentPrice, bbLowerAdj!, bbUpperAdj!);
 
                 // 判斷哪邊資產過少 (Drift 超出邊界代表原倉位被強制換幣了)
                 // 如果向上飄移 (drift > 0)，價格上漲，V3 會把 Token0 賣成 Token1，所以我們缺少 Token0
@@ -125,7 +129,7 @@ export class RebalanceService {
                 // 在這裡把 drift 視為 100% 全失衡狀態下的精準修補
                 const targetRebalanceValueUSD = positionValueUSD * deficitRatio;
 
-                notes = `偏離中，為了能精準補入新 BB 區間 ${newBB.minPriceRatio.toFixed(6)} - ${newBB.maxPriceRatio.toFixed(6)}：\n`;
+                notes = `偏離中，為了能精準補入新 BB 區間 ${bbLowerAdj!.toFixed(FMT.PRICE)} - ${bbUpperAdj!.toFixed(FMT.PRICE)}：\n`;
                 notes += `   新區間需資金比例 ${actionToken} 佔 ${(deficitRatio * 100).toFixed(1)}%。\n`;
                 notes += `   推薦定投買入約 $${targetRebalanceValueUSD.toFixed(2)} USD 的 ${actionToken} 來精準填補，再加回 LP。`;
             } else {
@@ -144,8 +148,8 @@ export class RebalanceService {
                     // 策略：用手上的 Token1 在市價「下方」接盤，等待價格跌回均線 (SMA)
                     // SD offset：強勢時中心上移 0.3σ，弱勢時下移 0.3σ，讓接盤區間更貼近均值回歸路徑
                     remainingToken = token1Symbol;
-                    singleSideMin = newBB.minPriceRatio;
-                    singleSideMax = newBB.sma + sdOffset;
+                    singleSideMin = bbLowerAdj!;
+                    singleSideMax = bbMidAdj + sdOffset;
                     // 必須嚴格保證上限低於市價，否則立刻需要另一邊代幣
                     if (singleSideMax >= currentPrice) {
                         singleSideMax = currentPrice * config.REBALANCE_PRICE_UPPER_MARGIN;
@@ -155,8 +159,8 @@ export class RebalanceService {
                     // 策略：用手上的 Token0 在市價「上方」賣出，等待價格漲回均線 (SMA)
                     // SD offset：弱勢時中心下移 0.3σ（賣單下移，更積極），強勢時上移（更保守）
                     remainingToken = token0Symbol;
-                    singleSideMin = newBB.sma + sdOffset;
-                    singleSideMax = newBB.maxPriceRatio;
+                    singleSideMin = bbMidAdj + sdOffset;
+                    singleSideMax = bbUpperAdj!;
                     // 必須嚴格保證下限高於市價
                     if (singleSideMin <= currentPrice) {
                         singleSideMin = currentPrice * config.REBALANCE_PRICE_LOWER_MARGIN;
@@ -164,22 +168,22 @@ export class RebalanceService {
                 }
 
                 // 划算性檢查：Gas 超過 Unclaimed × 50% 時降級為等待
-                if (unclaimedFeesUSD <= gasCost * 2) {
+                if (unclaimedFeesUSD <= gasCost * config.REBALANCE_GAS_THRESHOLD_MULTIPLE) {
                     recommendedStrategy = 'wait';
                     strategyName = '等待回歸';
-                    notes = `再平衡 Gas ($${gasCost.toFixed(2)}) 超過 Unclaimed Fees 的一半，等待費用累積後再操作`;
+                    notes = `再平衡 Gas ($${gasCost.toFixed(FMT.USD_CENTS)}) 超過 Unclaimed Fees 的一半，等待費用累積後再操作`;
                     newBB.minPriceRatio = currentBB.minPriceRatio;
                     newBB.maxPriceRatio = currentBB.maxPriceRatio;
+                } else {
+                    notes = `偏離過大，建議撤出原 LP 剩餘資產 (目前 100% 為 ${remainingToken})，\n`;
+                    notes += `   並以「單邊流動性」的方式（不需額外補錢）建立回歸接盤區間：\n`;
+                    notes += `   🎯 目標重組區間：${singleSideMin.toFixed(FMT.PRICE)} - ${singleSideMax.toFixed(FMT.PRICE)}\n`;
+                    notes += `   (💡 此舉等同於掛一個 ${remainingToken} 的區間網格單，等待價格均值回歸。)`;
+
+                    // Override new limits for UI displaying
+                    newBB.minPriceRatio = singleSideMin;
+                    newBB.maxPriceRatio = singleSideMax;
                 }
-
-                notes = `偏離過大，建議撤出原 LP 剩餘資產 (目前 100% 為 ${remainingToken})，\n`;
-                notes += `   並以「單邊流動性」的方式（不需額外補錢）建立回歸接盤區間：\n`;
-                notes += `   🎯 目標重組區間：${singleSideMin.toFixed(6)} - ${singleSideMax.toFixed(6)}\n`;
-                notes += `   (💡 此舉等同於掛一個 ${remainingToken} 的區間網格單，等待價格均值回歸。至於 IL，由於缺乏你當初的精確建倉價格與歷史提領數據，系統暫時無法從鏈上回推你的真實 IL 絕對美元值，需仰賴未來實裝的資料庫套件。)`;
-
-                // Override new limits for UI displaying
-                newBB.minPriceRatio = singleSideMin;
-                newBB.maxPriceRatio = singleSideMax;
             }
 
             // 永遠避免直接兌換

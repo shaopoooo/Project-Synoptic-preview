@@ -100,7 +100,7 @@ src/
 │   └── index.ts                # 共用型別定義（PositionRecord、BBResult、RiskAnalysis、RawPosition 等）
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
-│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas、TOKEN_DECIMALS、FMT 顯示精度）
+│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas、TOKEN_DECIMALS、FMT 顯示精度、FEE_TIER_TICK_SPACING、MAX_UINT128/Q128/U256、Rebalance 係數）
 │   ├── abis.ts                 # 合約 ABI（NPM、Pool、Aero Voter/Gauge）
 │   └── index.ts                # 統一匯出入口
 ├── services/
@@ -119,7 +119,7 @@ src/
 │   └── BacktestEngine.ts       # 歷史回測引擎
 └── utils/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
-    ├── math.ts                 # BigInt 固定精度數學工具（normalizeAmount / normalizeRawAmount / tickToPrice / calculateCapitalEfficiency）
+    ├── math.ts                 # BigInt 固定精度數學工具（normalizeAmount / normalizeRawAmount / tickToPrice / calculateCapitalEfficiency / feeTierToTickSpacing / sub256 / MAX_UINT128 / Q128 / U256）
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + nextProvider() + fetchGasCostUSD()
     ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）+ dex 命名自動遷移
@@ -166,7 +166,8 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **Farm APR**：`_fetchPancakeFarmApr()` 對 PancakeSwapV3 額外呼叫 MasterChef V3 `getLatestPeriodInfo(poolAddress)`；`farmApr = (cakePerSec × 86400 × 365 × cakePrice) / tvlUSD`；`cakePerSec = raw / 1e30`；period 過期時回傳 0；`PoolStats.farmApr` 為 optional
 - **池清單**：由 `config.POOL_SCAN_LIST`（`constants.ts`）統一定義，新增池子只需改此處；完整地址見 README.md
 - **UniswapV4 支援**：`_fetchV4PoolStats()` 透過 `StateView.getSlot0(poolId)` 取得當前 tick / sqrtPriceX96；poolId 為 bytes32，驗證改用 `/^0x[0-9a-fA-F]{64}$/`
-- **關鍵函式**：`scanAllCorePools()` → `fetchPoolStats()` → `fetchPoolVolume()` → `_fetchPancakeFarmApr()`
+- **Aerodrome TVL 修正**：`_fetchAerodromeTVL()` 直接讀 token balance（`IERC20(token).balanceOf(poolAddress)`）計算真實 TVL，取代 DexScreener 只計算 gauge 質押量的低估值（約 5x 誤差）；token 幣價使用 `getTokenPrices()` 提供的 WETH / cbBTC
+- **關鍵函式**：`scanAllCorePools()` → `fetchPoolStats()` → `fetchPoolVolume()` → `_fetchPancakeFarmApr()` → `_fetchAerodromeTVL()`
 
 ### BBEngine（`src/services/BBEngine.ts`）
 
@@ -204,6 +205,7 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 ### FeeCalculator（`src/services/FeeCalculator.ts`）
 
 - **職責**：純 RPC 手續費計算，與 PositionScanner 解耦
+- **共用常數**：`MAX_UINT128`、`Q128`、`U256` 定義於 `config/constants.ts`，透過 `utils/math.ts` re-export；`sub256()` 定義於 `utils/math.ts`；FeeCalculator 直接從 `utils/math.ts` import
 - **UniswapV4**：`StateView.getPositionInfo(poolId, positionManager, tickLower, tickUpper, salt)` 取得 `lastFgX128`；`StateView.getFeeGrowthInside(poolId, tickLower, tickUpper)` 取得當前 `fgX128`；`fees = liquidity × sub256(current, last) / 2^128`；`salt = bytes32(tokenId)`
 - **Aerodrome staked fallback 鏈**：`voter.gauges()` → `gauge.pendingFees(tokenId)` → `collect.staticCall({from: gauge})` → `tokensOwed`（`computePendingFees()` 已永久移除：Aerodrome pool 在公共節點不支援 `feeGrowthGlobal` / `ticks()`，每次掃描浪費 6+ 次 RPC retry）
 - **Aerodrome unstaked**：`computePendingFees()`（pool feeGrowth 數學計算）
@@ -310,9 +312,22 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 ### P0 🔴 阻塞中 / 緊急修復
 
-✅ 已完成
+- [ ] **快訊 + 完整報告排程重構 (Flash / Daily Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。三層週期：掃描（`/interval`）→ 快訊 → 完整報告，後者必須 > 前者且為 10 分鐘倍數。實作重點：
+  - `UserConfig` 新增 `flashIntervalMinutes?: number`（預設 60）、`reportIntervalMinutes?: number`（預設 1440）
+  - `index.ts` 新增 `lastFlashAt = 0` / `lastFullReportAt = 0`（module-level，不持久化）；`runBotService()` 邏輯：`now - lastFullReportAt >= reportInterval` → 完整報告；`now - lastFlashAt >= flashInterval` → 快訊；否則跳過本週期推播
+  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 直接讀 `appState.positions`，格式：時間戳 + 幣價 + 組合總覽 + 異常倉位（穿倉 / 可複利），約 10 行
+  - Daily Report 重點為**每日差異 + 現有數值**：各倉位顯示當日 Δ倉位價值、Δ Unclaimed、Δ ilUSD（vs 上次 daily snapshot），搭配目前絕對值；需在 `reportBuilder.ts` 維護 `dailySnapshot`（每次送出 daily report 時記錄當下各倉位數值），下次 daily report 時計算差值；snapshot 不持久化（重啟後第一次 daily 無差異欄位，僅顯示現有數值）
+  - 新增 `/report` 指令（`configCommands.ts`）：`/report` 顯示目前設定；`/report flash <分鐘>` 設快訊間隔；`/report daily <分鐘>` 設完整報告間隔
+  - 驗證規則：flash 間隔必須 > `/interval`（掃描週期）；report 間隔必須 > flash 間隔；兩者均須為 10 的倍數
+  - 重啟後 `lastFullReportAt = 0`，第一個週期自動送完整報告
 
 ### P1 🟠 高優先（近期動工）
+
+- [ ] **質押倉位自動偵測**：`syncFromChain()` 掃完錢包 balance 後，額外掃各 NPM 合約的 ERC-721 Transfer 事件（`from=wallet, to=已知質押合約`），自動發現未登記的質押倉位。實作重點：
+  - PancakeSwap：`Transfer(from=wallet, to=PANCAKE_MASTERCHEF_V3)` on PancakeSwap V3 NPM，發現後呼叫 `masterchef.userPositionInfos(tokenId)` 確認 `user==wallet`（排除已領回）
+  - Aerodrome：先對已知池子呼叫 `voter.gauges(poolAddress)` 取 gauge 地址，再掃 `Transfer(from=wallet, to=gauge)` on Aerodrome NPM
+  - 確認仍在質押後自動 upsert `externalStake: true`（不覆蓋已手動設定的 `initial`）
+  - 限制：block lookback 3M blocks ≈ 70 天，更早質押的需手動 `/stake`
 
 - [ ] **穿倉即時告警 (Out-of-Range Alert)**：目前穿倉只能在每輪 cron 掃描時被動發現（延遲 5~30 分鐘）。應在 `ChainEventScanner` 中為重點池新增 Swap event 監聽，在記憶體內維護最新 `currentTick`，一旦偵測到 `currentTick < tickLower` 或 `currentTick > tickUpper` 立即推播 Telegram 告警。實作重點：
   - 新增 `SwapTickHandler`（實作 `ScanHandler` 介面），訂閱目標池的 `Swap(address,address,int256,int256,uint160,uint128,int24)` event，從最後一個參數取 `tick`
@@ -320,47 +335,24 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
   - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
-- [ ] **Aerodrome Gauge Emissions APR**：目前 Aerodrome APR 只含手續費，缺少 AERO Token 排放部分（實際佔總 APR 大宗）。需在 `PoolScanner` 中對 Gauge 合約補兩個 `staticCall`：
+- [ ] **Aerodrome Gauge Emissions APR**：TVL 修正已完成（`_fetchAerodromeTVL` 鏈上讀 token balance）。仍需補充 AERO Token 排放部分：
   - `gauge.rewardRate()` → 每秒 AERO 排放量
   - `gauge.totalSupply()` → 已質押 LP 總量
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
-- [ ] **Aerodrome TVL 鏈上修正**：DexScreener 對 Aerodrome CL 池回傳的是 gauge 質押量而非全池 TVL（實測低估約 5x，$820K vs $4.1M），導致 APR 高估與 In-Range APR 倍率失真。應改為鏈上直接讀 token balance 計算 TVL：
-  - `IERC20(pool.token0()).balanceOf(poolAddress) × token0Price`
-  - `+ IERC20(pool.token1()).balanceOf(poolAddress) × token1Price`
-  - 需額外 2 次 RPC call；token price 使用現有 `getTokenPrices()` 提供的 WETH / cbBTC 幣價
-  - 修正後 APR 分母正確，Telegram 池排行 TVL 與 Aerodrome DEX UI 一致
+- [ ] **每小時快訊 + 排程重構 (Flash Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。實作重點：
+  - `index.ts` 新增 module-level `let lastFullReportAt = 0`；`runBotService()` 判斷距上次完整報告是否 ≥ 1 小時，是則送完整報告並更新 `lastFullReportAt`，否則送快訊
+  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 僅需 `appState.positions`，不需 pool/bb 參數
+  - 快訊內容：時間戳 + 幣價 + 組合總覽（總倉位 / Unclaimed / 總獲利）+ 異常倉位（穿倉 + 可複利），約 10 行
+  - `lastFullReportAt` 不持久化，重啟後第一個週期自動送完整報告
+  - 行為：預設每 10 分鐘送快訊，每 60 分鐘升級為完整報告
 
-- [ ] **跨池遷移建議（Migration Suggestion）**：在 Telegram 池排行中，自動計算持倉池與更高 APR 池之間的遷移回本天數，當回本天數 ≤ 30 天時標注「建議移倉」。實作重點：
-  - 門檻公式：`最低 APR 差 = 遷移成本 / (倉位 × 30天)`；Base 鏈遷移成本約 $1（透過 `fetchGasCostUSD()` 動態取得）
-  - 掃描 `appState.pools` 找出同交易對中 APR 最高的池，與持倉池比較
-  - 回本天數 = `遷移成本 / (倉位 × APR差 / 365)`
-  - Telegram 格式：在池排行對應池後附加 `💡 移倉回本 X 天`（僅當回本 ≤ 30 天時顯示）
-  - 依賴 Aerodrome TVL 鏈上修正（上方條目）完成後數字才準確
-
-- [ ] **rebalance.ts 重構（階段一）**：現行實作有多個問題，按優先序修正：
-  1. **notes 覆蓋 bug**：`withdrawSingleSide` 分支 Gas 過高時設 `notes =`「等待費用累積」（line 170），但 line 175 的 `notes =` 無條件覆蓋，降級訊息永遠消失。修正：降級後提前 `return`，或將 line 175-178 移入 `else` 區塊
-  2. **Tick 對齊缺失**：`singleSideMin / singleSideMax` 輸出浮點價格，未做 `Math.round(tick / tickSpacing) * tickSpacing` 對齊。鏈上 V3 開倉邊界必須是 tickSpacing 整數倍，直接拿去前端會遇到 Out of Tick Spacing 報錯。需將丟失的 `tickSpacing` 加回參數（JSDoc 有記載但簽名中不存在）
-  3. **UI 字串外洩至業務層**：`notes` 在 Service 內直接組裝中文字串，阻礙多語系與未來自動執行解析。應將結構化數據回傳（`actionToken`、`targetRebalanceValueUSD`、`singleSideMin/Max`），字串組裝移至 `TelegramBot.ts` formatter
-  4. **魔術數字**：`0.3 * sd`（SD offset 係數）、`gasCost * 2`（降級門檻）應提取至 `constants.ts`；`toFixed` hardcode 改用 `FMT.*`
-  5. **價格單位混用**：`newBB.minPriceRatio / maxPriceRatio` 是 raw tick-ratio，`currentPrice` 是 decimal-adjusted；DCA notes 顯示的數值與 UI 的 `bbMinPrice/bbMaxPrice` 不同單位。應改用傳入的 `bbLowerAdj / bbUpperAdj`
-
-- [ ] **`PositionRecord` 拆分為子型別**：27 個欄位過多，建議拆為 `PositionCore`（身份 + 鏈上快照）/ `PositionFees`（手續費 + unclaimed）/ `PositionMetrics`（風險指標）/ `PositionMeta`（顯示 / 元數據），再以 `PositionRecord = PositionCore & PositionFees & PositionMetrics & PositionMeta`（intersection type）組合。影響所有 consumer，需全面更新。
-
-- [ ] **`unclaimed0/1/2` 語意釐清**：目前 `unclaimed0/1/2` 儲存 BigInt 序列化字串（`bigint.toString()`），語意與顯示用的 USD 欄位混淆。建議改名 `unclaimedRaw0/1/2` 或在 JSDoc 明確標注「raw bigint string from contract」，與 `unclaimedFeesUSD`、`fees0USD` 等 USD 欄位語意區隔。
-
-- [ ] **`activeTasks` busy-wait 改為 Promise-based 等待**：`runBotService()` 的 `while (activeTasks > 0) { await sleep(1000) }` polling 不優雅，且若某個 runner 的 `finally` 未被執行（例如強制終止）會永遠阻塞。改法：將各 runner 的 Promise 存入陣列，`runBotService` 改接收 `Promise.all(runners)` 作為前置條件；或使用 semaphore pattern（`p-limit` 已引入）。
-
-- [ ] **`FAST_STARTUP` 補充單元測試**：`setTimeout + Promise + isCycleRunning` 三者交錯，邏輯難以用人工驗證。應補充 Jest 測試：模擬 `FAST_STARTUP=true` 確認首次 cron 在 5 秒內觸發；模擬 `isCycleRunning=true` 時新 cycle 被跳過；模擬排程重疊時的競態條件。
-
-- [ ] **`dryrun.ts` 中殘留的 tickSpacing 映射**：`feeTierToTickSpacing()` 已提取至 `utils/math.ts`，但 `dryrun.ts` 可能仍有 inline 版本，需確認並統一使用共用函式。
-
-- [ ] **提取 `sub256` / `MAX_UINT128` 為共用常數**：`FeeCalculator.ts` 中 `sub256` helper 在 `_fetchV4Fees` 和 `computePendingFees` 各定義一次（DRY 違規），`MAX_UINT128` 在 L82 和 L132 重複定義。應提取至 `utils/math.ts`
-
-- [ ] **FeeCalculator 空 `catch {}` 修正**：Aerodrome gauge fallback 鏈內多個空 `catch {}` 靜默吞掉錯誤（L60、L220），不利偵錯。應改為 `catch (e) { log.debug(...) }`
-
-- [ ] **`TelegramBot.ts` 拆分重構**：724 行巨型檔案含 12 個指令 handler + 報告組裝 + 格式化。建議拆分為 `bot/commands/` 目錄（每個指令獨立）+ `bot/reportBuilder.ts`（`sendConsolidatedReport` 邏輯）
+- [ ] **`/compact` 簡化訊息模式**：開啟後每個倉位壓縮為約 2 行（倉位價值、淨損益、未領取、健康分），省略持倉數量、Breakeven 天數、再平衡建議等次要欄位。實作重點：
+  - `UserConfig` 新增 `compactMode?: boolean`
+  - `configCommands.ts` 新增 `/compact` toggle 指令
+  - `formatter.ts` 的 `buildTelegramPositionBlock` 新增 `compact?: boolean` 參數
+  - `reportBuilder.ts` 從 `appState.userConfig.compactMode` 讀取並傳入
 
 ### P2 🟡 中優先（排程中）
 
@@ -374,10 +366,26 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 帶寬過高時提前回傳 `{ recommendedStrategy: 'wait', strategyName: '高波動觀望' }`
   - 依賴 P2 毒性交易流偵測完成後可共用同一帶寬數據
 
-- [ ] **毒性交易流偵測 (Toxic Order Flow)**：依賴 P1 `SwapTickHandler` 基礎設施，在同一 Swap event 監聽上加統計邏輯。在 5 分鐘滾動窗口內若同向 Swap 比率 > 80%（token0→token1 或反向）且淨流量 > 池 TVL 的 X%，觸發 `🚨 毒性交易流警報` 建議短期撤回流動性。需先確認：
+- [ ] **毒性交易流偵測 (Toxic Order Flow)**：依賴 P1 `SwapTickHandler` 基礎設施，在同一 Swap event 監聯上加統計邏輯。在 5 分鐘滾動窗口內若同向 Swap 比率 > 80%（token0→token1 或反向）且淨流量 > 池 TVL 的 X%，觸發 `🚨 毒性交易流警報` 建議短期撤回流動性。需先確認：
   - **「大額」門檻**：相對 TVL 百分比（建議 0.5%）或固定 USD 金額？
   - **時間窗口**：5 分鐘 vs 15 分鐘，影響誤報率
   - 實作時新增 `ToxicFlowDetector`，`RiskAnalysis` 新增 `toxicFlowWarning` 欄位
+
+- [ ] **PoolScanner DexScreener URL 統一使用 `config.API_URLS`**：`fetchPoolStats` L154 與 `_fetchV4PoolStats` L276 的 DexScreener URL 直接硬編碼，應改用 `config.API_URLS.DEXSCREENER_PAIRS`
+
+- [ ] **PoolScanner V3/V4 APR 計算邏輯提取共用函式**：`fetchPoolStats` 與 `_fetchV4PoolStats` 有 ~30 行重複的 volume blending + APR 計算邏輯，應提取為 `_computeAprFromVolume(tvlUSD, volData, feeTier)` 共用函式
+
+- [ ] **FeeCalculator `voter.gauges()` 同 cycle 重複呼叫**：`fetchUnclaimedFees` 和 `fetchThirdPartyRewards` 各自呼叫 `voter.gauges(poolAddress)`，同一個 tokenId 在同一個 cycle 內重複 RPC 2 次。應在 caller 層快取結果或將 gauge address 傳入參數
+
+- [ ] **PositionScanner.logSnapshots 同步 I/O**：L318 `fs.appendFileSync`（同步 I/O），多倉位下可能短暫阻塞事件循環。建議改為 `await fs.appendFile`
+
+- [ ] **PositionScanner.getPoolFromTokens 不驗證 token pair**：L476 只比對 fee + dex，不驗證 token0/token1 地址。若未來出現同 DEX 同 fee 但不同 token pair 的池子會誤配。應同時比對 token 地址
+
+- [ ] **RiskManager.ilBreakevenDays 未按倉位流動性佔比計算**：使用整池 `dailyFeesUSD` 做分母，大池小倉位的 breakeven 天數會過於樂觀。應按 `positionValueUSD / tvlUSD` 比例縮放
+
+- [ ] **stateManager `readJson` 無 schema 驗證**：L97 直接 `as PersistedState`，若 JSON 格式損毀會在後續程式碼拋出難以追蹤的錯誤。建議加 try-catch 包裝或 schema 驗證
+
+- [ ] **TelegramBot `/pool add` fee 輸入格式不一致**：使用者輸入百分比（如 `0.05`），但 `constants.ts POOLS` 的 fee 格式為小數（如 `0.0005`），容易混淆。應在指令說明中明確標注，或自動偵測並轉換
 
 ### P3 🔵 有依賴鏈（需按序執行）
 
@@ -388,6 +396,8 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - [ ] **為 `position: any` 定義型別**：`AggregateInput.position` 與 `RawChainPosition.position` 使用 `any`，應定義 `V3PositionData` / `V4PositionData` union type，消除跨模組型別盲區
 
 - [ ] **補充 utils 層單元測試**：目前僅 `BBEngine`、`RiskManager`、`PnlCalculator`、`rebalance` 有測試。需補充 `stateManager`（遷移邏輯）、`AppState`（ucUpsertPosition / ucRemovePosition）、`formatter`（compactAmount / buildPositionBlock）、`validation`、`math` 的單元測試
+
+- [ ] **`index.ts` 排程協調邏輯整合測試**：`src/index.ts` 目前覆蓋率 0%（未被任何 test import，因副作用太重）。`fastStartup.test.ts` 只測抽象狀態機，未覆蓋實際的 `runCycle()`、`buildCronJob()`、`main()` 流程。改法：將 `runCycle()` 的 runner 序列改為可注入設計（接收 runner 函式陣列參數，預設為實際 runners），測試時傳入 mock runners，即可真正驗證 `buildCronJob` 的 isCycleRunning 保護、`FAST_STARTUP` 5 秒觸發、`gracefulShutdown` 的 save 行為，不需啟動任何外部服務
 
 ### P4 ⚪ 待討論後動工
 
@@ -445,8 +455,10 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 - [ ] **PositionRecord 型別拆分**：目前 27 個欄位超大，可考慮拆成 `PositionCore` + `PositionRisk` + `PositionMetadata` 子型別，降低認知負擔
 - [ ] **統一 RPC provider 機制**：`rpcProvider`（FallbackProvider）僅在 `fetchGasCostUSD` 使用，其他地方用 `nextProvider()`（round-robin），兩套機制共存不一致
-- [ ] **`constants.ts` 文件校正**：`BB_MAX_OFFSET_PCT: 0.15` 註解寫 `±10%` 但實際值 15%；`CAPITAL: 20000` 疑似 dead constant（未使用）
 - [ ] **`tokenPrices.ts` 個別錯誤處理**：四個平行 DexScreener API 呼叫使用 `Promise.all`，一個失敗全部失敗；應改 `Promise.allSettled` 讓部分失敗時其餘幣價仍可更新
+- [ ] **`index.ts bbForLog` 只取第一個 BB**：L226 `Object.values(appState.bbs)[0]` 在多池情境下 log 顯示的 BB 可能是錯誤的池。應改為按 position 關聯的 pool 取對應 BB
+- [ ] **stateManager 建立空 WalletEntry 的 hack**：L64-72 使用 `ucUpsertPosition` + 清空 `positions` 的方式不直觀，建議新增 `ucAddWallet(cfg, address)` 專用函式
+- [ ] **型別強化**：`BBResult.regime` 改為 string literal union；`ScanRequest.dex` 改為 `Dex` 型別；`PositionRecord.currentPriceStr` 考慮改為 `number`
 
 ---
 

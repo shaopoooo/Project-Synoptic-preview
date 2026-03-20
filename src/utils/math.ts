@@ -1,6 +1,7 @@
 /**
  * Fixed-point BigInt math utility to replace decimal.js
  */
+import { constants as cfg } from '../config/constants';
 
 /**
  * Normalize a float raw amount (from sqrtPrice math) by token decimals.
@@ -29,9 +30,20 @@ export function normalizeRawAmount(rawStr: string, decimals: number): number {
  * Used by both runBBEngine (index.ts) and PositionScanner._fetchNpmData.
  */
 export function feeTierToTickSpacing(feeTier: number): number {
-    if (feeTier === 0.0001 || feeTier === 0.000085) return 1;
-    if (feeTier === 0.003) return 60;
-    return 10; // default: covers 0.05% and other pools
+    return cfg.FEE_TIER_TICK_SPACING[feeTier] ?? cfg.FEE_TIER_TICK_SPACING_DEFAULT;
+}
+
+// ── BigInt fee-math helpers ───────────────────────────────────────────────────
+// Constants are defined in config/constants.ts (MAX_UINT128, Q128, U256).
+// Re-exported here for convenience so callers can import from a single math module.
+export const { MAX_UINT128, Q128, U256 } = cfg;
+
+/**
+ * Unsigned 256-bit wrapping subtraction, equivalent to Solidity `unchecked { a - b }`.
+ * Required when fee-growth values may wrap around the uint256 max.
+ */
+export function sub256(a: bigint, b: bigint): bigint {
+    return ((a - b) % cfg.U256 + cfg.U256) % cfg.U256;
 }
 
 export function tickToRatio(tick: number): number {

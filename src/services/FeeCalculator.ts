@@ -4,7 +4,7 @@ import { appState, ucWalletAddresses } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
 import { FeeQueryResult, RewardsQueryResult, Dex, NpmPositionData } from '../types';
-import { normalizeRawAmount } from '../utils/math';
+import { normalizeRawAmount, MAX_UINT128, Q128, sub256 } from '../utils/math';
 
 
 const log = createServiceLogger('FeeCalculator');
@@ -57,7 +57,7 @@ export class FeeCalculator {
                                         depositorWallet = wallet;
                                         break;
                                     }
-                                } catch {}
+                                } catch (e) { log.debug(`#${tokenId} stakedContains check failed: ${e}`); }
                             }
                         }
 
@@ -69,9 +69,7 @@ export class FeeCalculator {
                                 log.info(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [canonical_gauge.pendingFees]`);
                                 source = 'gauge.pendingFees';
                                 pendingFeesOk = true;
-                            } catch {
-                                // gauge _stakes 狀態不一致，靜默降級
-                            }
+                            } catch (e) { log.debug(`#${tokenId} gauge.pendingFees failed: ${e}`); }
                         } else {
                             log.info(`#${tokenId} gauge owns NFT but not staked → skip pendingFees`);
                         }
@@ -79,7 +77,6 @@ export class FeeCalculator {
 
                     if (!pendingFeesOk) {
                         try {
-                            const MAX_UINT128 = 2n ** 128n - 1n;
                             const collected = await npmContract.collect.staticCall(
                                 { tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 },
                                 { from: owner }
@@ -129,7 +126,6 @@ export class FeeCalculator {
         } else {
             // Uniswap / PancakeSwap
             try {
-                const MAX_UINT128 = 2n ** 128n - 1n;
                 const collected = await npmContract.collect.staticCall(
                     { tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 },
                     { from: owner }
@@ -214,10 +210,11 @@ export class FeeCalculator {
                         try {
                             const info = await masterchef.userPositionInfos(tokenId);
                             if (info.user && info.user !== ethers.ZeroAddress) updatedDepositorWallet = info.user;
-                        } catch {}
+                        } catch (e) { log.debug(`#${tokenId} userPositionInfos failed: ${e}`); }
                     }
                     break;
-                } catch {
+                } catch (e) {
+                    log.debug(`#${tokenId} masterchef candidate ${addr.slice(0, 10)} not applicable: ${e}`);
                     // not staked or not MasterChef, try next
                 }
             }
@@ -241,10 +238,6 @@ export class FeeCalculator {
         liquidity: bigint,
         owner: string,
     ): Promise<FeeQueryResult> {
-        const Q128 = 2n ** 128n;
-        const U256_MAX = 2n ** 256n;
-        const sub256 = (a: bigint, b: bigint) => ((a - b) % U256_MAX + U256_MAX) % U256_MAX;
-
         const stateView = new ethers.Contract(config.V4_STATE_VIEW, config.V4_STATE_VIEW_ABI, nextProvider());
         const positionManager = config.NPM_ADDRESSES['UniswapV4'];
         // salt = bytes32(tokenId) — used to distinguish positions with same owner + range
@@ -287,9 +280,6 @@ export class FeeCalculator {
     ): Promise<{ fees0: bigint; fees1: bigint }> {
         const poolAbi = dex === 'Aerodrome' ? config.AERO_POOL_ABI : config.POOL_ABI;
         const pool = new ethers.Contract(poolAddress, poolAbi, nextProvider());
-        const Q128 = 2n ** 128n;
-        const U256 = 2n ** 256n;
-        const sub256 = (a: bigint, b: bigint) => ((a - b) % U256 + U256) % U256;
 
         const [fg0, fg1, tLower, tUpper] = await Promise.all([
             rpcRetry(() => pool.feeGrowthGlobal0X128(), 'feeGrowthGlobal0X128'),
