@@ -65,7 +65,8 @@ export interface RebalanceSuggestion {
     notes: string;
 }
 
-export interface PositionRecord {
+/** 身份識別 + 鏈上快照（不含計算欄位） */
+export interface PositionCore {
     tokenId: string;
     dex: Dex;
     poolAddress: string;
@@ -73,8 +74,6 @@ export interface PositionRecord {
     token0Symbol: string;
     token1Symbol: string;
     ownerWallet: string;
-
-    // Live Snapshot
     liquidity: string;
     tickLower: number;
     tickUpper: number;
@@ -87,8 +86,10 @@ export interface PositionRecord {
     positionValueUSD: number;
     amount0: number;  // normalized token0 amount in LP position
     amount1: number;  // normalized token1 amount in LP position
+}
 
-    // Fees & IL
+/** 手續費 + 未領取金額 */
+export interface PositionFees {
     /** Raw BigInt string from contract; must normalize via normalizeRawAmount() before display */
     unclaimed0: string;
     /** Raw BigInt string from contract; must normalize via normalizeRawAmount() before display */
@@ -100,16 +101,20 @@ export interface PositionRecord {
     fees1USD: number;
     fees2USD: number;
     token2Symbol: string;
+}
 
-    // Risk
+/** 風險指標（RiskManager 計算產出） */
+export interface PositionMetrics {
     overlapPercent: number;
     ilUSD: number | null;
     breakevenDays: number;
     healthScore: number;
     regime: string;
     riskAnalysis?: RiskAnalysis;
+}
 
-    // Metadata
+/** 顯示 / 元數據 */
+export interface PositionMeta {
     lastUpdated: number;
     openTimestampMs?: number;
     apr?: number;
@@ -124,6 +129,8 @@ export interface PositionRecord {
     openedHours?: number;
     profitRate?: number | null;
 }
+
+export type PositionRecord = PositionCore & PositionFees & PositionMetrics & PositionMeta;
 
 
 

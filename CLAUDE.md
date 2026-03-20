@@ -312,9 +312,22 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 ### P0 🔴 阻塞中 / 緊急修復
 
-✅ 已完成
+- [ ] **快訊 + 完整報告排程重構 (Flash / Daily Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。三層週期：掃描（`/interval`）→ 快訊 → 完整報告，後者必須 > 前者且為 10 分鐘倍數。實作重點：
+  - `UserConfig` 新增 `flashIntervalMinutes?: number`（預設 60）、`reportIntervalMinutes?: number`（預設 1440）
+  - `index.ts` 新增 `lastFlashAt = 0` / `lastFullReportAt = 0`（module-level，不持久化）；`runBotService()` 邏輯：`now - lastFullReportAt >= reportInterval` → 完整報告；`now - lastFlashAt >= flashInterval` → 快訊；否則跳過本週期推播
+  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 直接讀 `appState.positions`，格式：時間戳 + 幣價 + 組合總覽 + 異常倉位（穿倉 / 可複利），約 10 行
+  - Daily Report 重點為**每日差異 + 現有數值**：各倉位顯示當日 Δ倉位價值、Δ Unclaimed、Δ ilUSD（vs 上次 daily snapshot），搭配目前絕對值；需在 `reportBuilder.ts` 維護 `dailySnapshot`（每次送出 daily report 時記錄當下各倉位數值），下次 daily report 時計算差值；snapshot 不持久化（重啟後第一次 daily 無差異欄位，僅顯示現有數值）
+  - 新增 `/report` 指令（`configCommands.ts`）：`/report` 顯示目前設定；`/report flash <分鐘>` 設快訊間隔；`/report daily <分鐘>` 設完整報告間隔
+  - 驗證規則：flash 間隔必須 > `/interval`（掃描週期）；report 間隔必須 > flash 間隔；兩者均須為 10 的倍數
+  - 重啟後 `lastFullReportAt = 0`，第一個週期自動送完整報告
 
 ### P1 🟠 高優先（近期動工）
+
+- [ ] **質押倉位自動偵測**：`syncFromChain()` 掃完錢包 balance 後，額外掃各 NPM 合約的 ERC-721 Transfer 事件（`from=wallet, to=已知質押合約`），自動發現未登記的質押倉位。實作重點：
+  - PancakeSwap：`Transfer(from=wallet, to=PANCAKE_MASTERCHEF_V3)` on PancakeSwap V3 NPM，發現後呼叫 `masterchef.userPositionInfos(tokenId)` 確認 `user==wallet`（排除已領回）
+  - Aerodrome：先對已知池子呼叫 `voter.gauges(poolAddress)` 取 gauge 地址，再掃 `Transfer(from=wallet, to=gauge)` on Aerodrome NPM
+  - 確認仍在質押後自動 upsert `externalStake: true`（不覆蓋已手動設定的 `initial`）
+  - 限制：block lookback 3M blocks ≈ 70 天，更早質押的需手動 `/stake`
 
 - [ ] **穿倉即時告警 (Out-of-Range Alert)**：目前穿倉只能在每輪 cron 掃描時被動發現（延遲 5~30 分鐘）。應在 `ChainEventScanner` 中為重點池新增 Swap event 監聽，在記憶體內維護最新 `currentTick`，一旦偵測到 `currentTick < tickLower` 或 `currentTick > tickUpper` 立即推播 Telegram 告警。實作重點：
   - 新增 `SwapTickHandler`（實作 `ScanHandler` 介面），訂閱目標池的 `Swap(address,address,int256,int256,uint160,uint128,int24)` event，從最後一個參數取 `tick`
@@ -322,23 +335,24 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
   - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
-- [ ] **Aerodrome Gauge Emissions APR**：目前 Aerodrome APR 只含手續費，缺少 AERO Token 排放部分（實際佔總 APR 大宗）。需在 `PoolScanner` 中對 Gauge 合約補兩個 `staticCall`：
+- [ ] **Aerodrome Gauge Emissions APR**：TVL 修正已完成（`_fetchAerodromeTVL` 鏈上讀 token balance）。仍需補充 AERO Token 排放部分：
   - `gauge.rewardRate()` → 每秒 AERO 排放量
   - `gauge.totalSupply()` → 已質押 LP 總量
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
-- [ ] **Aerodrome Gauge Emissions APR（剩餘）**：TVL 修正已完成（`_fetchAerodromeTVL` 鏈上讀 token balance）。仍需補充 AERO Token 排放部分：
-  - `gauge.rewardRate()` → 每秒 AERO 排放量
-  - `gauge.totalSupply()` → 已質押 LP 總量
-  - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
-  - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
+- [ ] **每小時快訊 + 排程重構 (Flash Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。實作重點：
+  - `index.ts` 新增 module-level `let lastFullReportAt = 0`；`runBotService()` 判斷距上次完整報告是否 ≥ 1 小時，是則送完整報告並更新 `lastFullReportAt`，否則送快訊
+  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 僅需 `appState.positions`，不需 pool/bb 參數
+  - 快訊內容：時間戳 + 幣價 + 組合總覽（總倉位 / Unclaimed / 總獲利）+ 異常倉位（穿倉 + 可複利），約 10 行
+  - `lastFullReportAt` 不持久化，重啟後第一個週期自動送完整報告
+  - 行為：預設每 10 分鐘送快訊，每 60 分鐘升級為完整報告
 
-- [ ] **`PositionRecord` 拆分為子型別**：27 個欄位過多，建議拆為 `PositionCore`（身份 + 鏈上快照）/ `PositionFees`（手續費 + unclaimed）/ `PositionMetrics`（風險指標）/ `PositionMeta`（顯示 / 元數據），再以 `PositionRecord = PositionCore & PositionFees & PositionMetrics & PositionMeta`（intersection type）組合。影響所有 consumer，需全面更新。
-
-- [ ] **`TelegramBot.ts` 拆分重構**：724 行巨型檔案含 12 個指令 handler + 報告組裝 + 格式化。建議拆分為 `bot/commands/` 目錄（每個指令獨立）+ `bot/reportBuilder.ts`（`sendConsolidatedReport` 邏輯）
-
-- [ ] **Telegram 簡化訊息模式**：新增 `/compact` 指令或 `userConfig.compactMode` 設定，開啟後每個倉位只顯示核心欄位（倉位價值、淨損益、未領取手續費、健康分），省略持倉數量、Breakeven 天數、再平衡建議等次要資訊，適合螢幕小或訊息過長的場景
+- [ ] **`/compact` 簡化訊息模式**：開啟後每個倉位壓縮為約 2 行（倉位價值、淨損益、未領取、健康分），省略持倉數量、Breakeven 天數、再平衡建議等次要欄位。實作重點：
+  - `UserConfig` 新增 `compactMode?: boolean`
+  - `configCommands.ts` 新增 `/compact` toggle 指令
+  - `formatter.ts` 的 `buildTelegramPositionBlock` 新增 `compact?: boolean` 參數
+  - `reportBuilder.ts` 從 `appState.userConfig.compactMode` 讀取並傳入
 
 ### P2 🟡 中優先（排程中）
 

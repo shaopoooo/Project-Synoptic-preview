@@ -283,11 +283,18 @@ export class PoolScanner {
             ]);
             const t0 = new ethers.Contract(token0Addr, erc20Abi, nextProvider());
             const t1 = new ethers.Contract(token1Addr, erc20Abi, nextProvider());
+            // Use hardcoded decimals for known tokens to avoid CALL_EXCEPTION on public nodes
+            const knownDec = (addr: string): number | null => {
+                const a = addr.toLowerCase();
+                if (a === config.TOKEN_ADDRESSES.WETH.toLowerCase())  return config.TOKEN_DECIMALS.WETH;
+                if (a === config.TOKEN_ADDRESSES.CBBTC.toLowerCase()) return config.TOKEN_DECIMALS.cbBTC;
+                return null;
+            };
             const [bal0, dec0, bal1, dec1] = await Promise.all([
                 rpcRetry(() => t0.balanceOf(poolAddress), 'erc20.bal0'),
-                rpcRetry(() => t0.decimals(), 'erc20.dec0'),
+                knownDec(token0Addr) ?? rpcRetry(() => t0.decimals(), 'erc20.dec0'),
                 rpcRetry(() => t1.balanceOf(poolAddress), 'erc20.bal1'),
-                rpcRetry(() => t1.decimals(), 'erc20.dec1'),
+                knownDec(token1Addr) ?? rpcRetry(() => t1.decimals(), 'erc20.dec1'),
             ]);
             const prices = await getTokenPrices();
             const priceMap: Record<string, number> = {

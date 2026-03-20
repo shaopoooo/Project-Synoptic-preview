@@ -333,6 +333,15 @@ async function main() {
     log.info(`userConfig not in state — using .env seed (wallets: ${ucWalletAddresses(appState.userConfig).length})`);
   }
 
+  // 確保 runtime 預設值反映在 userConfig，讓下次儲存時包含完整欄位
+  appState.userConfig = {
+    sortBy: 'size',
+    intervalMinutes: currentIntervalMinutes,
+    bbKLowVol: appState.bbKLowVol,
+    bbKHighVol: appState.bbKHighVol,
+    ...appState.userConfig,
+  };
+
   const hasWallets = ucWalletAddresses(appState.userConfig).length > 0;
 
   if (!hasWallets) {
