@@ -9,7 +9,7 @@ import { registerConfigCommands } from './commands/configCommands';
 import { registerWalletCommands } from './commands/walletCommands';
 import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
-import { sendConsolidatedReport as buildAndSendReport } from './reportBuilder';
+import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportBuilder';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -88,6 +88,11 @@ export class TelegramBotService {
         for (const chunk of chunks) {
             await this.bot.api.sendMessage(this.chatId, chunk, { parse_mode: 'HTML' });
         }
+    }
+
+    /** 推播輕量快訊（幣價 + 總覽 + 異常倉位） */
+    public async sendFlashReport(positions: PositionRecord[]) {
+        await buildAndSendFlash(this.sendAlert.bind(this), positions);
     }
 
     /** 將所有倉位合併為單一 Telegram 報告 */

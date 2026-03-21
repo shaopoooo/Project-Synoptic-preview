@@ -234,9 +234,20 @@ export interface UserConfig {
     wallets: WalletEntry[];
     pools?: PoolConfig[];   // 若未設定，fallback 至 config.POOLS
     sortBy?: SortBy;        // 倉位排序鍵，預設 'size'
-    intervalMinutes?: number; // 推播間隔（分鐘），預設由 config.DEFAULT_INTERVAL_MINUTES
+    intervalMinutes?: number; // 掃描間隔（分鐘），預設由 config.DEFAULT_INTERVAL_MINUTES
+    flashIntervalMinutes?: number;  // 快訊推播間隔（分鐘），預設 60；必須 > intervalMinutes 且為 10 倍數
+    fullReportIntervalMinutes?: number; // 完整報告間隔（分鐘），預設 1440；必須 ≥ flashIntervalMinutes 且為 10 倍數
     bbKLowVol?: number;     // BB k 值（低波動市），預設由 config.BB_K_LOW_VOL
     bbKHighVol?: number;    // BB k 值（高波動市），預設由 config.BB_K_HIGH_VOL
+}
+
+// ─── Report snapshots ─────────────────────────────────────────────────────────
+
+/** 每次送完整報告後記錄的倉位快照，用於下次完整報告計算差異（不持久化）。 */
+export interface FullReportSnapshot {
+    positionValueUSD: number;
+    unclaimedFeesUSD: number;
+    ilUSD: number | null;
 }
 
 // ─── Cache entry types ────────────────────────────────────────────────────────

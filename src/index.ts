@@ -27,6 +27,10 @@ let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 
 let isCycleRunning = false;
 
+// ── 報告排程計時器（不持久化，重啟後第一個週期必送完整報告）────────────────
+let lastFlashAt = 0;
+let lastFullReportAt = 0;
+
 function triggerStateSave() {
   return saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig);
 }
@@ -86,7 +90,7 @@ async function runPoolScanner() {
       await sendCriticalAlert('pool_scanner_empty', 'PoolScanner 無法取得任何池子資料，請確認 RPC / DexScreener 連線狀態。');
       return;
     }
-    pools.sort((a, b) => b.apr - a.apr);
+    pools.sort((a, b) => (b.apr + (b.farmApr ?? 0)) - (a.apr + (a.farmApr ?? 0)));
     appState.pools = pools;
     appState.lastUpdated.poolScanner = Date.now();
     const top = appState.pools[0];
@@ -245,25 +249,49 @@ async function runBotService() {
       return;
     }
 
-    const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }> = [];
-    for (const pos of appState.positions) {
-      const poolData = appState.pools.find(
-        (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
-      );
-      const bb = appState.bbs[poolData?.id.toLowerCase() || ''];
-      const risk = pos.riskAnalysis;
+    const now = Date.now();
+    // 扣除一個掃描週期作為容錯，避免時序抖動導致少觸發一次
+    const scanToleranceMs = currentIntervalMinutes * 60 * 1000;
+    const flashIntervalMs = (appState.userConfig.flashIntervalMinutes ?? config.DEFAULT_FLASH_INTERVAL_MINUTES) * 60 * 1000;
+    const fullReportIntervalMs = (appState.userConfig.fullReportIntervalMinutes ?? config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES) * 60 * 1000;
 
-      if (!poolData || !risk) {
-        log.warn(`Missing data for position ${pos.tokenId}, skipping.`);
-        continue;
-      }
-      entries.push({ position: pos, pool: poolData, bb: bb || null, risk });
+    let reportSent = false;
+    let flashSent = false;
+
+    // 快訊（獨立計時器，優先送出）
+    if (now - lastFlashAt >= flashIntervalMs - scanToleranceMs) {
+      await botService.sendFlashReport(appState.positions);
+      lastFlashAt = now;
+      flashSent = true;
+      log.info(`✅ Telegram flash report sent  ${appState.positions.length} position(s)`);
     }
 
-    if (entries.length === 0) return;
+    // 完整報告（獨立計時器，快訊之後送出）
+    if (now - lastFullReportAt >= fullReportIntervalMs - scanToleranceMs) {
+      const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }> = [];
+      for (const pos of appState.positions) {
+        const poolData = appState.pools.find(
+          (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
+        );
+        const bb = appState.bbs[poolData?.id.toLowerCase() || ''];
+        const risk = pos.riskAnalysis;
+        if (!poolData || !risk) {
+          log.warn(`Missing data for position ${pos.tokenId}, skipping.`);
+          continue;
+        }
+        entries.push({ position: pos, pool: poolData, bb: bb || null, risk });
+      }
+      if (entries.length > 0) {
+        await botService.sendConsolidatedReport(entries, appState.pools, appState.lastUpdated);
+        lastFullReportAt = now;
+        reportSent = true;
+        log.info(`✅ Telegram full report sent  ${entries.length} position(s)`);
+      }
+    }
 
-    await botService.sendConsolidatedReport(entries, appState.pools, appState.lastUpdated);
-    log.info(`✅ Telegram report sent  ${entries.length} position(s)`);
+    if (!reportSent && !flashSent) {
+      log.info('BotService: no report due this cycle');
+    }
   } catch (error) {
     log.error(`BotService: ${error}`);
   }
@@ -337,6 +365,8 @@ async function main() {
   appState.userConfig = {
     sortBy: 'size',
     intervalMinutes: currentIntervalMinutes,
+    flashIntervalMinutes: config.DEFAULT_FLASH_INTERVAL_MINUTES,
+    fullReportIntervalMinutes: config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES,
     bbKLowVol: appState.bbKLowVol,
     bbKHighVol: appState.bbKHighVol,
     ...appState.userConfig,

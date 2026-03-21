@@ -69,8 +69,10 @@ export const constants = {
     BANDWIDTH_WINDOW_MAX: 30 * 24 * 12, // 30D × 288 cycles/day (5-min interval) = 8640
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
-    DEFAULT_INTERVAL_MINUTES: 10, // 預設排程間隔（分鐘），可透過 /interval 修改
-    TIMESTAMP_MAX_FAILURES: 3,    // mint timestamp 查詢失敗上限，超過後標記 N/A 停止重試
+    DEFAULT_INTERVAL_MINUTES: 10,          // 預設掃描排程間隔（分鐘），可透過 /interval 修改
+    DEFAULT_FLASH_INTERVAL_MINUTES: 60,         // 預設快訊推播間隔（分鐘），可透過 /report flash 修改
+    DEFAULT_FULL_REPORT_INTERVAL_MINUTES: 1440, // 預設完整報告間隔（分鐘），可透過 /report full 修改
+    TIMESTAMP_MAX_FAILURES: 3,             // mint timestamp 查詢失敗上限，超過後標記 N/A 停止重試
 
     // ── Gas ───────────────────────────────────────────────────────────────
     GAS_UNITS_COMPOUND: 300_000n,  // Base 上 collect + reinvest 估算用 gas

@@ -19,12 +19,15 @@ export function registerInfoCommands(bot: Bot): void {
             `/sort &lt;key&gt; — 設定倉位排序方式\n` +
             `  · <code>size</code>　倉位大小（預設）\n` +
             `  · <code>apr</code>　　池子 APR\n` +
-            `  · <code>unclaimed</code> 未領取手續費\n` +
+            `  · <code>unclaimed</code> 未領取\n` +
             `  · <code>health</code>　健康分數\n\n` +
             `<b>⏱ 排程</b>\n` +
-            `/interval &lt;分鐘&gt; — 設定自動報告間隔\n` +
+            `/interval &lt;分鐘&gt; — 設定掃描間隔\n` +
             `  可用值: ${VALID_INTERVALS.map(m => fmtInterval(m)).join('、')}\n` +
-            `  範例: <code>/interval 30</code>\n\n` +
+            `  範例: <code>/interval 30</code>\n` +
+            `/report — 查看快訊 / 完整報告排程設定\n` +
+            `/report flash &lt;分鐘&gt; — 設定快訊間隔（須 ≥ 掃描間隔，10 倍數）\n` +
+            `/report full &lt;分鐘&gt; — 設定完整報告間隔（須 ≥ 快訊間隔，10 倍數）\n\n` +
             `<b>📐 BB 布林通道</b>\n` +
             `/bbk — 查看目前 k 值設定\n` +
             `/bbk &lt;low&gt; &lt;high&gt; — 調整 BB 帶寬乘數\n` +

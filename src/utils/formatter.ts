@@ -1,10 +1,26 @@
-import { PositionRecord, PoolStats, BBResult, RiskAnalysis } from '../types';
+import { PositionRecord, PoolStats, BBResult, RiskAnalysis, TokenPrices } from '../types';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 import { normalizeRawAmount } from './math';
 import { TOKEN_DECIMALS } from './tokenInfo';
 
 const FMT = config.FMT;
+
+/** 格式化幣價，未設定（≤0）時顯示 '–' */
+export function fmtTokenPrice(v: number, decimals: number): string {
+    return v > 0 ? `$${v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}` : '–';
+}
+
+/** 格式化 USD 差值，帶正負符號 */
+export function fmtDeltaUSD(delta: number, precision = 1): string {
+    const sign = delta >= 0 ? '+' : '-';
+    return `${sign}$${Math.abs(delta).toFixed(precision)}`;
+}
+
+/** Telegram 幣價行：💱 ETH $X  BTC $X  CAKE $X  AERO $X */
+export function buildTokenPriceLine(tp: TokenPrices): string {
+    return `💱 ETH ${fmtTokenPrice(tp.ethPrice, 0)}  BTC ${fmtTokenPrice(tp.cbbtcPrice, 0)}  CAKE ${fmtTokenPrice(tp.cakePrice, 3)}  AERO ${fmtTokenPrice(tp.aeroPrice, 3)}`;
+}
 
 export function fmtInterval(min: number): string {
     if (min < 60)   return `${min} 分鐘`;
@@ -135,7 +151,7 @@ export function buildTelegramPositionBlock(
         amt1 > 0 ? `${compactAmount(amt1)} ${position.token1Symbol} ($${position.fees1USD.toFixed(FMT.USD_CENTS)})` : '',
         amt2 > 0 && position.token2Symbol ? `${compactAmount(amt2)} ${position.token2Symbol} ($${position.fees2USD.toFixed(FMT.USD_CENTS)})` : '',
     ].filter(Boolean);
-    block += `🔄 未領取手續費 $${position.unclaimedFeesUSD.toFixed(FMT.USD_CENTS)} ${cmp} ${risk.compoundSignal ? '&gt;' : '&lt;'} $${risk.compoundThreshold.toFixed(FMT.USD_TENTH)}\n`;
+    block += `🔄 未領取 $${position.unclaimedFeesUSD.toFixed(FMT.USD_CENTS)} ${cmp} ${risk.compoundSignal ? '&gt;' : '&lt;'} $${risk.compoundThreshold.toFixed(FMT.USD_TENTH)}\n`;
     for (const line of feeDetail) block += `     ${line}\n`;
     // ── 警示
     if (risk.redAlert) block += `🚨 <b>RED_ALERT</b>: Breakeven &gt;30天 (建議減倉)\n`;
