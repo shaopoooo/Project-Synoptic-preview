@@ -4,6 +4,20 @@ import { appState } from '../../utils/AppState';
 import { fmtInterval } from '../../utils/formatter';
 import { VALID_INTERVALS, minutesToCron, type BotDeps, type IntervalMinutes } from './context';
 
+/** 驗證快訊 / 完整報告間隔輸入。回傳錯誤說明字串，合法則回傳 null。 */
+function validateReportInterval(minutes: number, type: 'flash' | 'full'): string | null {
+    if (!Number.isInteger(minutes) || minutes <= 0) return '❌ 間隔須為正整數';
+    if (minutes % 10 !== 0) return '❌ 間隔須為 10 的倍數';
+    const scanMinutes = appState.userConfig.intervalMinutes ?? config.DEFAULT_INTERVAL_MINUTES;
+    if (type === 'flash') {
+        if (minutes < scanMinutes) return `❌ 快訊間隔須 ≥ 掃描間隔（目前 ${scanMinutes} 分鐘）`;
+    } else {
+        const flashMinutes = appState.userConfig.flashIntervalMinutes ?? config.DEFAULT_FLASH_INTERVAL_MINUTES;
+        if (minutes < flashMinutes) return `❌ 完整報告間隔須 ≥ 快訊間隔（目前 ${flashMinutes} 分鐘）`;
+    }
+    return null;
+}
+
 export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
     bot.command('sort', async (ctx) => {
         const key = (ctx.match?.trim() ?? '') as keyof typeof config.SORT_LABELS;
@@ -79,5 +93,46 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
             `✅ BB k 值已更新\nk_low=<b>${kLow}</b>  k_high=<b>${kHigh}</b>\n（下個週期生效）`,
             { parse_mode: 'HTML' }
         );
+    });
+
+    bot.command('report', async (ctx) => {
+        const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+
+        if (parts.length === 0) {
+            // 顯示目前設定
+            const scan = appState.userConfig.intervalMinutes ?? config.DEFAULT_INTERVAL_MINUTES;
+            const flash = appState.userConfig.flashIntervalMinutes ?? config.DEFAULT_FLASH_INTERVAL_MINUTES;
+            const report = appState.userConfig.fullReportIntervalMinutes ?? config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES;
+            ctx.reply(
+                `📋 <b>報告排程設定</b>\n\n` +
+                `掃描間隔　　: <code>${fmtInterval(scan)}</code>（/interval 修改）\n` +
+                `快訊間隔　　: <code>${fmtInterval(flash)}</code>（/report flash &lt;分鐘&gt;）\n` +
+                `完整報告間隔: <code>${fmtInterval(report)}</code>（/report full &lt;分鐘&gt;）\n\n` +
+                `驗證規則: 掃描 ≤ 快訊 ≤ 完整報告，均須為 10 的倍數`,
+                { parse_mode: 'HTML' }
+            );
+            return;
+        }
+
+        const subCmd = parts[0].toLowerCase();
+        if (subCmd !== 'flash' && subCmd !== 'full') {
+            ctx.reply('❌ 用法: /report flash &lt;分鐘&gt; 或 /report full &lt;分鐘&gt;', { parse_mode: 'HTML' });
+            return;
+        }
+
+        const minutes = parseInt(parts[1] ?? '', 10);
+        if (isNaN(minutes)) {
+            ctx.reply(`❌ 請提供分鐘數，例如: /report ${subCmd} ${subCmd === 'flash' ? '60' : '1440'}`, { parse_mode: 'HTML' });
+            return;
+        }
+
+        const err = validateReportInterval(minutes, subCmd as 'flash' | 'full');
+        if (err) { ctx.reply(err); return; }
+
+        const field = subCmd === 'flash' ? 'flashIntervalMinutes' : 'fullReportIntervalMinutes';
+        const newCfg = { ...appState.userConfig, [field]: minutes };
+        if (deps.onUserConfigChange) await deps.onUserConfigChange(newCfg);
+        const label = subCmd === 'flash' ? '快訊' : '完整報告';
+        ctx.reply(`✅ ${label}間隔已設為 <b>${fmtInterval(minutes)}</b>（下個週期生效）`, { parse_mode: 'HTML' });
     });
 }

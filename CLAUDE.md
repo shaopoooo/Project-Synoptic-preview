@@ -262,10 +262,11 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - **池排行 APR 格式**：有 `farmApr` 時顯示 `APR <b>Z.XX%</b>(手續費X.XX%+農場Y.XX%)`（小數點後兩位）；無 `farmApr` 時僅顯示 `APR <b>Z.XX%</b>`；In-Range APR 以 `totalApr`（手續費 + 農場）為底數計算效率乘數
 - **`/unstake` 架構原則**：TelegramBot 只格式化 `positionScanner.unstake(tokenId)` 的回傳結果，不包含任何鏈上查詢或狀態變更邏輯；`setPositionScanner(scanner)` 方法於 `index.ts` 啟動時注入
 
-**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/bbk [low high]` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
+**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/report [flash|full <分鐘>]` / `/bbk [low high]` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
 
 **所有 Telegram 可修改的變數均存於 `appState.userConfig`**，透過 `onUserConfigChange` 回呼立即持久化：
 - `sortBy` — `/sort`；`intervalMinutes` — `/interval`（同時觸發 `onReschedule` 更新 cron）
+- `flashIntervalMinutes` — `/report flash`；`fullReportIntervalMinutes` — `/report full`
 - `bbKLowVol / bbKHighVol` — `/bbk`（同時直接更新 `appState.bbKLowVol/bbKHighVol` 供 BBEngine runtime 使用）
 - `wallets[].positions[]` — `/wallet` / `/invest` / `/capital` / `/stake` / `/unstake`
 
@@ -310,18 +311,16 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 > P0 最緊急 → P4 待討論；完成後刪除條目，該優先級全空則標注 ✅
 
-### P0 🔴 阻塞中 / 緊急修復
-
-- [ ] **快訊 + 完整報告排程重構 (Flash / Daily Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。三層週期：掃描（`/interval`）→ 快訊 → 完整報告，後者必須 > 前者且為 10 分鐘倍數。實作重點：
-  - `UserConfig` 新增 `flashIntervalMinutes?: number`（預設 60）、`reportIntervalMinutes?: number`（預設 1440）
-  - `index.ts` 新增 `lastFlashAt = 0` / `lastFullReportAt = 0`（module-level，不持久化）；`runBotService()` 邏輯：`now - lastFullReportAt >= reportInterval` → 完整報告；`now - lastFlashAt >= flashInterval` → 快訊；否則跳過本週期推播
-  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 直接讀 `appState.positions`，格式：時間戳 + 幣價 + 組合總覽 + 異常倉位（穿倉 / 可複利），約 10 行
-  - Daily Report 重點為**每日差異 + 現有數值**：各倉位顯示當日 Δ倉位價值、Δ Unclaimed、Δ ilUSD（vs 上次 daily snapshot），搭配目前絕對值；需在 `reportBuilder.ts` 維護 `dailySnapshot`（每次送出 daily report 時記錄當下各倉位數值），下次 daily report 時計算差值；snapshot 不持久化（重啟後第一次 daily 無差異欄位，僅顯示現有數值）
-  - 新增 `/report` 指令（`configCommands.ts`）：`/report` 顯示目前設定；`/report flash <分鐘>` 設快訊間隔；`/report daily <分鐘>` 設完整報告間隔
-  - 驗證規則：flash 間隔必須 > `/interval`（掃描週期）；report 間隔必須 > flash 間隔；兩者均須為 10 的倍數
-  - 重啟後 `lastFullReportAt = 0`，第一個週期自動送完整報告
+### P0 🔴 ✅ 已完成
 
 ### P1 🟠 高優先（近期動工）
+
+- [ ] **`/config` 指令顯示完整 userConfig**：新增 `/config` 指令（`configCommands.ts`），一次列出所有當前設定值，方便確認狀態。顯示欄位：
+  - 掃描間隔（`intervalMinutes`）、快訊間隔（`flashIntervalMinutes`）、完整報告間隔（`fullReportIntervalMinutes`）
+  - 排序鍵（`sortBy`）、BB k 值（`bbKLowVol` / `bbKHighVol`）、簡化模式（`compactMode`）
+  - 監測錢包數量與各錢包倉位數
+  - 自訂池清單（`pools`，若未設定顯示「使用預設」）
+  - 格式使用 `<code>` 對齊方便閱讀
 
 - [ ] **質押倉位自動偵測**：`syncFromChain()` 掃完錢包 balance 後，額外掃各 NPM 合約的 ERC-721 Transfer 事件（`from=wallet, to=已知質押合約`），自動發現未登記的質押倉位。實作重點：
   - PancakeSwap：`Transfer(from=wallet, to=PANCAKE_MASTERCHEF_V3)` on PancakeSwap V3 NPM，發現後呼叫 `masterchef.userPositionInfos(tokenId)` 確認 `user==wallet`（排除已領回）
@@ -335,18 +334,28 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
   - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
+- [ ] **修正 RiskManager EOQ 可複利門檻算式**：現行算式 `√(2 × P × G × feeRate24h)` 推導錯誤，應修正為標準 EOQ 公式：
+  - **正確推導**：最佳複利間隔 `t* = √(2PC) / Y`，對應門檻金額 `Q* = Y × t* = √(2 × P × C)`；與日費率無關，不應乘 `feeRate24h`
+  - **修正後公式**：`threshold = Math.sqrt(2 * positionValueUSD * gasCostUSD)`
+  - **連帶修正**：
+    - `feeRate24h` 欄位從 `PositionState` 移除（改由 `explain` 指令公式說明同步更新）
+    - `dailyFeesUSD` 參數已傳入，可額外計算並顯示 `最佳複利間隔天數 = threshold / dailyFeesUSD`，方便用戶判斷
+    - `dailyFeesUSD = 0` 時 `compoundSignal = false`，不顯示門檻
+    - `state.capital` 統一改用 `positionValueUSD`（現值），不用 `initialCapital`
+
 - [ ] **Aerodrome Gauge Emissions APR**：TVL 修正已完成（`_fetchAerodromeTVL` 鏈上讀 token balance）。仍需補充 AERO Token 排放部分：
   - `gauge.rewardRate()` → 每秒 AERO 排放量
   - `gauge.totalSupply()` → 已質押 LP 總量
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
-- [ ] **每小時快訊 + 排程重構 (Flash Report)**：`runBotService()` 根據時間決定推什麼，不新增獨立 cron 避免競態。實作重點：
-  - `index.ts` 新增 module-level `let lastFullReportAt = 0`；`runBotService()` 判斷距上次完整報告是否 ≥ 1 小時，是則送完整報告並更新 `lastFullReportAt`，否則送快訊
-  - `reportBuilder.ts` 新增 `sendFlashReport(sendAlert, positions)` — 僅需 `appState.positions`，不需 pool/bb 參數
-  - 快訊內容：時間戳 + 幣價 + 組合總覽（總倉位 / Unclaimed / 總獲利）+ 異常倉位（穿倉 + 可複利），約 10 行
-  - `lastFullReportAt` 不持久化，重啟後第一個週期自動送完整報告
-  - 行為：預設每 10 分鐘送快訊，每 60 分鐘升級為完整報告
+- [ ] **優化 Telegram 通知訊息**：統一快訊與完整報告的告警顯示，避免重要警示僅出現在完整報告。實作重點：
+  - **快訊補齊告警**：目前快訊只有穿倉 + 可複利；應補充 `driftWarning`（DRIFT）、`redAlert`（RED_ALERT）、`highVolatilityAvoid`（HIGH_VOLATILITY_AVOID）告警，格式與完整報告一致
+  - **告警去重**：完整報告在同週期已送快訊的情況下，可省略快訊已推播過的告警，或保留（視使用者偏好決定）
+  - **格式確認清單**：
+    - 快訊：`⚠️ #tokenId 穿倉`、`✅ #tokenId 可複利 $X`、`⚠️ #tokenId DRIFT 重疊 X%`、`🚨 #tokenId RED_ALERT`
+    - 完整報告倉位區塊：`🚨 RED_ALERT`、`⚠️ HIGH_VOLATILITY_AVOID`、`⚠️ DRIFT 重疊 X% | 💡 strategyName`（現已有）
+  - **告警優先序**：穿倉 > RED_ALERT > DRIFT > HIGH_VOLATILITY_AVOID > 可複利
 
 - [ ] **`/compact` 簡化訊息模式**：開啟後每個倉位壓縮為約 2 行（倉位價值、淨損益、未領取、健康分），省略持倉數量、Breakeven 天數、再平衡建議等次要欄位。實作重點：
   - `UserConfig` 新增 `compactMode?: boolean`

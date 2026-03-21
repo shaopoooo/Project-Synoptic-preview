@@ -266,8 +266,11 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 | `/start` | 啟動 Bot，確認連線正常 |
 | `/sort <key>` | 倉位排序：`size`（預設）/ `apr` / `unclaimed` / `health` |
 | `/sort` | 查看目前排序及所有選項 |
-| `/interval <分鐘>` | 設定自動報告間隔（10/20/30/60/120/180/240/360/480/720/1440） |
+| `/interval <分鐘>` | 設定掃描間隔（10/20/30/60/120/180/240/360/480/720/1440） |
 | `/interval` | 查看可用間隔選項 |
+| `/report` | 查看目前快訊 / 完整報告排程設定 |
+| `/report flash <分鐘>` | 設定快訊推播間隔（須 ≥ 掃描間隔，且為 10 倍數，預設 60） |
+| `/report full <分鐘>` | 設定完整報告間隔（須 ≥ 快訊間隔，且為 10 倍數，預設 1440） |
 | `/bbk` | 查看目前 BB k 值（low / high） |
 | `/bbk <low> <high>` | 調整 BB 帶寬乘數，下個週期生效並持久化（例：`/bbk 1.8 2.5`） |
 | `/explain` | 顯示所有指標的計算公式說明（含 BB k 值、再平衡策略） |
@@ -349,6 +352,8 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 | `bandwidthWindows` | 永久（滾動保留最近 8640 筆） | 每次 5 分鐘週期 | `BandwidthTracker.ts` |
 | `sortBy` | 永久 | `/sort` 指令觸發時 | `TelegramBot.ts` |
 | `intervalMinutes` | 永久 | `/interval` 指令觸發時 | `TelegramBot.ts` |
+| `flashIntervalMinutes` | 永久 | `/report flash` 指令觸發時 | `TelegramBot.ts` |
+| `fullReportIntervalMinutes` | 永久 | `/report full` 指令觸發時 | `TelegramBot.ts` |
 | `bbKLowVol` / `bbKHighVol` | 永久 | `/bbk` 指令觸發時 | `TelegramBot.ts` |
 | `closedTokenIds` | 永久 | 偵測到 `liquidity=0` 時自動加入 | `PositionScanner.ts` |
 | `userConfig` | 永久 | `/wallet`、`/invest`、`/untrack` 指令觸發時；倉位發現時自動寫入 tokenId + openTimestamp | `TelegramBot.ts` / `PositionScanner.ts` |
