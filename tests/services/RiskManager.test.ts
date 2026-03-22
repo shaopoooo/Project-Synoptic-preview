@@ -26,7 +26,6 @@ const makeState = (overrides: Partial<PositionState> = {}): PositionState => ({
     tickUpper: 80,
     unclaimedFees: 50,
     cumulativeIL: -20,
-    feeRate24h: 0.001,
     ...overrides,
 });
 
@@ -71,11 +70,11 @@ describe('RiskManager.analyzePosition', () => {
     });
 
     it('signals compound when unclaimed exceeds EOQ threshold', () => {
-        // threshold = sqrt(2 * 1000 * 1.5 * 0.01) = sqrt(30) ≈ 5.48
-        const state = makeState({ capital: 1000, unclaimedFees: 100, feeRate24h: 0.01 });
+        // threshold = sqrt(2 * 1000 * 1.5) = sqrt(3000) ≈ 54.77
+        const state = makeState({ capital: 1000, unclaimedFees: 100 });
         const result = RiskManager.analyzePosition(state, makeBB(), 10, 0.1, 0.1, 1.5);
         expect(result.compoundSignal).toBe(true);
-        expect(result.compoundThreshold).toBeCloseTo(Math.sqrt(2 * 1000 * 1.5 * 0.01), 4);
+        expect(result.compoundThreshold).toBeCloseTo(Math.sqrt(2 * 1000 * 1.5), 4);
     });
 
     it('healthScore is 50 at breakeven', () => {

@@ -9,7 +9,7 @@ import { registerConfigCommands } from './commands/configCommands';
 import { registerWalletCommands } from './commands/walletCommands';
 import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
-import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportBuilder';
+import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportService';
 
 const log = createServiceLogger('TelegramBot');
 

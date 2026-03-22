@@ -177,16 +177,15 @@ async function runRiskManager() {
       const avg30DBandwidth = bandwidthTracker.update(poolKey, currentBandwidth);
 
       const positionState: PositionState = {
-        capital: pos.initialCapital ?? pos.positionValueUSD,
+        capital: pos.positionValueUSD,
         tickLower: pos.tickLower,
         tickUpper: pos.tickUpper,
         unclaimedFees: pos.unclaimedFeesUSD,
         cumulativeIL: pos.ilUSD ?? 0,
-        feeRate24h: poolData.apr / 365,
       };
 
       const risk = RiskManager.analyzePosition(
-        positionState, bb, poolData.dailyFeesUSD, avg30DBandwidth, currentBandwidth, gasCostUSD
+        positionState, bb, poolData.dailyFeesUSD, avg30DBandwidth, currentBandwidth, gasCostUSD, poolData.tvlUSD
       );
 
       pos.riskAnalysis = risk;
@@ -250,8 +249,8 @@ async function runBotService() {
     }
 
     const now = Date.now();
-    // 扣除一個掃描週期作為容錯，避免時序抖動導致少觸發一次
-    const scanToleranceMs = currentIntervalMinutes * 60 * 1000;
+    // 時間窗口對齊：把時間軸切成固定大小的格子，格子編號改變即觸發，
+    // 每個窗口最多送一次，偏差不超過一個掃描週期，不累積 drift。
     const flashIntervalMs = (appState.userConfig.flashIntervalMinutes ?? config.DEFAULT_FLASH_INTERVAL_MINUTES) * 60 * 1000;
     const fullReportIntervalMs = (appState.userConfig.fullReportIntervalMinutes ?? config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES) * 60 * 1000;
 
@@ -259,7 +258,7 @@ async function runBotService() {
     let flashSent = false;
 
     // 快訊（獨立計時器，優先送出）
-    if (now - lastFlashAt >= flashIntervalMs - scanToleranceMs) {
+    if (Math.floor(now / flashIntervalMs) > Math.floor(lastFlashAt / flashIntervalMs)) {
       await botService.sendFlashReport(appState.positions);
       lastFlashAt = now;
       flashSent = true;
@@ -267,7 +266,7 @@ async function runBotService() {
     }
 
     // 完整報告（獨立計時器，快訊之後送出）
-    if (now - lastFullReportAt >= fullReportIntervalMs - scanToleranceMs) {
+    if (Math.floor(now / fullReportIntervalMs) > Math.floor(lastFullReportAt / fullReportIntervalMs)) {
       const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }> = [];
       for (const pos of appState.positions) {
         const poolData = appState.pools.find(

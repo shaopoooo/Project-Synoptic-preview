@@ -83,7 +83,6 @@ async function main() {
             tickUpper: pos.tickUpper,
             unclaimedFees: pos.unclaimedFeesUSD,
             cumulativeIL: pos.ilUSD ?? 0,
-            feeRate24h: poolData.apr / 365,
         };
         const risk: RiskAnalysis = RiskManager.analyzePosition(
             positionState, bb, poolData.dailyFeesUSD, avg30DBandwidth, currentBandwidth

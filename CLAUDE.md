@@ -114,7 +114,9 @@ src/
 │   ├── PnlCalculator.ts        # 絕對 PNL、開倉資訊、組合總覽計算
 │   └── rebalance.ts            # 再平衡建議（純計算，不執行交易）
 ├── bot/
-│   └── TelegramBot.ts          # Telegram 推播格式化
+│   ├── TelegramBot.ts          # Telegram 指令處理與推播觸發
+│   ├── reportService.ts        # 報告資料協調層（計算總覽/delta/holdings/alerts，呼叫 formatter 輸出字串）
+│   └── commands/               # 各類 Telegram 指令模組
 ├── backtest/
 │   └── BacktestEngine.ts       # 歷史回測引擎
 └── utils/
@@ -127,7 +129,7 @@ src/
     ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
     ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol / userConfig）；re-exports WalletPosition / WalletEntry / UserConfig from types/
     ├── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol / TOKEN_DECIMALS）
-    └── formatter.ts            # 文字格式化工具（compactAmount、formatPositionLog，TelegramBot 與 logger 共用）；所有 toFixed 統一讀 `config.FMT.*`
+    └── formatter.ts            # 文字格式化工具；所有 toFixed 統一讀 `config.FMT.*`；只接收 raw 數值，不含運算邏輯。主要 exports：`compactAmount` / `buildTelegramPositionBlock` / `buildPositionDiffLine` / `buildSummaryBlock` / `buildPoolRankingBlock` / `buildTimestampBlock` / `buildFlashReport`（含 `FlashHolding` / `FlashAlert` / `PoolRankingRow` / `SummaryBlockData` 介面）
 ```
 
 ### 核心資料流
@@ -232,18 +234,21 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 ### RiskManager & EOQ（`src/services/RiskManager.ts`）
 
 ```
-Health Score     = (Fee_Income / IL_Risk_Weight) × 100（上限 100 分）
-IL Breakeven Days = 累計 IL（USD）/ (24h 手續費 / 24)
-EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
+Health Score      = 50 + (unclaimedFees + cumulativeIL) / capital × 1000（上限 100 分）
+IL Breakeven Days = |cumulativeIL| / dailyFeesUSD（cumulativeIL < 0 才計算，否則 0）
+EOQ Threshold     = sqrt(2 × P × G)   ← P = positionValueUSD, G = gasCostUSD（與日費率無關）
+compoundIntervalDays = Threshold / dailyFeesUSD
 ```
 
 - `G`（Gas）必須由 `fetchGasCostUSD()` 即時取得，**禁止硬編碼**
+- `dailyFeesUSD` 內部按倉位佔池 TVL 比例縮放：`poolDailyFeesUSD × (capital / tvlUSD)`
+- `redAlert`：`cumulativeIL < 0 && ilBreakevenDays > RED_ALERT_BREAKEVEN_DAYS`（盈利中不觸發）
 - 當 `Unclaimed Fees > Threshold` 時發送 `COMPOUND_SIGNAL`
-- **關鍵函式**：`analyzePosition(positionState, bb, dailyFeesUSD, avg30DBandwidth, currentBandwidth, gasCostUSD)`
+- **關鍵函式**：`analyzePosition(positionState, bb, poolDailyFeesUSD, avg30DBandwidth, currentBandwidth, gasCostUSD?, tvlUSD?)`
 
 | 條件 | 標記 | 建議行動 |
 |------|------|----------|
-| IL Breakeven Days > 30 天 | `RED_ALERT` | 建議減倉 |
+| cumulativeIL < 0 且 Breakeven Days > 30 天 | `RED_ALERT` | 建議減倉 |
 | Bandwidth > 2× 30D 平均 | `HIGH_VOLATILITY_AVOID` | 建議觀望 |
 
 ### PnlCalculator（`src/services/PnlCalculator.ts`）
@@ -251,23 +256,29 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - **關鍵函式**：`getInitialCapital(tokenId)` / `calculateOpenInfo()` / `calculatePortfolioSummary()`
 - 運算必須與 `@uniswap/v3-sdk` 保持一致
 
-### Telegram Bot（`src/bot/TelegramBot.ts`）
+### Telegram Bot（`src/bot/TelegramBot.ts` + `reportService.ts`）
 
-- **關鍵函式**：`sendConsolidatedReport()` — 每 5 分鐘推播單一合併報告
-- **`compactAmount(n)`**：將極小數字轉為下標零表示法（如 `0.0002719` → `0.0₃2719`），Telegram 與 positions.log 共用同一邏輯
+**架構分層：**
+- `TelegramBot.ts`：指令路由、`sendAlert()` 推播觸發；呼叫 `reportService` 的兩個 async 函式
+- `reportService.ts`：資料協調層，計算總覽/delta/holdings/alerts 等 raw 數值，呼叫 `formatter` 輸出字串；維護快訊 snapshot 與完整報告 snapshot（記憶體，不持久化）
+- `formatter.ts`：純字串格式化，接收 raw 數值，**不含任何運算邏輯**
+- `reportService` 排程：快訊與完整報告均使用 window-based 對齊（`Math.floor(now/intervalMs) > Math.floor(lastAt/intervalMs)`），避免累積漂移
+
+- **`compactAmount(n)`**：將極小數字轉為下標零表示法（如 `0.0002719` → `0.0₃2719`），Telegram 與 positions.log 共用同一邏輯（`formatter.ts`）
 - **淨損益 vs 無常損失**：`💸 淨損益` = LP現值 + Unclaimed - 本金（含手續費）；`無常損失` = LP現值 - 本金（純市價波動）
 - **鎖倉 icon**：`isStaked = true` 的倉位在 tokenId 後顯示 `🔒`
 - **BB k 值顯示**：報告底部顯示目前 `k_low / k_high`（`appState.bbKLowVol / bbKHighVol`）
 - **`sendAlert(message)`**：直接呼叫 `bot.api.sendMessage`，不 try/catch（錯誤向上拋出，不靜默吞掉）；訊息超過 4096 字元時自動按換行拆分成多段發送
-- **池排行 APR 格式**：有 `farmApr` 時顯示 `APR <b>Z.XX%</b>(手續費X.XX%+農場Y.XX%)`（小數點後兩位）；無 `farmApr` 時僅顯示 `APR <b>Z.XX%</b>`；In-Range APR 以 `totalApr`（手續費 + 農場）為底數計算效率乘數
+- **池排行 APR 格式**：有 `farmApr` 時顯示 `APR Z.XX%(手續費X.XX%+農場Y.XX%)`；In-Range APR 以 `totalApr` × 資金效率計算
 - **`/unstake` 架構原則**：TelegramBot 只格式化 `positionScanner.unstake(tokenId)` 的回傳結果，不包含任何鏈上查詢或狀態變更邏輯；`setPositionScanner(scanner)` 方法於 `index.ts` 啟動時注入
 
-**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/report [flash|full <分鐘>]` / `/bbk [low high]` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
+**指令**：`/help` / `/sort <key>` / `/interval <分鐘>` / `/report [flash|full <分鐘>]` / `/bbk [low high]` / `/compact` / `/config` / `/wallet` / `/dex` / `/invest` / `/capital` / `/stake` / `/unstake`；完整說明見 README.md
 
 **所有 Telegram 可修改的變數均存於 `appState.userConfig`**，透過 `onUserConfigChange` 回呼立即持久化：
 - `sortBy` — `/sort`；`intervalMinutes` — `/interval`（同時觸發 `onReschedule` 更新 cron）
 - `flashIntervalMinutes` — `/report flash`；`fullReportIntervalMinutes` — `/report full`
 - `bbKLowVol / bbKHighVol` — `/bbk`（同時直接更新 `appState.bbKLowVol/bbKHighVol` 供 BBEngine runtime 使用）
+- `compactMode` — `/compact`（toggle，完整報告每倉位顯示 2 行核心數據）
 - `wallets[].positions[]` — `/wallet` / `/invest` / `/capital` / `/stake` / `/unstake`
 
 **報告欄位邏輯（實作參考）：**
@@ -280,7 +291,7 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 - `🪙 持倉數量`：`amount0` / `amount1`（PositionAggregator 組裝時計算並儲存的正規化 token 數量）
 - `🔄 未領取`：`unclaimedFeesUSD`；`✅/❌` 比較 `compoundThreshold`；逐幣明細各幣 > 0 才顯示
 - `🔒`：`isStaked = true`
-- `⚠️ RED_ALERT`：`breakevenDays > config.RED_ALERT_BREAKEVEN_DAYS`
+- `⚠️ RED_ALERT`：`cumulativeIL < 0 && breakevenDays > config.RED_ALERT_BREAKEVEN_DAYS`（盈利中不觸發）
 - `⚠️ HIGH_VOLATILITY_AVOID`：`currentBandwidth > avg30D × config.HIGH_VOLATILITY_FACTOR`
 - `⚠️ DRIFT`：`overlapPercent < config.DRIFT_WARNING_PCT`；附 `rebalance.strategyName`
 - 底部：`📐 BB k: low=X  high=X`（`appState.bbKLowVol / bbKHighVol`）
@@ -315,13 +326,6 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 ### P1 🟠 高優先（近期動工）
 
-- [ ] **`/config` 指令顯示完整 userConfig**：新增 `/config` 指令（`configCommands.ts`），一次列出所有當前設定值，方便確認狀態。顯示欄位：
-  - 掃描間隔（`intervalMinutes`）、快訊間隔（`flashIntervalMinutes`）、完整報告間隔（`fullReportIntervalMinutes`）
-  - 排序鍵（`sortBy`）、BB k 值（`bbKLowVol` / `bbKHighVol`）、簡化模式（`compactMode`）
-  - 監測錢包數量與各錢包倉位數
-  - 自訂池清單（`pools`，若未設定顯示「使用預設」）
-  - 格式使用 `<code>` 對齊方便閱讀
-
 - [ ] **質押倉位自動偵測**：`syncFromChain()` 掃完錢包 balance 後，額外掃各 NPM 合約的 ERC-721 Transfer 事件（`from=wallet, to=已知質押合約`），自動發現未登記的質押倉位。實作重點：
   - PancakeSwap：`Transfer(from=wallet, to=PANCAKE_MASTERCHEF_V3)` on PancakeSwap V3 NPM，發現後呼叫 `masterchef.userPositionInfos(tokenId)` 確認 `user==wallet`（排除已領回）
   - Aerodrome：先對已知池子呼叫 `voter.gauges(poolAddress)` 取 gauge 地址，再掃 `Transfer(from=wallet, to=gauge)` on Aerodrome NPM
@@ -334,34 +338,12 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
   - 告警訊息格式：`⚠️ #tokenId 穿倉！當前 tick=X 已超出 [tickLower, tickUpper]`
   - 告警後設 cooldown（如 30 分鐘），避免在邊界反覆推播
 
-- [ ] **修正 RiskManager EOQ 可複利門檻算式**：現行算式 `√(2 × P × G × feeRate24h)` 推導錯誤，應修正為標準 EOQ 公式：
-  - **正確推導**：最佳複利間隔 `t* = √(2PC) / Y`，對應門檻金額 `Q* = Y × t* = √(2 × P × C)`；與日費率無關，不應乘 `feeRate24h`
-  - **修正後公式**：`threshold = Math.sqrt(2 * positionValueUSD * gasCostUSD)`
-  - **連帶修正**：
-    - `feeRate24h` 欄位從 `PositionState` 移除（改由 `explain` 指令公式說明同步更新）
-    - `dailyFeesUSD` 參數已傳入，可額外計算並顯示 `最佳複利間隔天數 = threshold / dailyFeesUSD`，方便用戶判斷
-    - `dailyFeesUSD = 0` 時 `compoundSignal = false`，不顯示門檻
-    - `state.capital` 統一改用 `positionValueUSD`（現值），不用 `initialCapital`
-
 - [ ] **Aerodrome Gauge Emissions APR**：TVL 修正已完成（`_fetchAerodromeTVL` 鏈上讀 token balance）。仍需補充 AERO Token 排放部分：
   - `gauge.rewardRate()` → 每秒 AERO 排放量
   - `gauge.totalSupply()` → 已質押 LP 總量
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
-- [ ] **優化 Telegram 通知訊息**：統一快訊與完整報告的告警顯示，避免重要警示僅出現在完整報告。實作重點：
-  - **快訊補齊告警**：目前快訊只有穿倉 + 可複利；應補充 `driftWarning`（DRIFT）、`redAlert`（RED_ALERT）、`highVolatilityAvoid`（HIGH_VOLATILITY_AVOID）告警，格式與完整報告一致
-  - **告警去重**：完整報告在同週期已送快訊的情況下，可省略快訊已推播過的告警，或保留（視使用者偏好決定）
-  - **格式確認清單**：
-    - 快訊：`⚠️ #tokenId 穿倉`、`✅ #tokenId 可複利 $X`、`⚠️ #tokenId DRIFT 重疊 X%`、`🚨 #tokenId RED_ALERT`
-    - 完整報告倉位區塊：`🚨 RED_ALERT`、`⚠️ HIGH_VOLATILITY_AVOID`、`⚠️ DRIFT 重疊 X% | 💡 strategyName`（現已有）
-  - **告警優先序**：穿倉 > RED_ALERT > DRIFT > HIGH_VOLATILITY_AVOID > 可複利
-
-- [ ] **`/compact` 簡化訊息模式**：開啟後每個倉位壓縮為約 2 行（倉位價值、淨損益、未領取、健康分），省略持倉數量、Breakeven 天數、再平衡建議等次要欄位。實作重點：
-  - `UserConfig` 新增 `compactMode?: boolean`
-  - `configCommands.ts` 新增 `/compact` toggle 指令
-  - `formatter.ts` 的 `buildTelegramPositionBlock` 新增 `compact?: boolean` 參數
-  - `reportBuilder.ts` 從 `appState.userConfig.compactMode` 讀取並傳入
 
 ### P2 🟡 中優先（排程中）
 
@@ -390,7 +372,6 @@ EOQ Threshold    = sqrt(2 × P × G × Fee_Rate_24h)
 
 - [ ] **PositionScanner.getPoolFromTokens 不驗證 token pair**：L476 只比對 fee + dex，不驗證 token0/token1 地址。若未來出現同 DEX 同 fee 但不同 token pair 的池子會誤配。應同時比對 token 地址
 
-- [ ] **RiskManager.ilBreakevenDays 未按倉位流動性佔比計算**：使用整池 `dailyFeesUSD` 做分母，大池小倉位的 breakeven 天數會過於樂觀。應按 `positionValueUSD / tvlUSD` 比例縮放
 
 - [ ] **stateManager `readJson` 無 schema 驗證**：L97 直接 `as PersistedState`，若 JSON 格式損毀會在後續程式碼拋出難以追蹤的錯誤。建議加 try-catch 包裝或 schema 驗證
 

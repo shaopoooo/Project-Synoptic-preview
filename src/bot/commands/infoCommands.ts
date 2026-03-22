@@ -55,6 +55,9 @@ export function registerInfoCommands(bot: Bot): void {
             `/invest — 列出所有倉位配置\n` +
             `/invest &lt;address&gt; &lt;tokenId&gt; &lt;amount&gt; &lt;dex&gt; — 同時設定本金 + 外部質押\n` +
             `  dex 可用值: ${dexList}\n\n` +
+            `<b>🖥 顯示設定</b>\n` +
+            `/compact — 切換簡化訊息模式（toggle）\n` +
+            `/config — 顯示所有當前設定值\n\n` +
             `<b>📖 說明</b>\n` +
             `/explain — 各項指標計算公式詳解\n` +
             `/help — 顯示本說明`;
@@ -79,7 +82,8 @@ export function registerInfoCommands(bot: Bot): void {
             `需幾天費用收益才能彌補目前 IL\n` +
             `IL ≥ 0 時顯示「盈利中」\n\n` +
             `<b>Compound Threshold (EOQ)</b>\n` +
-            `= √(2 × 本金 × Gas費 × 24h費率)\n` +
+            `= √(2 × 倉位現值 × Gas費)\n` +
+            `最佳複利間隔 = Threshold ÷ 日費收入（天數）\n` +
             `Unclaimed ✅ &gt; Threshold → 建議複利再投入\n` +
             `Unclaimed ❌ &lt; Threshold → 繼續等待累積\n\n` +
             `<b>獲利率</b>\n` +
