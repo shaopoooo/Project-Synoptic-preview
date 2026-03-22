@@ -152,7 +152,7 @@ export class PoolScanner {
             const sqrtPriceX96 = BigInt(slot0.sqrtPriceX96);
 
             // 2. Fetch Volume and TVL from DexScreener API as a free fallback
-            const dexRes = await axios.get(`https://api.dexscreener.com/latest/dex/pairs/base/${poolAddress}`, { 
+            const dexRes = await axios.get(`${config.API_URLS.DEXSCREENER_PAIRS}/${poolAddress}`, {
                 timeout: 8000,
                 headers: { 'User-Agent': config.USER_AGENT }
             });
@@ -337,8 +337,8 @@ export class PoolScanner {
             let dailyVolumeUSD = 0;
             try {
                 const dexRes = await axios.get(
-                    `https://api.dexscreener.com/latest/dex/pairs/base/${poolId}`,
-                    { 
+                    `${config.API_URLS.DEXSCREENER_PAIRS}/${poolId}`,
+                    {
                         timeout: 8000,
                         headers: { 'User-Agent': config.USER_AGENT }
                     }

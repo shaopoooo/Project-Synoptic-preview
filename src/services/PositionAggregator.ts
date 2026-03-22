@@ -171,6 +171,7 @@ export class PositionAggregator {
                 raw.isStaked, feeResult.depositorWallet,
                 bb?.aeroPrice || fallback.aeroPrice,
                 bb?.cakePrice || fallback.cakePrice,
+                feeResult.gaugeAddress,
             );
 
             return this.assemble({

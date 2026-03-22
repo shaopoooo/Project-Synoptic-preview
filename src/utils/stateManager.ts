@@ -94,7 +94,17 @@ function migrateToUserConfig(raw: PersistedState): UserConfig | undefined {
 export async function loadState(): Promise<PersistedState | null> {
     try {
         if (!(await fs.pathExists(STATE_FILE))) return null;
-        const raw = await fs.readJson(STATE_FILE) as PersistedState;
+        let raw: PersistedState;
+        try {
+            raw = await fs.readJson(STATE_FILE) as PersistedState;
+        } catch (parseErr: any) {
+            log.error(`state.json 解析失敗，略過載入: ${parseErr.message}`);
+            return null;
+        }
+        if (typeof raw !== 'object' || raw === null) {
+            log.error('state.json 格式錯誤（非物件），略過載入');
+            return null;
+        }
 
         const userConfig = migrateToUserConfig(raw);
         if (userConfig) {

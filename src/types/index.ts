@@ -159,6 +159,7 @@ export interface FeeQueryResult {
     unclaimed1: bigint;
     depositorWallet: string;
     source: string;
+    gaugeAddress?: string;  // Aerodrome staked 時快取，供 fetchThirdPartyRewards 重用避免重複 RPC
 }
 
 /** Result from FeeCalculator.fetchThirdPartyRewards() */
@@ -268,11 +269,11 @@ export interface PoolVolEntry {
 // ─── Token prices ─────────────────────────────────────────────────────────────
 
 export interface TokenPrices {
-    ethPrice: number;
-    cbbtcPrice: number;
-    cakePrice: number;
-    aeroPrice: number;
-    fetchedAt: number;
+    ethPrice: number;    ethFetchedAt: number;
+    cbbtcPrice: number;  cbbtcFetchedAt: number;
+    cakePrice: number;   cakeFetchedAt: number;
+    aeroPrice: number;   aeroFetchedAt: number;
+    fetchedAt: number;   // 最近一次 fetch 嘗試時間（用於 TTL 判斷）
 }
 
 // ─── PnL / Portfolio ──────────────────────────────────────────────────────────

@@ -23,30 +23,42 @@ export async function fetchTokenPrices(): Promise<TokenPrices> {
             (pairs?.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0])?.priceUsd || '0'
         );
 
-    try {
-        const [wethRes, cbbtcRes, cakeRes, aeroRes] = await Promise.all([
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.WETH}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CBBTC}`, { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.CAKE}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
-            axios.get(`${config.API_URLS.DEXSCREENER_TOKENS}/${config.TOKEN_ADDRESSES.AERO}`,  { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }),
-        ]);
+    const req = (addr: string) => axios.get(
+        `${config.API_URLS.DEXSCREENER_TOKENS}/${addr}`,
+        { timeout: 5000, headers: { 'User-Agent': config.USER_AGENT } }
+    );
+    const [wethRes, cbbtcRes, cakeRes, aeroRes] = await Promise.allSettled([
+        req(config.TOKEN_ADDRESSES.WETH),
+        req(config.TOKEN_ADDRESSES.CBBTC),
+        req(config.TOKEN_ADDRESSES.CAKE),
+        req(config.TOKEN_ADDRESSES.AERO),
+    ]);
 
-        cache = {
-            ethPrice:   bestPrice(wethRes.data?.pairs),
-            cbbtcPrice: bestPrice(cbbtcRes.data?.pairs),
-            cakePrice:  bestPrice(cakeRes.data?.pairs),
-            aeroPrice:  bestPrice(aeroRes.data?.pairs),
-            fetchedAt:  Date.now(),
-        };
-        log.info(`💹 WETH $${cache.ethPrice.toFixed(0)}  cbBTC $${cache.cbbtcPrice.toFixed(0)}  CAKE $${cache.cakePrice.toFixed(3)}  AERO $${cache.aeroPrice.toFixed(3)}`);
-    } catch (e: any) {
-        log.warn(`fetch failed: ${e.message}${cache ? ' — using stale cache' : ''}`);
-    }
+    const now = Date.now();
+    const pick = (r: PromiseSettledResult<any>, name: string, prevPrice: number, prevTs: number): { price: number; ts: number } => {
+        if (r.status === 'fulfilled') return { price: bestPrice(r.value.data?.pairs), ts: now };
+        log.warn(`${name} price fetch failed: ${r.reason?.message} — keeping ${prevPrice > 0 ? `$${prevPrice}` : 'zero'}`);
+        return { price: prevPrice, ts: prevTs };
+    };
 
-    return cache ?? { ethPrice: 0, cbbtcPrice: 0, cakePrice: 0, aeroPrice: 0, fetchedAt: 0 };
+    const prev = cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
+    const eth   = pick(wethRes,  'WETH',  prev.ethPrice,   prev.ethFetchedAt);
+    const btc   = pick(cbbtcRes, 'cbBTC', prev.cbbtcPrice, prev.cbbtcFetchedAt);
+    const cake  = pick(cakeRes,  'CAKE',  prev.cakePrice,  prev.cakeFetchedAt);
+    const aero  = pick(aeroRes,  'AERO',  prev.aeroPrice,  prev.aeroFetchedAt);
+    cache = {
+        ethPrice: eth.price,     ethFetchedAt: eth.ts,
+        cbbtcPrice: btc.price,   cbbtcFetchedAt: btc.ts,
+        cakePrice: cake.price,   cakeFetchedAt: cake.ts,
+        aeroPrice: aero.price,   aeroFetchedAt: aero.ts,
+        fetchedAt: now,
+    };
+    log.info(`💹 WETH $${cache.ethPrice.toFixed(0)}  cbBTC $${cache.cbbtcPrice.toFixed(0)}  CAKE $${cache.cakePrice.toFixed(3)}  AERO $${cache.aeroPrice.toFixed(3)}`);
+
+    return cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
 }
 
 /** 同步讀取快取（不觸發 API），無快取時回傳全零。 */
 export function getTokenPrices(): TokenPrices {
-    return cache ?? { ethPrice: 0, cbbtcPrice: 0, cakePrice: 0, aeroPrice: 0, fetchedAt: 0 };
+    return cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
 }

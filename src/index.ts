@@ -213,8 +213,10 @@ async function runRiskManager() {
 
     // Log snapshots here — after both BBEngine and RiskManager have enriched the positions,
     // so positions.log reflects correct Health Score, Drift %, and Breakeven values.
-    const bbForLog = Object.values(appState.bbs)[0] ?? null;
-    positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol);
+    const bbForLog = appState.positions[0]
+        ? (appState.bbs[appState.positions[0].poolAddress.toLowerCase()] ?? null)
+        : null;
+    await positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol);
   } catch (error) {
     log.error(`RiskManager: ${error}`);
   }

@@ -362,20 +362,15 @@ compoundIntervalDays = Threshold / dailyFeesUSD
   - **時間窗口**：5 分鐘 vs 15 分鐘，影響誤報率
   - 實作時新增 `ToxicFlowDetector`，`RiskAnalysis` 新增 `toxicFlowWarning` 欄位
 
-- [ ] **PoolScanner DexScreener URL 統一使用 `config.API_URLS`**：`fetchPoolStats` L154 與 `_fetchV4PoolStats` L276 的 DexScreener URL 直接硬編碼，應改用 `config.API_URLS.DEXSCREENER_PAIRS`
+- [ ] **EOQ gas 成本乘數（`/gas` 指令）**：Base 網路實際 gas 極低（約 $0.005～$0.05），`DEFAULT_GAS_COST_USD=$1.5` 的 fallback 使 compound 門檻偏高。實作要點：
+  - `fetchGasCostUSD()` 回傳型別從 `number` 改為 `GasCostResult { usd: number; gweiPerUnit: number; gasUnits: number; gasCostETH: number; ethPrice: number; isFallback: boolean }`，快取結構同步更新
+  - `UserConfig.gasMultiplier`（預設 1.0），乘上 `gasCostResult.usd` 後傳入 `RiskManager.analyzePosition` 與 `PositionAggregator`
+  - `/gas` 無參數：顯示目前 gas 明細（`maxFeePerGas`、gas units、ETH price、原始 USD、乘數、最終有效值）與 EOQ 門檻試算
+  - `/gas <multiplier>` 設定乘數（允許範圍 0.01～10）；持久化至 `userConfig.gasMultiplier`；`/config` 顯示目前乘數值
 
 - [ ] **PoolScanner V3/V4 APR 計算邏輯提取共用函式**：`fetchPoolStats` 與 `_fetchV4PoolStats` 有 ~30 行重複的 volume blending + APR 計算邏輯，應提取為 `_computeAprFromVolume(tvlUSD, volData, feeTier)` 共用函式
 
-- [ ] **FeeCalculator `voter.gauges()` 同 cycle 重複呼叫**：`fetchUnclaimedFees` 和 `fetchThirdPartyRewards` 各自呼叫 `voter.gauges(poolAddress)`，同一個 tokenId 在同一個 cycle 內重複 RPC 2 次。應在 caller 層快取結果或將 gauge address 傳入參數
-
-- [ ] **PositionScanner.logSnapshots 同步 I/O**：L318 `fs.appendFileSync`（同步 I/O），多倉位下可能短暫阻塞事件循環。建議改為 `await fs.appendFile`
-
 - [ ] **PositionScanner.getPoolFromTokens 不驗證 token pair**：L476 只比對 fee + dex，不驗證 token0/token1 地址。若未來出現同 DEX 同 fee 但不同 token pair 的池子會誤配。應同時比對 token 地址
-
-
-- [ ] **stateManager `readJson` 無 schema 驗證**：L97 直接 `as PersistedState`，若 JSON 格式損毀會在後續程式碼拋出難以追蹤的錯誤。建議加 try-catch 包裝或 schema 驗證
-
-- [ ] **TelegramBot `/pool add` fee 輸入格式不一致**：使用者輸入百分比（如 `0.05`），但 `constants.ts POOLS` 的 fee 格式為小數（如 `0.0005`），容易混淆。應在指令說明中明確標注，或自動偵測並轉換
 
 ### P3 🔵 有依賴鏈（需按序執行）
 
@@ -445,8 +440,6 @@ compoundIntervalDays = Threshold / dailyFeesUSD
 
 - [ ] **PositionRecord 型別拆分**：目前 27 個欄位超大，可考慮拆成 `PositionCore` + `PositionRisk` + `PositionMetadata` 子型別，降低認知負擔
 - [ ] **統一 RPC provider 機制**：`rpcProvider`（FallbackProvider）僅在 `fetchGasCostUSD` 使用，其他地方用 `nextProvider()`（round-robin），兩套機制共存不一致
-- [ ] **`tokenPrices.ts` 個別錯誤處理**：四個平行 DexScreener API 呼叫使用 `Promise.all`，一個失敗全部失敗；應改 `Promise.allSettled` 讓部分失敗時其餘幣價仍可更新
-- [ ] **`index.ts bbForLog` 只取第一個 BB**：L226 `Object.values(appState.bbs)[0]` 在多池情境下 log 顯示的 BB 可能是錯誤的池。應改為按 position 關聯的 pool 取對應 BB
 - [ ] **stateManager 建立空 WalletEntry 的 hack**：L64-72 使用 `ucUpsertPosition` + 清空 `positions` 的方式不直觀，建議新增 `ucAddWallet(cfg, address)` 專用函式
 - [ ] **型別強化**：`BBResult.regime` 改為 string literal union；`ScanRequest.dex` 改為 `Dex` 型別；`PositionRecord.currentPriceStr` 考慮改為 `number`
 

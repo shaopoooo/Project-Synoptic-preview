@@ -86,12 +86,12 @@ export const constants = {
     // ── Core Pools (Base Network) ─────────────────────────────────────────
     // 新增池子只需在此加一筆；PoolScanner 與 PositionScanner 均從這裡讀取。
     POOLS: [
-        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001  },
-        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005  },
-        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3'     as const, fee: 0.0005  },
-        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3'     as const, fee: 0.003   },
-        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome'     as const, fee: 0.000085 }, // tickSpacing=1
-        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003   },
+        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001 },
+        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005 },
+        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3' as const, fee: 0.0005 },
+        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
+        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome' as const, fee: 0.000085 }, // tickSpacing=1
+        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003 },
         { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
@@ -99,25 +99,25 @@ export const constants = {
     // Single source of truth for ERC-20 decimal places.
     // All normalization (raw BigInt → float) must read from here.
     TOKEN_DECIMALS: {
-        WETH:  18,
-        ETH:   18,
+        WETH: 18,
+        ETH: 18,
         cbBTC: 8,
-        CAKE:  18,
-        AERO:  18,
+        CAKE: 18,
+        AERO: 18,
     } as Record<string, number>,
 
     // ── Display Precision ─────────────────────────────────────────────────
     // Centralised toFixed() values — all display formatting must read from here.
     FMT: {
-        PRICE:         8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
-        TOKEN_AMOUNT:  6,   // normalised token qty in log lines (CAKE, AERO, etc.)
-        USD_WHOLE:     0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
-        USD_TENTH:     1,   // USD to $0.1         (PnL, unclaimed total, APR log)
-        USD_CENTS:     2,   // USD to $0.01        (fee detail per token, gas cost, investment)
-        USD_MILLI:     3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
-        PCT_TENTH:     1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
+        PRICE: 8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
+        TOKEN_AMOUNT: 6,   // normalised token qty in log lines (CAKE, AERO, etc.)
+        USD_WHOLE: 0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
+        USD_TENTH: 1,   // USD to $0.1         (PnL, unclaimed total, APR log)
+        USD_CENTS: 2,   // USD to $0.01        (fee detail per token, gas cost, investment)
+        USD_MILLI: 3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
+        PCT_TENTH: 1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
         PCT_HUNDREDTH: 2,   // % to 0.01           (Telegram APR ranking, ROI / profit rate)
-        FEE_TIER:      4,   // fee tier display    ("0.0085%")
+        FEE_TIER: 4,   // fee tier display    ("0.0085%")
     },
 
     // ── Math Config ───────────────────────────────────────────────────────
@@ -159,9 +159,9 @@ export const constants = {
     // Used by feeTierToTickSpacing() in utils/math.ts.
     FEE_TIER_TICK_SPACING: {
         0.000085: 1,
-        0.00009:  1,
-        0.0001:   1,
-        0.003:    60,
+        0.00009: 1,
+        0.0001: 1,
+        0.003: 60,
     } as Record<number, number>,
     FEE_TIER_TICK_SPACING_DEFAULT: 10,   // covers 0.05% and other pools
 

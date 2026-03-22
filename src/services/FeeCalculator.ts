@@ -36,6 +36,8 @@ export class FeeCalculator {
         let unclaimed1 = 0n;
         let source = 'unknown';
 
+        let cachedGaugeAddress: string | undefined;
+
         if (dex === 'Aerodrome') {
             try {
                 if (isStaked) {
@@ -44,6 +46,7 @@ export class FeeCalculator {
                         () => voter.gauges(poolAddress),
                         'aero.voter.gauges'
                     );
+                    cachedGaugeAddress = canonicalGauge;
                     log.info(`🏛  #${tokenId} owner=${owner.slice(0, 10)}  canonicalGauge=${canonicalGauge?.slice(0, 10) ?? 'none'}`);
 
                     let pendingFeesOk = false;
@@ -126,9 +129,12 @@ export class FeeCalculator {
         } else {
             // Uniswap / PancakeSwap
             try {
-                const collected = await npmContract.collect.staticCall(
-                    { tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 },
-                    { from: owner }
+                const collected = await rpcRetry(
+                    () => npmContract.collect.staticCall(
+                        { tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128 },
+                        { from: owner }
+                    ),
+                    `collect.staticCall #${tokenId}`,
                 );
                 unclaimed0 = BigInt(collected[0]);
                 unclaimed1 = BigInt(collected[1]);
@@ -142,7 +148,7 @@ export class FeeCalculator {
             }
         }
 
-        return { unclaimed0, unclaimed1, depositorWallet, source };
+        return { unclaimed0, unclaimed1, depositorWallet, source, gaugeAddress: cachedGaugeAddress };
     }
 
     /**
@@ -158,6 +164,7 @@ export class FeeCalculator {
         depositorWallet: string,
         aeroPrice: number,
         cakePrice: number,
+        gaugeAddress?: string,  // 由 fetchUnclaimedFees 傳入，避免同 cycle 重複呼叫 voter.gauges()
     ): Promise<RewardsQueryResult> {
         let unclaimed2 = 0n;
         let fees2USD = 0;
@@ -167,11 +174,14 @@ export class FeeCalculator {
         // AERO rewards (Aerodrome staked)
         if (dex === 'Aerodrome' && isStaked && depositorWallet) {
             try {
-                const voter = new ethers.Contract(config.AERO_VOTER_ADDRESS, config.AERO_VOTER_ABI, nextProvider());
-                const canonicalGauge: string = await rpcRetry(
-                    () => voter.gauges(poolAddress),
-                    'aero.voter.gauges.earned'
-                );
+                let canonicalGauge = gaugeAddress;
+                if (!canonicalGauge) {
+                    const voter = new ethers.Contract(config.AERO_VOTER_ADDRESS, config.AERO_VOTER_ABI, nextProvider());
+                    canonicalGauge = await rpcRetry(
+                        () => voter.gauges(poolAddress),
+                        'aero.voter.gauges.earned'
+                    );
+                }
                 if (canonicalGauge && canonicalGauge !== ethers.ZeroAddress) {
                     const gauge = new ethers.Contract(canonicalGauge, config.AERO_GAUGE_ABI, nextProvider());
                     const earned: bigint = await gauge.earned(depositorWallet, tokenId);

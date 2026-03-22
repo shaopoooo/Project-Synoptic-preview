@@ -306,7 +306,7 @@ export class PositionScanner {
      * Optional: Generate a text report of positions to a log file.
      * Call this at the end of the analysis pipeline.
      */
-    logSnapshots(positions: PositionRecord[], bb?: BBResult | null, kLow?: number, kHigh?: number) {
+    async logSnapshots(positions: PositionRecord[], bb?: BBResult | null, kLow?: number, kHigh?: number) {
         if (positions.length === 0) return;
         const outputs = positions.map(pos => buildLogPositionBlock(pos, TOKEN_DECIMALS, bb));
 
@@ -314,8 +314,8 @@ export class PositionScanner {
         const logContent = header + '\n\n' + outputs.join('\n\n') + '\n\n';
 
         const logDir = path.join(__dirname, '../../logs');
-        fs.ensureDirSync(logDir);
-        fs.appendFileSync(path.join(logDir, 'positions.log'), logContent);
+        await fs.ensureDir(logDir);
+        await fs.appendFile(path.join(logDir, 'positions.log'), logContent);
         log.info(`✅ positions.log written  ${positions.length} position(s)`);
     }
 
