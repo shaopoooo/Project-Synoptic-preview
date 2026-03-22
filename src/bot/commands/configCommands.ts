@@ -135,4 +135,49 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
         const label = subCmd === 'flash' ? '快訊' : '完整報告';
         ctx.reply(`✅ ${label}間隔已設為 <b>${fmtInterval(minutes)}</b>（下個週期生效）`, { parse_mode: 'HTML' });
     });
+
+    bot.command('compact', async (ctx) => {
+        const current = appState.userConfig.compactMode ?? false;
+        const newMode = !current;
+        const newCfg = { ...appState.userConfig, compactMode: newMode };
+        if (deps.onUserConfigChange) await deps.onUserConfigChange(newCfg);
+        ctx.reply(`✅ 簡化模式已${newMode ? '開啟' : '關閉'}（下次完整報告生效）`);
+    });
+
+    bot.command('config', (ctx) => {
+        const cfg = appState.userConfig;
+        const scan    = cfg.intervalMinutes           ?? config.DEFAULT_INTERVAL_MINUTES;
+        const flash   = cfg.flashIntervalMinutes      ?? config.DEFAULT_FLASH_INTERVAL_MINUTES;
+        const full    = cfg.fullReportIntervalMinutes ?? config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES;
+        const sortBy  = cfg.sortBy ?? 'size';
+        const kLow    = appState.bbKLowVol;
+        const kHigh   = appState.bbKHighVol;
+        const compact = cfg.compactMode ? '開啟' : '關閉';
+
+        const walletLines = (cfg.wallets ?? []).map(w => {
+            const short = `${w.address.slice(0, 6)}…${w.address.slice(-4)}`;
+            return `  ${short}  ${w.positions?.length ?? 0} 個倉位`;
+        }).join('\n') || '  （無）';
+
+        const poolsLine = (cfg.pools && cfg.pools.length > 0)
+            ? cfg.pools.map(p => `  ${p.address.slice(0, 8)}… (${p.dex})`).join('\n')
+            : '  使用預設池清單';
+
+        const msg =
+            `⚙️ <b>目前設定</b>\n\n` +
+            `<b>排程</b>\n` +
+            `<code>掃描間隔　　 ${fmtInterval(scan)}</code>\n` +
+            `<code>快訊間隔　　 ${fmtInterval(flash)}</code>\n` +
+            `<code>完整報告間隔 ${fmtInterval(full)}</code>\n\n` +
+            `<b>顯示</b>\n` +
+            `<code>排序鍵　 ${config.SORT_LABELS[sortBy]}</code>\n` +
+            `<code>簡化模式 ${compact}</code>\n\n` +
+            `<b>BB k 值</b>\n` +
+            `<code>低波動 k_low  = ${kLow}</code>\n` +
+            `<code>高波動 k_high = ${kHigh}</code>\n\n` +
+            `<b>監測錢包（${cfg.wallets?.length ?? 0} 個）</b>\n${walletLines}\n\n` +
+            `<b>自訂池清單</b>\n${poolsLine}`;
+
+        ctx.reply(msg, { parse_mode: 'HTML' });
+    });
 }

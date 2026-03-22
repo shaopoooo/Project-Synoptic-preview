@@ -41,7 +41,6 @@ export interface PositionState {
     tickUpper: number;
     unclaimedFees: number;
     cumulativeIL: number;
-    feeRate24h: number;
 }
 
 export interface RiskAnalysis {
@@ -49,6 +48,7 @@ export interface RiskAnalysis {
     driftWarning: boolean;
     compoundThreshold: number;
     compoundSignal: boolean;
+    compoundIntervalDays: number | null; // 最佳複利間隔天數 = threshold / dailyFeesUSD；dailyFeesUSD=0 時為 null
     healthScore: number;
     ilBreakevenDays: number;
     redAlert: boolean;
@@ -239,6 +239,7 @@ export interface UserConfig {
     fullReportIntervalMinutes?: number; // 完整報告間隔（分鐘），預設 1440；必須 ≥ flashIntervalMinutes 且為 10 倍數
     bbKLowVol?: number;     // BB k 值（低波動市），預設由 config.BB_K_LOW_VOL
     bbKHighVol?: number;    // BB k 值（高波動市），預設由 config.BB_K_HIGH_VOL
+    compactMode?: boolean;  // 簡化訊息模式，開啟時每倉位壓縮為約 2 行
 }
 
 // ─── Report snapshots ─────────────────────────────────────────────────────────

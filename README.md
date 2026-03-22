@@ -146,7 +146,7 @@ src/
 └── utils/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
     ├── math.ts                 # BigInt 固定精度數學工具
-    ├── formatter.ts            # 文字格式化工具（compactAmount、formatPositionLog）
+    ├── formatter.ts            # 文字格式化工具（compactAmount、buildTelegramPositionBlock 等）；只接收 raw 數值，不含運算邏輯
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + fetchGasCostUSD()
     ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore 工具
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）
@@ -197,66 +197,86 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 
 ## Telegram 推播格式
 
-每 5 分鐘推播單一合併報告，所有倉位依選定排序鍵由大到小排列：
+### 快訊（預設每 60 分鐘）
 
 ```
-[2026-03-07 10:00] 倉位監控報告 (2 個倉位 | 排序: 倉位大小 ↓)
+📡 [14:30] 快訊
+💱 ETH $2,150 · BTC $70,273 · CAKE $1.370 · AERO $0.320
+💼 總倉位 $20,200 · 未領取 $6.72
+💰 獲利 +$276.82 (+1.38%) 🟢
+🪙 持倉 20200U
+   0.823 WETH(1770U) · 0.0₃412 cbBTC(2905U)
+   3208 USDC(3208U) · 1240 AERO(397U)
+📈 本週期手續費 +$1.23 (vs 13:30)
+✅ #1675918 可複利 $4.62
+⚠️ #56328282 DRIFT 重疊 71.3%
+```
+
+### 完整報告（預設每 1440 分鐘）
+
+所有倉位依選定排序鍵由大到小排列：
+
+```
+[2026-03-22 14:30] 倉位監控報告 (2 個倉位 | 排序: 倉位大小 ↓)
 
 📊 總覽  2 倉位 · 2 錢包
-💼 總倉位 $20,200  |  本金 $18,000  |  Unclaimed $6.7
-💱 ETH $2,053  BTC $70,387  CAKE $1.380  AERO $0.324
+💼 總倉位 $20,200  ·  本金 $18,000  ·  未領取 $6.72
+💱 ETH $2,150 · BTC $70,273 · CAKE $1.370 · AERO $0.320
 💰 總獲利 +$276.8 (+1.38%) 🟢
+📅 差異 倉位 +$12.5 · 未領取 +$0.30 · 獲利 +$8.2
 
 ━━ #1 PancakeSwap 0.01% ━━
 👛 0xaBcD...1234 · #1675918
 ⏳ 開倉 4天3小時
-💹 當前 0.02921 | Low Vol (震盪市)
+💹 當前 0.02921 · Low Vol
  ├ 你的 0.02803 ~ 0.03054
  └ 建議 0.02628 ~ 0.03213
-💼 倉位 $12,400 | 本金 $10,000 | 健康 94/100
+💼 倉位 $12,400 · 本金 $10,000 · 健康 94/100
 📈 區間 APR 335.8% (效率 5.0×)
-⌛  Breakeven 盈利中 · 獲利 +1.82%
-💸 淨損益 +$18.2 🟢 | 無常損失 -$13.0 🔴
-🪙 0.0₃2719 WETH | 0.0₅774 cbBTC
-🔄 未領取手續費 $4.62 ✅ > $0.1
+⌛ 收支 盈利中 · 獲利 +1.82%
+📅 差異 倉位 +$12.5 · 未領取 +$0.30 · 獲利 +$8.2
+💸 損益 +$18.2 🟢 · 無常損失 -$13.0 🔴
+🪙 持倉 0.0₃2719 WETH · 0.0₅774 cbBTC
+🔄 未領取 $4.62 ✅ > $0.1
      0.0₃2719 WETH ($0.56)
      0.0₅774 cbBTC ($0.54)
 
 ━━ #2 Aerodrome 0.0085% ━━
 👛 0xdEfA...5678 · #56328282 🔒
 ⏳ 開倉 1天0小時
-💹 當前 0.02905 | High Vol (趨勢市)
+💹 當前 0.02905 · High Vol
  ├ 你的 0.02700 ~ 0.03100
  └ 建議 0.02550 ~ 0.03300
-💼 倉位 $7,800 | 本金 $8,000 | 健康 61/100
-⌛  Breakeven 22天
-💸 淨損益 -$95.0 🔴
-🪙 0.1513 WETH | 0.0₂581 cbBTC
-🔄 未領取手續費 $2.10 ❌ < $5.8
-⚠️ DRIFT 重疊 71.3% (建議依 BB 重建倉)
+💼 倉位 $7,800 · 本金 $8,000 · 健康 61/100
+⌛ 收支 22天
+💸 損益 -$95.0 🔴
+🪙 持倉 0.1513 WETH · 0.0₂581 cbBTC
+🔄 未領取 $2.10 ❌ < $5.8
+⚠️ DRIFT 重疊 71.3% · 💡 縮窄區間 (Gas $0.80)
 
 📊 各池收益排行:
-🥇 PancakeSwap 0.01% — APR 15.43%(手續費7.45%+農場7.98%) → 區間 77.2% | TVL $7,612K ◀ 你的倉位
-🥈 Aerodrome 0.0085% — APR 29.4% → 區間 147.0% | TVL $987K ◀ 你的倉位
-🥉 Uniswap 0.05% — APR 18.6% → 區間 93.0% | TVL $543K
+🥇 PancakeSwap 0.01% — APR 15.43%(手續費7.45%+農場7.98%) → 區間 77.2% · TVL $7,612K ◀ 你的倉位
+🥈 Aerodrome 0.0085% — APR 29.4% → 區間 147.0% · TVL $987K ◀ 你的倉位
+🥉 Uniswap 0.05% — APR 18.6% → 區間 93.0% · TVL $543K
 
 ⌛ 資料更新時間:
-- Pool: 10:00 | Position: 10:00
-- BB Engine: 10:00 | Risk: 10:00
+- Pool: 14:25 · Position: 14:28
+- BB Engine: 14:20 · Risk: 14:28
 📐 BB k: low=1.8  high=2.5
 ```
 
 **選用欄位（有條件才顯示）：**
-- `💱` 幣價行：有任意 BBResult 時顯示即時 ETH / BTC / CAKE / AERO 價格
-- `⏳ 開倉`：需透過 `/invest` 設定本金且倉位有建倉時間戳；`· 獲利 +X.XX%` 在本金已設時顯示
+- `📅  差異`：第二次以後的完整報告才出現，顯示 vs 上次完整報告的變化量（總覽一行 + 每倉位一行）
+- `⏳ 開倉`：需有建倉時間戳；`· 獲利 +X.XX%` 需設定本金
 - `🔒`：倉位 NFT 已質押至 Gauge / MasterChef（`isStaked = true`）
-- `無常損失`：在 `💸 淨損益` 同行，僅當初始本金已設時顯示
-- `🪙 持倉數量`：LP 倉位中實際持有的 token0 / token1 數量，由 sqrtPrice 數學計算，使用下標零緊湊格式
-- 未領取手續費逐幣明細：各幣種金額 > 0 時顯示，使用下標零緊湊格式（如 `0.0₃2719 WETH`）
-- `⚠️ RED_ALERT`：IL Breakeven Days > 30 天，建議減倉
-- `⚠️ HIGH_VOLATILITY_AVOID`：當前頻寬 > 2× 30D 平均頻寬，建議觀望
-- `📈 區間 APR`：有 BB 且非 fallback 時顯示；`inRangeApr = poolApr × 資金效率乘數`，乘數公式 `1 / (√(BB上軌/SMA) - √(BB下軌/SMA))`
+- `無常損失`：在 `💸 損益` 同行，僅當初始本金已設時顯示
+- `🪙 持倉`：LP 倉位中實際持有的 token0 / token1 數量，使用下標零緊湊格式
+- `🔄` 逐幣明細：各幣種金額 > 0 時顯示
+- `📈 區間 APR`：有 BB 且非 fallback 時顯示；`inRangeApr = poolApr × 資金效率乘數`
+- `⚠️ RED_ALERT`：累計 IL 為負且 Breakeven Days > 30 天（盈利中不觸發）
+- `⚠️ HIGH_VOLATILITY_AVOID`：當前頻寬 > 2× 30D 平均頻寬
 - `⚠️ DRIFT`：BB 重疊度 < 80%，附再平衡策略名稱與 Gas 估算
+- `💡 移倉回本 N 天`：池排行中，若切換到更高 APR 池的回本天數 ≤ 30 天才顯示
 
 ### Telegram 指令
 
@@ -273,6 +293,8 @@ PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
 | `/report full <分鐘>` | 設定完整報告間隔（須 ≥ 快訊間隔，且為 10 倍數，預設 1440） |
 | `/bbk` | 查看目前 BB k 值（low / high） |
 | `/bbk <low> <high>` | 調整 BB 帶寬乘數，下個週期生效並持久化（例：`/bbk 1.8 2.5`） |
+| `/compact` | 切換簡化訊息模式（toggle）：開啟時完整報告每倉位僅顯示 2 行核心數據 |
+| `/config` | 顯示所有當前設定值（排程、排序、BB k 值、錢包清單） |
 | `/explain` | 顯示所有指標的計算公式說明（含 BB k 值、再平衡策略） |
 | `/wallet` | 列出所有已監測錢包 |
 | `/wallet add <address>` | 新增監測錢包 |
