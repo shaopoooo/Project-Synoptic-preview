@@ -428,6 +428,31 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 
 ---
 
+## 外部 API 評估紀錄
+
+### CoinMarketCap DEX API（2026-03 研究）
+
+評估是否能取代 GeckoTerminal + DexScreener，結論：**不建議替換，現況已是最優組合**。
+
+| 需求 | GeckoTerminal（現用） | DexScreener（現用） | CMC DEX API |
+|------|----------------------|---------------------|-------------|
+| Pool OHLCV（daily, 30d） | ✅ 免費，已驗證 | ❌ 無 | ⚠️ 有端點但 response schema 未驗證 |
+| Pool TVL | ✅ `reserve_in_usd` 明確 | ✅ `liquidity.usd` | ⚠️ 有 `liquidity` 欄位，是否等於 TVL 未確認 |
+| 24h Pool Volume | ✅ 主要來源 | ✅ fallback | ⚠️ 可能有，欄位名稱未確認 |
+| Token Price（WETH/cbBTC/CAKE/AERO） | ❌ 無 | ✅ `/tokens/{addr}` | ✅ `/v2/quotes/latest`，功能最成熟 |
+| Base network 支援 | ✅ | ✅ | ✅ DEXScan 已收錄 Base |
+| CL Pool 成交量準確性 | ✅ 主因選用 | ⚠️ 常漏算 | ❓ 未知 |
+| 免費額度 | 30 req/min，無上限 | 慷慨免費 | 10,000 credits/月（嚴格限制） |
+
+**關鍵問題：**
+- **TVL 不確定**：CMC 的 `liquidity` 欄位語意不明，可能是市場深度而非鎖倉 TVL，直接影響 APR 計算公式 `APR = vol × feeTier / TVL × 365`
+- **費用**：免費層 10,000 credits/月遠不足，以目前掃描頻率估計需 Startup 方案（$79/月）；GeckoTerminal 免費無上限
+- **CL Pool 成交量**：是否有 DexScreener 同樣的漏算問題未知，這正是選用 GeckoTerminal 為主要來源的原因
+
+**替代路線**：若未來 GeckoTerminal 開始限速或收費，優先考慮 CoinGecko 付費 API（同一家公司，端點格式相同，只是提高 rate limit），而非改用 CMC。
+
+---
+
 ## 動態布林通道（BBEngine）
 
 | 市場狀態 | 條件 | 預設 k 值 |

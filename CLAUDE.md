@@ -344,6 +344,10 @@ compoundIntervalDays = Threshold / dailyFeesUSD
   - 公式：`emissionApr = (rewardRate × 86400 × 365 × aeroPrice) / (totalSupply × lpPriceUSD)`
   - `PoolStats` 新增 `emissionApr?: number`；Telegram 池排行格式改為 `手續費 X% + 排放 Y%`
 
+- [ ] **Aerodrome 質押倉位 unclaimed fees 顯示修正**：NFT 質押至 Gauge 後，手續費（token0/token1）由 Gauge 持有，持有者**無法直接領取**，只能領取 AERO 排放獎勵（`gauge.earned()`）。目前 `FeeCalculator` 的 Aerodrome staked fallback 鏈可能仍嘗試讀取手續費並顯示非零值，造成誤導。修正重點：
+  - `isStaked = true` 且 `dex = 'Aerodrome'` 時，強制將 `unclaimedFees0 / unclaimedFees1` 設為 0，`unclaimedFeesUSD` 僅計入 AERO 獎勵的 USD 價值
+  - Telegram 報告的 `🔄 未領取` 行應說明「質押中，僅可領 AERO 獎勵」或隱藏 token0/token1 明細
+
 
 ### P2 🟡 中優先（排程中）
 

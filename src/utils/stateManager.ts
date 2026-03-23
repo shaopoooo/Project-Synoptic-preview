@@ -145,6 +145,7 @@ export async function saveState(
     priceBuffer: Record<string, Record<string, number>>,
     bandwidthWindows?: Record<string, number[]>,
     userConfig?: UserConfig,
+    stakeDiscoveryLastBlock?: Record<string, number>,
 ): Promise<void> {
     try {
         await fs.ensureDir(path.dirname(STATE_FILE));
@@ -153,6 +154,7 @@ export async function saveState(
             volCachePool: snapshotCache(poolVolCache),
             priceBuffer,
             bandwidthWindows,
+            stakeDiscoveryLastBlock,
             userConfig,
         };
         // 原子寫入：先寫暫存檔，成功後 rename，避免 SIGINT 截斷導致 JSON 損毀

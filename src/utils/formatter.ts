@@ -1,4 +1,5 @@
 import { PositionRecord, PoolStats, BBResult, RiskAnalysis, TokenPrices } from '../types';
+import type { CalcResult } from '../services/PositionCalculator';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 import { normalizeRawAmount } from './math';
@@ -451,6 +452,60 @@ export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record
         lines.push(`  [!] REBALANCE: ${strategy} (drift ${rb.driftPercent > 0 ? '+' : ''}${rb.driftPercent.toFixed(FMT.PCT_TENTH)}%)`);
     }
     lines.push('─'.repeat(44));
+
+    return lines.join('\n');
+}
+
+// ─── /calc 開倉試算報告 ───────────────────────────────────────────────────────
+
+export function buildCalcReport(r: CalcResult): string {
+    const dex = r.pool.dex;
+    const feePct = `${(r.pool.feeTier * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
+    const totalApr = (r.pool.apr + (r.pool.farmApr ?? 0)) * 100;
+    const lowerPct = ((r.lowerPrice - r.currentPrice) / r.currentPrice * 100).toFixed(1);
+    const upperPct = ((r.upperPrice - r.currentPrice) / r.currentPrice * 100).toFixed(1);
+    const rangeSourceLabel = r.rangeSource === 'BB' ? 'BB' : r.rangeSource === 'user' ? '自訂' : '預設 ±5%';
+
+    const lines: string[] = [
+        `📊 <b>開倉試算 — 池 #${r.poolRank}</b>`,
+        `🏊 ${dex} ${feePct}  APR <b>${totalApr.toFixed(FMT.PCT_HUNDREDTH)}%</b>`,
+        ``,
+        `💰 資金: <b>${r.capital.toFixed(4)}</b> token0`,
+        `📍 當前價: <b>${r.currentPrice.toFixed(FMT.PRICE)}</b>`,
+        `📐 區間: ${lowerPct}% ~ +${upperPct}%  (${rangeSourceLabel})`,
+        `   Pa=${r.lowerPrice.toFixed(FMT.PRICE)}  Pb=${r.upperPrice.toFixed(FMT.PRICE)}`,
+        `⚡ 資金效率: <b>${r.capitalEfficiency.toFixed(1)}×</b>`,
+        `💵 估算日費: <b>${r.dailyFeesToken0.toFixed(6)}</b> token0/day`,
+        ``,
+        `<b>⬇️ 下跌場景（token0 本位 IL）</b>`,
+    ];
+
+    for (const s of r.downScenarios) {
+        const ilStr = s.ilToken0 < 0
+            ? `-${Math.abs(s.ilToken0).toFixed(6)}`
+            : `+${s.ilToken0.toFixed(6)}`;
+        const dayStr = s.breakevenDays !== null
+            ? `回本 ${s.breakevenDays.toFixed(1)} 天`
+            : '已盈利';
+        lines.push(`  ${s.label} (${s.priceChangePct.toFixed(1)}%): IL=${ilStr}  ${dayStr}`);
+    }
+
+    lines.push(``, `<b>⬆️ 上漲場景（token0 本位 IL）</b>`);
+
+    for (const s of r.upScenarios) {
+        const ilStr = s.ilToken0 < 0
+            ? `-${Math.abs(s.ilToken0).toFixed(6)}`
+            : `+${s.ilToken0.toFixed(6)}`;
+        const dayStr = s.breakevenDays !== null
+            ? `回本 ${s.breakevenDays.toFixed(1)} 天`
+            : '已盈利';
+        const pctStr = s.priceChangePct >= 0 ? `+${s.priceChangePct.toFixed(1)}` : s.priceChangePct.toFixed(1);
+        lines.push(`  ${s.label} (${pctStr}%): IL=${ilStr}  ${dayStr}`);
+    }
+
+    if (r.rangeSource === 'fallback') {
+        lines.push(``, `⚠️ 無 BB 資料，使用預設 ±5% 區間`);
+    }
 
     return lines.join('\n');
 }

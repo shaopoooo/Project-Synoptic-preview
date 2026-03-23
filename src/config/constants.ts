@@ -50,6 +50,8 @@ export const constants = {
     // 25M → 3M（約 70 天）：stopOnFirstMatch 從新往舊掃，近期建倉幾乎立即命中；
     // 超過 70 天的舊倉位開倉時間會顯示 N/A，建議手動設定 INITIAL_INVESTMENT_<tokenId>。
     BLOCK_LOOKBACK: 3_000_000,
+    // 質押偵測回看範圍：約 5 天（Base block time ≈ 2s，5d × 86400 / 2 = 216,000 blocks）
+    STAKE_DISCOVERY_LOOKBACK_BLOCKS: 216_000,
     BASE_BLOCK_TIME_MS: 2_000,
     COLLECTED_FEES_MAX_FAILURES: 3,   // 連續失敗上限，超過即中止本次掃描
     COLLECTED_FEES_CHUNK_DELAY_MS: 200,  // 500-block chunk 數量增加，delay 略拉長降低 rate-limit 風險

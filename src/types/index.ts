@@ -346,6 +346,7 @@ export interface PersistedState {
     volCachePool: Record<string, PoolVolEntry>;
     priceBuffer:  Record<string, Record<string, number>>;  // poolAddr → hourTs → price
     bandwidthWindows?: Record<string, number[]>;            // poolAddr → rolling 30D bandwidth window
+    stakeDiscoveryLastBlock?: Record<string, number>;       // wallet → 最後一次質押偵測掃到的 block，用於增量掃描
     userConfig?: UserConfig;                                // 錢包 + 倉位配置（含 openTimestamp、sortBy、intervalMinutes、bbK、closedTokenIds）
 
     // ── 舊版欄位（僅供 loadState 遷移讀取，新版不再寫入） ──

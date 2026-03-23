@@ -9,6 +9,7 @@ import { registerConfigCommands } from './commands/configCommands';
 import { registerWalletCommands } from './commands/walletCommands';
 import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
+import { registerCalcCommands } from './commands/calcCommands';
 import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportService';
 
 const log = createServiceLogger('TelegramBot');
@@ -48,6 +49,7 @@ export class TelegramBotService {
         registerWalletCommands(this.bot, this.deps);
         registerPoolCommands(this.bot, this.deps);
         registerPositionCommands(this.bot, this.deps);
+        registerCalcCommands(this.bot);
     }
 
     public async startBot() {

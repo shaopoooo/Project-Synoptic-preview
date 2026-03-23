@@ -26,13 +26,14 @@ let currentIntervalMinutes = config.DEFAULT_INTERVAL_MINUTES;
 let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 
 let isCycleRunning = false;
+let isStakeScanRunning = false;
 
 // ── 報告排程計時器（不持久化，重啟後第一個週期必送完整報告）────────────────
 let lastFlashAt = 0;
 let lastFullReportAt = 0;
 
 function triggerStateSave() {
-  return saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig);
+  return saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig, appState.stakeDiscoveryLastBlock);
 }
 
 function buildCronJob() {
@@ -49,6 +50,8 @@ function buildCronJob() {
     } finally {
       isCycleRunning = false;
     }
+    // 質押偵測：低優先級，isCycleRunning 已 false 後才啟動
+    runStakeDiscovery().catch((e) => log.error(`StakeDiscovery (cycle): ${e}`));
   });
 }
 
@@ -222,6 +225,25 @@ async function runRiskManager() {
   }
 }
 
+// ── 質押偵測（低優先級，在主週期完成後才執行）────────────────────────────────
+async function runStakeDiscovery() {
+  if (isStakeScanRunning) return;
+  if (isCycleRunning) {
+    log.info('StakeDiscovery: 主週期執行中，延後至下次觸發');
+    return;
+  }
+  isStakeScanRunning = true;
+  log.info('🔍 StakeDiscovery: 開始掃描質押倉位');
+  try {
+    await positionScanner.scanStakedPositions();
+    await triggerStateSave();
+  } catch (e) {
+    log.error(`StakeDiscovery: ${e}`);
+  } finally {
+    isStakeScanRunning = false;
+  }
+}
+
 // ── 標準週期執行序列（cron 與 FAST_STARTUP 共用）────────────────────────────
 // 順序：TokenPrice → Pool → BB → Position → Risk → Bot → save → fillTimestamps
 // 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
@@ -319,6 +341,7 @@ async function main() {
       getPriceBufferSnapshot(),
       bandwidthTracker.snapshot(),
       cfg,
+      appState.stakeDiscoveryLastBlock,
     );
     const wallets = ucWalletAddresses(cfg);
     const tracked = ucTrackedPositions(cfg);
@@ -343,6 +366,7 @@ async function main() {
     restoreState(savedState);
     restorePriceBuffer(savedState.priceBuffer ?? {});
     bandwidthTracker.restore(savedState.bandwidthWindows ?? {});
+    appState.stakeDiscoveryLastBlock = savedState.stakeDiscoveryLastBlock ?? {};
     // closedTokenIds migration happens in loadState(); restoreFromUserConfig() is called below
     log.info('✅ state restored from previous session');
   }
@@ -438,7 +462,10 @@ async function main() {
       Promise.resolve()
         .then(runCycle)
         .catch((e) => log.error(`FastStartup cycle: ${e}`))
-        .finally(() => { isCycleRunning = false; });
+        .finally(() => {
+          isCycleRunning = false;
+          runStakeDiscovery().catch((e) => log.error(`StakeDiscovery (fast): ${e}`));
+        });
     }, 5000);
   }
 

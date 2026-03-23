@@ -155,6 +155,9 @@ class AppState {
      */
     userConfig: UserConfig = buildUserConfigFromEnv();
 
+    /** wallet → 最後一次質押偵測掃到的 block（增量掃描用，持久化至 state.json） */
+    stakeDiscoveryLastBlock: Record<string, number> = {};
+
     readonly lastUpdated = {
         poolScanner: 0,
         positionScanner: 0,
