@@ -4,6 +4,15 @@ import type { Log } from 'ethers';
 
 export type Dex = 'UniswapV3' | 'UniswapV4' | 'PancakeSwapV3' | 'PancakeSwapV2' | 'Aerodrome';
 
+/**
+ * BB 帶寬型態判斷結果。
+ * - squeeze:   帶寬收縮（< avg30D × BB_SQUEEZE_THRESHOLD）→ 盤整蓄勢，最佳建倉時機
+ * - expansion: 帶寬放大（> avg30D × BB_EXPANSION_THRESHOLD）→ 波動擴張，謹慎建倉
+ * - trending:  expansion 且價格緊貼上/下軌 → 單邊強趨勢，建議觀望
+ * - normal:    正常波動範圍
+ */
+export type BBPattern = 'squeeze' | 'expansion' | 'trending' | 'normal';
+
 export interface PoolStats {
     id: string;
     dex: Dex;
@@ -33,6 +42,22 @@ export interface BBResult {
     maxPriceRatio: number;
     isFallback?: boolean;
     regime: string;
+
+    // ── Step 2 以後由 BBEngine 填入（optional until BBEngine upgrade）──────────
+    /** (upperPrice - lowerPrice) / sma，無量綱帶寬；越大代表波動越劇烈 */
+    bandwidth?: number;
+    /** 計算 BB 所用的 1H 標準差（price-ratio 單位），供 MC 引擎直接使用 */
+    stdDev1H?: number;
+    /**
+     * SMA 短期斜率：(avg(最後 5H) - avg(前 5H)) / avg(前 5H)
+     * 正值 = 上升趨勢；負值 = 下降趨勢；0 ≈ 橫盤
+     */
+    smaSlope?: number;
+    /**
+     * BB 帶寬型態，由 BBEngine 對比 avg30DBandwidth 後判斷。
+     * 需要 BandwidthTracker.getAvg() 資料，啟動初期可能為 undefined。
+     */
+    bbPattern?: BBPattern;
 }
 
 export interface PositionState {
@@ -124,6 +149,7 @@ export interface PositionMeta {
     bbFallback: boolean;
     isStaked: boolean;
     rebalance?: RebalanceSuggestion;
+    tranchePlan?: TranchePlan;
     initialCapital?: number | null;
     openedDays?: number;
     openedHours?: number;
@@ -264,6 +290,98 @@ export interface PoolVolEntry {
     avg7d: number;
     source: string;
     expiresAt: number;
+}
+
+/** GeckoTerminal 180D 歷史報酬率快取（Bootstrap 抽樣用） */
+export interface HistoricalReturnsEntry {
+    /** 每日 log return：ln(close_i / close_{i-1})，按時間順序（舊→新） */
+    returns: number[];
+    expiresAt: number;
+}
+
+// ─── Monte Carlo simulation ───────────────────────────────────────────────────
+
+/**
+ * 蒙地卡羅模擬結果（歷史 Bootstrap，10,000 條路徑 × 14 天 × 每步 1 小時）。
+ * 所有 P&L 欄位為比率形式（Interpretation B：純 ETH HODL 為基準）。
+ * PnL_ratio = (fees_token0 + V_LP_token0(P_T)) / capital - 1
+ * 例：0.05 = 5%，-0.03 = -3%。
+ */
+export interface MCSimResult {
+    numPaths: number;        // 模擬路徑數（通常 10,000）
+    horizon: number;         // 模擬天數（通常 14；內部以小時步進）
+    /** 10,000 條路徑的平均 PnL 比率（費收 + LP 現值 / capital - 1） */
+    mean: number;
+    /** 中位數 PnL 比率 */
+    median: number;
+    /** 平均在範圍內的天數（衡量資金效率的利用率） */
+    inRangeDays: number;
+    /** 分位數（比率形式） */
+    p5: number;
+    p25: number;
+    p50: number;
+    p75: number;
+    p95: number;
+    /**
+     * Conditional Value at Risk 95%（CVaR）：最差 5% 情況的平均 PnL 比率。
+     * 負值代表損失；越負越危險。
+     * 通過條件：cvar95 > -(expectedFeesRatio14d × CVAR_SAFETY_FACTOR)
+     */
+    cvar95: number;
+    /** 5th percentile 分界點（VaR 95%，比率形式） */
+    var95: number;
+    /** 此區間是否通過 CVaR 門檻（可建倉） */
+    go: boolean;
+    /** go = false 時的說明（例如「CVaR 超出費收保護墊 2.3×」） */
+    noGoReason?: string;
+}
+
+// ─── 70/30 Tranche Layout ─────────────────────────────────────────────────────
+
+/** 主倉（Core，70%）：緊貼現價的窄區間，專注收取高 APR */
+export interface CoreTranche {
+    capital: number;             // 資金量（token0 單位）
+    ratio: number;               // 佔總資金比例（0.7）
+    sigma: number;               // 區間 σ 倍數（預設 1.5）
+    lowerPrice: number;
+    upperPrice: number;
+    capitalEfficiency: number;
+    dailyFeesToken0: number;
+    mc: MCSimResult;
+}
+
+/**
+ * Buffer 倉（30%）：單邊防禦深水區，平時不收費。
+ * 主倉被打穿後才被動進入 range，減緩 IL 衝擊。
+ */
+export interface BufferTranche {
+    capital: number;             // 資金量（token0 單位）
+    ratio: number;               // 佔總資金比例（0.3）
+    /** 防禦方向：down = 跌勢防守（最常用）；up = 漲勢防守 */
+    direction: 'down' | 'up';
+    sigmaRange: [number, number]; // [near, far]，例如 [3, 5]
+    lowerPrice: number;
+    upperPrice: number;
+    /** Buffer 正常不在 range，capitalEfficiency 接近 0 */
+    capitalEfficiency: number;
+    /**
+     * 主倉被打穿後的 MC 模擬（以 buffer 區間 + 剩餘天數評估）。
+     * 啟動前為 null。
+     */
+    mc: MCSimResult | null;
+}
+
+/** 70/30 佈局完整計畫 */
+export interface TranchePlan {
+    core: CoreTranche;
+    buffer: BufferTranche;
+    combined: {
+        totalDailyFees: number;   // 預期日費收（正常市況，僅主倉貢獻）
+        /** 加權 CVaR：core.mc.cvar95 × 0.7 + buffer baseline × 0.3 */
+        cvar95: number;
+        go: boolean;
+        noGoReason?: string;
+    };
 }
 
 // ─── Token prices ─────────────────────────────────────────────────────────────

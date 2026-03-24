@@ -100,7 +100,7 @@ src/
 │   └── index.ts                # 共用型別定義（PositionRecord、BBResult、RiskAnalysis、RawPosition 等）
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
-│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas、TOKEN_DECIMALS、FMT 顯示精度、FEE_TIER_TICK_SPACING、MAX_UINT128/Q128/U256、Rebalance 係數）
+│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas、TOKEN_DECIMALS、FMT 顯示精度、FEE_TIER_TICK_SPACING、MAX_UINT128/Q128/U256、Rebalance 係數、MC 參數、Kill Switch 門檻、70/30 Tranche 參數）
 │   ├── abis.ts                 # 合約 ABI（NPM、Pool、Aero Voter/Gauge）
 │   └── index.ts                # 統一匯出入口
 ├── services/
@@ -112,10 +112,13 @@ src/
 │   ├── PositionAggregator.ts   # 倉位組裝 Pipeline（RawChainPosition → PositionRecord）
 │   ├── RiskManager.ts          # 風險評估（Health Score、IL Breakeven、EOQ 複利訊號）
 │   ├── PnlCalculator.ts        # 絕對 PNL、開倉資訊、組合總覽計算
-│   └── rebalance.ts            # 再平衡建議（純計算，不執行交易）
+│   ├── rebalance.ts            # 再平衡建議（純計算，不執行交易）
+│   ├── PositionCalculator.ts   # 開倉試算（V3 IL 數學 + async MC 整合）；exports computeL / computeInitialAmounts / computeLpValueToken0 / computeHodlValueToken0 供 MonteCarloEngine 使用
+│   └── MonteCarloEngine.ts     # 歷史 Bootstrap MC 引擎；exports runMCSimulation / calcCandidateRanges / calcTranchePlan70_30
 ├── bot/
 │   ├── TelegramBot.ts          # Telegram 指令處理與推播觸發
 │   ├── reportService.ts        # 報告資料協調層（計算總覽/delta/holdings/alerts，呼叫 formatter 輸出字串）
+│   ├── alertService.ts         # Kill Switch & 非對稱撤倉推播（checkMarketAlerts，4h cooldown LRU，由 runBotService 呼叫）
 │   └── commands/               # 各類 Telegram 指令模組
 ├── backtest/
 │   └── BacktestEngine.ts       # 歷史回測引擎
@@ -123,13 +126,13 @@ src/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
     ├── math.ts                 # BigInt 固定精度數學工具（normalizeAmount / normalizeRawAmount / tickToPrice / calculateCapitalEfficiency / feeTierToTickSpacing / sub256 / MAX_UINT128 / Q128 / U256）
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + nextProvider() + fetchGasCostUSD()
-    ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore
+    ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache、historicalReturnsCache）+ snapshot/restore
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）+ dex 命名自動遷移
     ├── BandwidthTracker.ts     # 30D 帶寬滾動窗口（update / snapshot / restore）
     ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
     ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol / userConfig）；re-exports WalletPosition / WalletEntry / UserConfig from types/
     ├── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol / TOKEN_DECIMALS）
-    └── formatter.ts            # 文字格式化工具；所有 toFixed 統一讀 `config.FMT.*`；只接收 raw 數值，不含運算邏輯。主要 exports：`compactAmount` / `buildTelegramPositionBlock` / `buildPositionDiffLine` / `buildSummaryBlock` / `buildPoolRankingBlock` / `buildTimestampBlock` / `buildFlashReport`（含 `FlashHolding` / `FlashAlert` / `PoolRankingRow` / `SummaryBlockData` 介面）
+    └── formatter.ts            # 文字格式化工具；所有 toFixed 統一讀 `config.FMT.*`；只接收 raw 數值，不含運算邏輯。主要 exports：`compactAmount` / `buildTelegramPositionBlock` / `buildPositionDiffLine` / `buildSummaryBlock` / `buildPoolRankingBlock` / `buildTimestampBlock` / `buildFlashReport` / `buildCalcReport`（含 `FlashHolding` / `FlashAlert` / `PoolRankingRow` / `SummaryBlockData` 介面）
 ```
 
 ### 核心資料流
@@ -179,7 +182,30 @@ appState.lastUpdated.* ← 各 runner 寫入時間戳
 - **下界保護**：`lowerPrice = max(sma - maxOffset, sma - k × stdDev)`，`maxOffset = sma × 10%`，禁止使用絕對數值夾值
 - **幣價快取**：同時取得 WETH / cbBTC / CAKE / AERO 四個價格（DexScreener，2 分鐘 TTL），存入 `BBResult`
 - **k 值**：`appState.bbKLowVol`（震盪市）/ `appState.bbKHighVol`（趨勢市），預設讀 `config.BB_K_LOW_VOL / BB_K_HIGH_VOL`，可透過 `/bbk` 即時調整；完整說明見 README.md
-- **關鍵函式**：`computeDynamicBB()` — 計算上下界 Tick 與價格
+- **BB Pattern 偵測**：`detectBBPattern(bandwidth, avg30D, currentPrice, sma, upperPrice, lowerPrice)` — 回傳 `'squeeze' | 'expansion' | 'trending' | 'normal'`；squeeze = bw < avg×0.7；expansion = bw > avg×1.5；trending = expansion + price 貼近上下軌
+- **SMA Slope**：最近 5H 均價 vs 前 5H 均價相對變化；`smaSlope >= SMA_SLOPE_TREND_THRESHOLD(0.003)` → buffer 方向為上
+- **180D 歷史報酬率**：`fetchHistoricalReturns(poolAddress, dex)` — 呼叫 GeckoTerminal `/ohlcv/day?limit=180`，計算每日 log-return；24h 快取；MonteCarloEngine 直接 import 此函式
+- **關鍵函式**：`computeDynamicBB()` — 計算上下界 Tick 與價格；`fetchHistoricalReturns()` — 歷史報酬率（MC 用）；`detectBBPattern()` — 市場狀態分類
+
+### PositionCalculator（`src/services/PositionCalculator.ts`）
+
+- **職責**：開倉試算（IL 場景表）+ 選擇性 Bootstrap MC 分析
+- **V3 IL 數學（exported）**：`computeL` / `computeInitialAmounts` / `computeLpValueToken0` / `computeHodlValueToken0`；`computeL` 支援三種初始價格狀況（in-range / P0>Pb OTM / P0<Pa OTM）；MonteCarloEngine 直接 import 這四個函式（避免重複實作）
+- **`calcOpenPosition(capital, rank, lowerPct, upperPct, runMC=false)`**：async；`runMC=true` 時執行 `calcCandidateRanges` + `calcTranchePlan70_30`，結果存於 `CalcResult.candidates / tranche`；MonteCarloEngine 使用延遲 import（`await import(...)`) 避免循環依賴
+
+### MonteCarloEngine（`src/services/MonteCarloEngine.ts`）
+
+- **核心思想**：不假設任何理論分佈，直接從 180 天真實歷史每日報酬率（有放回抽樣）生成 10,000 條未來價格路徑，天生攜帶胖尾效應
+- **`runMCSimulation(params)`**：Bootstrap MC → 分佈統計（mean / median / p5~p95 / CVaR₉₅ / VaR₉₅ / inRangeDays / go / noGoReason）；go 條件：`cvar95 > -(max(expectedFees, capital×1e-6) × CVAR_SAFETY_FACTOR)`
+- **`calcCandidateRanges(capital, pool, bb, sigmas=[1,2,3])`**：async；計算 ±1σ / ±2σ / ±3σ 三組候選區間的 MC EV；三組全 go=false → 建議空倉
+- **`calcTranchePlan70_30(totalCapital, pool, bb)`**：async；Core(70%)±1.5σ + Buffer(30%)單邊深水區（[-3σ,-5σ] 或 [+3σ,+5σ]，依 smaSlope 決定方向）；整體 go 由 Core 決定；Buffer P0=sma（OTM），computeL 以純 token0 初始化
+
+### alertService（`src/bot/alertService.ts`）
+
+- **職責**：Kill Switch & 非對稱撤倉 Telegram 推播；由 `runBotService()` 在每週期末呼叫
+- **`checkMarketAlerts(bbs, positions, pools, getAvg30D, sendAlert)`**：純參數化，無副作用（cooldown LRU 除外），方便測試
+- **Kill Switch**：`bb.bandwidth > avg30D × KILL_SWITCH_BANDWIDTH_FACTOR(2.5)` → 推播；4h cooldown per pool
+- **非對稱撤倉**：`pos.tranchePlan.buffer` 穿入 `ASYMMETRIC_UNWIND_PENETRATION(80%)` → 推播；4h cooldown per tokenId；需 `pos.tranchePlan` 存在（由 `/calc` 觸發 MC 後寫入）
 
 ### ChainEventScanner（`src/services/ChainEventScanner.ts`）
 
@@ -322,7 +348,48 @@ compoundIntervalDays = Threshold / dailyFeesUSD
 
 > P0 最緊急 → P4 待討論；完成後刪除條目，該優先級全空則標注 ✅
 
-### P0 🔴 ✅ 已完成
+### P0 🔴 開倉策略引擎（Phase 1）
+
+**目標**：透過 BBEngine + Bootstrap Monte Carlo 計算 CVaR-adjusted 最優開倉策略，cron 週期自動計算並存入 `appState.strategies`，`/calc` 讀取後輸出。
+
+#### Step 1 — Refactor：抽出 `src/runners/`
+
+- [ ] `src/runners/marketData.ts`：`runTokenPrice` + `runPoolScanner` + `runBBEngine`
+- [ ] `src/runners/positions.ts`：`runPositionScanner` + `runRiskManager`（含 Rebalance）
+- [ ] `src/runners/reporting.ts`：`runBotService` + 報告計時器（`lastFlashAt` / `lastFullReportAt` 移入此模組）
+- [ ] `src/runners/mcEngine.ts`：暫時空殼，Phase 1 實作於此
+- [ ] `src/index.ts` 精簡：只剩 setup / cron / `runCycle()` / `runStakeDiscovery` / `gracefulShutdown`
+
+#### Step 2 — MC 數學升級
+
+- [ ] `fetchHistoricalReturns`：改呼叫 `/ohlcv/hour?limit=720`（720H = 30 天 1H K 線）
+- [ ] `runOnePath`：移除 `x0/y0`，改用 `capital` 為分母；每步改為小時費收；`PnL_ratio = (fees_token0 + V_LP_token0) / capital - 1`
+- [ ] `runMCSimulation`：輸出改為比率形式（mean/CVaR 等皆為 %）；horizon 內部轉換為小時數
+- [ ] `constants.ts`：`HISTORICAL_RETURNS_DAYS` → `HISTORICAL_RETURNS_HOURS: 720`
+
+#### Step 3 — `OpeningStrategy` 型別 + `appState.strategies`
+
+- [ ] `types/index.ts`：新增 `OpeningStrategy` interface（含 optimalSigma / score / mc / tranche / killSwitch 狀態）
+- [ ] `AppState.ts`：新增 `strategies: Record<string, OpeningStrategy>`
+
+#### Step 4 — `runMCEngine()` 實作
+
+- [ ] `src/runners/mcEngine.ts`：cron 週期自動跑，sigma candidates `[0.5, 1.0, 1.5, 2.0, 2.5, 3.0]`；Score = mean / |CVaR₉₅|；選最優 sigma；建 70/30 分倉計畫；Kill Switch A/B 狀態機
+
+#### Step 5 — Kill Switch 告警狀態機
+
+- [ ] `src/bot/alertService.ts`：Kill Switch A（帶寬，轉換推播 + 4h 持續提醒）；Kill Switch B（MC All No-Go，純轉換推播）
+
+#### Step 6 — `/calc` 指令改版
+
+- [ ] `calcCommands.ts`：讀 `appState.strategies[pool]`；按使用者 capital 縮放比率結果；無策略時提示等待下一輪 cron
+- [ ] `formatter.ts`：`buildStrategyReport()` 輸出最優區間 + CVaR% + 分倉計畫
+- [ ] `/tranche [core% buffer%]` 指令：調整分倉比例，持久化至 `userConfig`
+
+#### Step 7 — 文件同步
+
+- [ ] `CLAUDE.md`：更新目錄結構、`runners/` 說明、`OpeningStrategy` 欄位、新指令
+- [ ] `README.md`：更新 `/calc`、`/tranche` 指令說明與環境變數
 
 ### P1 🟠 高優先（近期動工）
 

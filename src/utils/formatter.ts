@@ -507,5 +507,62 @@ export function buildCalcReport(r: CalcResult): string {
         lines.push(``, `⚠️ 無 BB 資料，使用預設 ±5% 區間`);
     }
 
+    // ── BB Pattern 狀態 ───────────────────────────────────────────────────────
+    if (r.bb?.bbPattern) {
+        const patternMap: Record<string, string> = {
+            squeeze:   '🔴 收縮（低波動蓄力，區間可能即將突破）',
+            expansion: '🟡 擴張（波動放大，謹慎建倉）',
+            trending:  '🟠 趨勢（單邊行情，建議縮小區間）',
+            normal:    '🟢 正常',
+        };
+        const bwStr = r.bb.bandwidth ? ` 帶寬 ${(r.bb.bandwidth * 100).toFixed(2)}%` : '';
+        lines.push(``, `📊 BB 狀態: ${patternMap[r.bb.bbPattern] ?? r.bb.bbPattern}${bwStr}`);
+    }
+
+    // ── Monte Carlo 候選區間 ──────────────────────────────────────────────────
+    if (r.candidates && r.candidates.length > 0) {
+        lines.push(``, `─────────────────────────`, `🎲 <b>蒙地卡羅分析</b>（${r.candidates[0].mc.numPaths.toLocaleString()} 路徑 × ${r.candidates[0].mc.horizon} 天）`);
+        const allNoGo = r.candidates.every(c => !c.mc.go);
+        if (allNoGo) {
+            lines.push(`🚫 三組區間 CVaR 均不通過，建議空倉觀望。`);
+        }
+        for (const c of r.candidates) {
+            const goTag = c.mc.go ? '✅ Go' : '❌ No-Go';
+            const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+            lines.push(
+                ``,
+                `±${c.sigma}σ  效率 ${c.capitalEfficiency.toFixed(1)}×  ${goTag}`,
+                `  區間 [${c.lowerPrice.toFixed(FMT.PRICE)}, ${c.upperPrice.toFixed(FMT.PRICE)}]`,
+                `  CVaR₉₅ ${pct(c.mc.cvar95)}  均值 ${pct(c.mc.mean)}  在範圍 ${c.mc.inRangeDays.toFixed(1)} 天`,
+            );
+            if (!c.mc.go && c.mc.noGoReason) {
+                lines.push(`  ⚠️ ${c.mc.noGoReason}`);
+            }
+        }
+    }
+
+    // ── 70/30 分倉計畫 ────────────────────────────────────────────────────────
+    if (r.tranche) {
+        const t = r.tranche;
+        const dirIcon = t.buffer.direction === 'down' ? '⬇️' : '⬆️';
+        const combinedGoTag = t.combined.go ? '✅ Go' : '❌ No-Go';
+        const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+
+        lines.push(
+            ``, `─────────────────────────`,
+            `📐 <b>70/30 分倉佈局</b>  整體 ${combinedGoTag}  合計 CVaR₉₅ ${pct(t.combined.cvar95)}`,
+            ``,
+            `  主倉 ${(t.core.ratio * 100).toFixed(0)}%  ${t.core.capital.toFixed(4)} token0  ±${t.core.sigma}σ  效率 ${t.core.capitalEfficiency.toFixed(1)}×`,
+            `  [${t.core.lowerPrice.toFixed(FMT.PRICE)}, ${t.core.upperPrice.toFixed(FMT.PRICE)}]  日費 ${t.core.dailyFeesToken0.toFixed(6)}  CVaR ${pct(t.core.mc.cvar95)}`,
+            ``,
+            `  緩衝倉 ${(t.buffer.ratio * 100).toFixed(0)}%  ${t.buffer.capital.toFixed(4)} token0  ${dirIcon} [-${t.buffer.sigmaRange[0]}σ, -${t.buffer.sigmaRange[1]}σ]  OTM 待機`,
+            `  [${t.buffer.lowerPrice.toFixed(FMT.PRICE)}, ${t.buffer.upperPrice.toFixed(FMT.PRICE)}]` +
+                (t.buffer.mc ? `  CVaR ${pct(t.buffer.mc.cvar95)}` : ''),
+        );
+        if (!t.combined.go && t.combined.noGoReason) {
+            lines.push(`  ⚠️ ${t.combined.noGoReason}`);
+        }
+    }
+
     return lines.join('\n');
 }

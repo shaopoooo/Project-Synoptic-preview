@@ -70,6 +70,35 @@ export const constants = {
     MIN_CANDLES_FOR_EWMA: 5,
     BANDWIDTH_WINDOW_MAX: 30 * 24 * 12, // 30D × 288 cycles/day (5-min interval) = 8640
 
+    // ── BB Pattern Detection ──────────────────────────────────────────────────
+    // 帶寬型態判斷閾值（相對於 avg30DBandwidth 的倍數）
+    BB_SQUEEZE_THRESHOLD: 0.7,          // bandwidth < avg30D × 0.7 → squeeze（盤整蓄勢）
+    BB_EXPANSION_THRESHOLD: 1.5,        // bandwidth > avg30D × 1.5 → expansion（波動放大）
+    // trending：expansion 且價格偏離 SMA > halfBand × 0.5（緊貼上/下軌）
+    BB_TRENDING_OFFSET_THRESHOLD: 0.5,
+    // SMA 斜率門檻：最後 5H vs 前 5H 均值變化 > ±0.3% 視為有方向性
+    SMA_SLOPE_TREND_THRESHOLD: 0.003,
+
+    // ── Monte Carlo Engine ────────────────────────────────────────────────────
+    HISTORICAL_RETURNS_HOURS: 720,                          // Bootstrap 抽樣用的歷史 1H K 線數（720H = 30 天）
+    HISTORICAL_RETURNS_CACHE_TTL_MS: 24 * 60 * 60 * 1000, // 歷史報酬率快取 TTL（24h）
+    MC_NUM_PATHS: 10_000,   // Bootstrap 模擬路徑數
+    MC_HORIZON_DAYS: 14,    // 模擬天數（內部轉換為小時數運算）
+    // CVaR 通過門檻：最壞 5% 損失不得超過 FACTOR × 預期 14 天費收（才允許建倉）
+    CVAR_SAFETY_FACTOR: 1.5,
+
+    // ── Kill Switch ────────────────────────────────────────────────────────────
+    KILL_SWITCH_BANDWIDTH_FACTOR: 2.5,              // bandwidth > avg30D × 此值 → 觸發 Kill Switch 告警
+    KILL_SWITCH_ALERT_COOLDOWN_MS: 4 * 60 * 60 * 1000, // 告警 cooldown（4h，避免震盪邊界反覆推播）
+    // 非對稱撤倉：價格穿入 buffer 區間此比例時推播告警（0.8 = 穿入 80%）
+    ASYMMETRIC_UNWIND_PENETRATION: 0.8,
+
+    // ── 70/30 Tranche Layout ──────────────────────────────────────────────────
+    TRANCHE_CORE_RATIO: 0.7,        // 主倉（Core）佔總資金比例
+    TRANCHE_CORE_SIGMA: 1.5,        // 主倉區間 σ 倍數（±1.5σ，緊貼現價、高 APR）
+    TRANCHE_BUFFER_SIGMA_NEAR: 3,   // Buffer 區間近端 σ（主倉穿倉後才被動進入 range）
+    TRANCHE_BUFFER_SIGMA_FAR: 5,    // Buffer 區間遠端 σ（極端行情防禦）
+
     // ── Scheduler ─────────────────────────────────────────────────────────────
     DEFAULT_INTERVAL_MINUTES: 10,          // 預設掃描排程間隔（分鐘），可透過 /interval 修改
     DEFAULT_FLASH_INTERVAL_MINUTES: 60,         // 預設快訊推播間隔（分鐘），可透過 /report flash 修改

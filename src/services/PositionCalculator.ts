@@ -4,7 +4,8 @@
  */
 import { appState } from '../utils/AppState';
 import { calculateCapitalEfficiency } from '../utils/math';
-import type { PoolStats, BBResult } from '../types';
+import type { PoolStats, BBResult, TranchePlan } from '../types';
+import type { RangeCandidateResult } from './MonteCarloEngine';
 
 export interface CalcScenario {
     label: string;
@@ -27,30 +28,49 @@ export interface CalcResult {
     dailyFeesToken0: number;  // 估算每日手續費（token0 units）
     downScenarios: CalcScenario[];
     upScenarios: CalcScenario[];
+    // ── Monte Carlo 結果（僅 runMC=true 且有 BB 資料時才填充）─────────────
+    candidates?: RangeCandidateResult[];  // ±1σ / ±2σ / ±3σ 候選區間 CVaR 評估
+    tranche?: TranchePlan;               // 70/30 分倉計畫
 }
 
 // ─── V3 IL Math ───────────────────────────────────────────────────────────────
+// 這些函式同時被 PositionCalculator 與 MonteCarloEngine 使用。
 
 /**
- * 給定 capital（token0）與區間 [Pa, Pb] 及當前價格 P0，計算 V3 流動性參數 L
+ * 計算 V3 流動性 L，支援三種初始價格狀況：
+ * - 在範圍內 (Pa ≤ P0 ≤ Pb)：雙幣初始化
+ * - 高於上界 (P0 > Pb)：純 token0（OTM Buffer 場景）
+ * - 低於下界 (P0 < Pa)：純 token1
  */
-function computeL(capital: number, P0: number, Pa: number, Pb: number): number {
-    const sqP0 = Math.sqrt(P0);
+export function computeL(capital: number, P0: number, Pa: number, Pb: number): number {
     const sqPa = Math.sqrt(Pa);
     const sqPb = Math.sqrt(Pb);
-    // capital = x0 + y0/P0 = L*(1/sqP0 - 1/sqPb) + L*(sqP0 - sqPa)/P0
+    if (P0 >= Pb) {
+        // 全部 token0：x = L × (1/√Pa - 1/√Pb)
+        const denom = 1 / sqPa - 1 / sqPb;
+        return denom > 0 ? capital / denom : 0;
+    }
+    if (P0 <= Pa) {
+        // 全部 token1：y = L × (√Pb - √Pa)，capital_token0 = y / P0
+        const denom = (sqPb - sqPa) / P0;
+        return denom > 0 ? capital / denom : 0;
+    }
+    // 在範圍內：雙幣
+    const sqP0 = Math.sqrt(P0);
     const denom = (1 / sqP0 - 1 / sqPb) + (sqP0 - sqPa) / P0;
-    if (denom <= 0) return 0;
-    return capital / denom;
+    return denom > 0 ? capital / denom : 0;
 }
 
 /**
- * 計算初始 token 數量
+ * 計算初始 token 數量（token0 + token1 原始單位）。
+ * 支援 P0 在範圍外的情況。
  */
-function computeInitialAmounts(L: number, P0: number, Pa: number, Pb: number): { x0: number; y0: number } {
-    const sqP0 = Math.sqrt(P0);
+export function computeInitialAmounts(L: number, P0: number, Pa: number, Pb: number): { x0: number; y0: number } {
     const sqPa = Math.sqrt(Pa);
     const sqPb = Math.sqrt(Pb);
+    if (P0 >= Pb) return { x0: L * (1 / sqPa - 1 / sqPb), y0: 0 };
+    if (P0 <= Pa) return { x0: 0, y0: L * (sqPb - sqPa) };
+    const sqP0 = Math.sqrt(P0);
     return {
         x0: L * (1 / sqP0 - 1 / sqPb),
         y0: L * (sqP0 - sqPa),
@@ -60,15 +80,12 @@ function computeInitialAmounts(L: number, P0: number, Pa: number, Pb: number): {
 /**
  * 計算 LP 在價格 P 時的價值（token0 單位）
  */
-function computeLpValueToken0(L: number, P: number, Pa: number, Pb: number): number {
+export function computeLpValueToken0(L: number, P: number, Pa: number, Pb: number): number {
     if (P <= Pa) {
-        // 全部是 token0
         return L * (1 / Math.sqrt(Pa) - 1 / Math.sqrt(Pb));
     } else if (P >= Pb) {
-        // 全部是 token1，換算回 token0
         return L * (Math.sqrt(Pb) - Math.sqrt(Pa)) / P;
     } else {
-        // 在範圍內
         const sqP = Math.sqrt(P);
         return L * (1 / sqP - 1 / Math.sqrt(Pb)) + L * (sqP - Math.sqrt(Pa)) / P;
     }
@@ -77,8 +94,8 @@ function computeLpValueToken0(L: number, P: number, Pa: number, Pb: number): num
 /**
  * 計算 HODL 在價格 P 時的價值（token0 單位）
  */
-function computeHodlValueToken0(x0: number, y0: number, P: number): number {
-    return x0 + y0 / P;
+export function computeHodlValueToken0(x0: number, y0: number, P: number): number {
+    return x0 + (P > 0 ? y0 / P : 0);
 }
 
 // ─── Main Calculator ──────────────────────────────────────────────────────────
@@ -106,13 +123,15 @@ function sortedPoolsByApr(): { pool: PoolStats; bb: BBResult | null; originalIdx
  * @param rank     APR 排名，從 1 開始（1 = 最高 APR）；預設 1
  * @param lowerPct 下限百分比，e.g. 5 = -5% from current；null = 使用 BB
  * @param upperPct 上限百分比，e.g. 5 = +5% from current；null = 使用 BB
+ * @param runMC    是否執行 Bootstrap 蒙地卡羅模擬（需要 BB 資料；耗時約 1–3 秒）
  */
-export function calcOpenPosition(
+export async function calcOpenPosition(
     capital: number,
     rank = 1,
     lowerPct: number | null = null,
     upperPct: number | null = null,
-): CalcResult | null {
+    runMC = false,
+): Promise<CalcResult | null> {
     const sorted = sortedPoolsByApr();
     if (sorted.length === 0) return null;
 
@@ -179,7 +198,7 @@ export function calcOpenPosition(
         makeScenario('上界 ×3', P0 * Math.pow(ratioUp, 3)),
     ];
 
-    return {
+    const base: CalcResult = {
         poolRank: idx + 1,
         pool,
         bb,
@@ -193,4 +212,18 @@ export function calcOpenPosition(
         downScenarios,
         upScenarios,
     };
+
+    // ── Monte Carlo（可選，需要 BB 資料）───────────────────────────────────────
+    if (runMC && bb) {
+        // 延遲 import 避免循環依賴（MonteCarloEngine → PositionCalculator → MonteCarloEngine）
+        const { calcCandidateRanges, calcTranchePlan70_30 } = await import('./MonteCarloEngine');
+        const [candidates, tranche] = await Promise.all([
+            calcCandidateRanges(capital, pool, bb).catch(() => undefined),
+            calcTranchePlan70_30(capital, pool, bb).catch(() => null),
+        ]);
+        if (candidates) base.candidates = candidates;
+        if (tranche)    base.tranche    = tranche;
+    }
+
+    return base;
 }

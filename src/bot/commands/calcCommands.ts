@@ -50,7 +50,10 @@ export function registerCalcCommands(bot: Bot): void {
             }
         }
 
-        const result = calcOpenPosition(capital, rank, lowerPct, upperPct);
+        // 告知使用者計算中（MC 模擬約 1–3 秒）
+        await ctx.reply('⏳ 計算中，請稍候...');
+
+        const result = await calcOpenPosition(capital, rank, lowerPct, upperPct, /* runMC= */ true);
         if (!result) {
             ctx.reply(`⚠️ 找不到第 ${rank} 高 APR 的池子資料。`);
             return;

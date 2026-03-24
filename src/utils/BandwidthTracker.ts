@@ -11,12 +11,24 @@ class BandwidthTracker {
 
     /** 新增本次週期的 bandwidth，回傳目前窗口均值（即 avg30DBandwidth）。 */
     update(poolKey: string, currentBandwidth: number): number {
-        if (!this.windows[poolKey]) this.windows[poolKey] = [];
-        this.windows[poolKey].push(currentBandwidth);
-        if (this.windows[poolKey].length > config.BANDWIDTH_WINDOW_MAX) {
-            this.windows[poolKey].shift();
+        const k = poolKey.toLowerCase();
+        if (!this.windows[k]) this.windows[k] = [];
+        this.windows[k].push(currentBandwidth);
+        if (this.windows[k].length > config.BANDWIDTH_WINDOW_MAX) {
+            this.windows[k].shift();
         }
-        const win = this.windows[poolKey];
+        const win = this.windows[k];
+        return win.reduce((s, v) => s + v, 0) / win.length;
+    }
+
+    /**
+     * 查詢指定 pool 的目前 30D 帶寬滾動均值，不修改窗口。
+     * 供 BBEngine 在計算 bbPattern 前讀取上一週期的均值。
+     * 窗口不存在或為空時回傳 null。
+     */
+    getAvg(poolKey: string): number | null {
+        const win = this.windows[poolKey.toLowerCase()];
+        if (!win || win.length === 0) return null;
         return win.reduce((s, v) => s + v, 0) / win.length;
     }
 
