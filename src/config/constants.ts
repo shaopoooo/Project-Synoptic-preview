@@ -208,6 +208,8 @@ export const constants = {
     REBALANCE_GAS_THRESHOLD_MULTIPLE: 2, // Gas 降級門檻乘數（unclaimed × 此值 > gas 才執行）
 
     // ── Telegram Bot ──────────────────────────────────────────────────────
+    CRITICAL_ALERT_COOLDOWN_MS: 30 * 60 * 1000, // 每類告警至多每 30 分鐘一次
+
     SORT_LABELS: {
         size: '倉位大小',
         apr: '年化報酬',

@@ -1,16 +1,16 @@
 import { ethers } from 'ethers';
 import { config } from '../config';
-import { appState, ucWalletAddresses, ucTrackedPositions, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
+import { appState, ucWalletAddresses, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet } from '../utils/AppState';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../utils/formatter';
-import { BBResult, RawChainPosition, Dex, NpmPositionData } from '../types';
-import { createServiceLogger, positionLogger } from '../utils/logger';
+import { BBResult, RawChainPosition, Dex, PositionRecord } from '../types';
+import { createServiceLogger } from '../utils/logger';
 import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { feeTierToTickSpacing } from '../utils/math';
-import { findMintTimestampMs } from './ChainEventScanner';
-import { PositionRecord } from '../types';
 import { TOKEN_DECIMALS } from '../utils/tokenInfo';
 import path from 'path';
 import fs from 'fs-extra';
+import { NpmContractReader } from './NpmContractReader';
+import { StakeDiscovery } from './StakeDiscovery';
+import { TimestampFiller } from './TimestampFiller';
 
 
 const log = createServiceLogger('PositionScanner');
@@ -22,6 +22,10 @@ export class PositionScanner {
     private syncedWallets = new Set<string>();
     /** 已確認關閉（liquidity=0）的 tokenId，O(1) 查詢用 */
     closedTokenIds = new Set<string>();
+
+    private chainFetcher = new NpmContractReader();
+    private stakeDiscovery = new StakeDiscovery();
+    private timestampFiller = new TimestampFiller();
 
     /**
      * 從 appState.userConfig 恢復已知倉位（跳過 chain scan）。
@@ -76,75 +80,19 @@ export class PositionScanner {
         };
     }
 
-    async syncFromChain(skipTimestampScan = false) {
+    async syncFromChain(_skipTimestampScan = false) {
         const walletAddresses = ucWalletAddresses(appState.userConfig);
         if (walletAddresses.length === 0) {
             log.info('no wallets configured, skipping chain sync');
             return;
         }
 
-        type Discovery = { tokenId: string; dex: Dex; ownerWallet: string };
-        const dexes: Dex[] = ['UniswapV3', 'PancakeSwapV3', 'Aerodrome', 'UniswapV4'];
-        const discovered: Discovery[] = [];
+        const { discovered, syncedWallets } = await this.chainFetcher.discoverFromChain(
+            walletAddresses, this.closedTokenIds
+        );
 
-        for (const walletAddress of walletAddresses) {
-            const wShort = `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}`;
-            log.info(`⛓  sync  ${wShort}`);
-
-            for (const dex of dexes) {
-                try {
-                    const npmAddress = config.NPM_ADDRESSES[dex];
-                    if (!npmAddress) continue;
-
-                    // V4 uses a separate ABI (getPoolAndPositionInfo instead of positions())
-                    const abi = dex === 'UniswapV4' ? config.V4_NPM_ABI : config.NPM_ABI;
-                    const npmContract = new ethers.Contract(npmAddress, abi, nextProvider());
-                    const balance = await rpcRetry(
-                        () => npmContract.balanceOf(walletAddress),
-                        `${dex}.balanceOf`
-                    );
-                    log.info(`📍 ${dex}  ${balance} NFT(s) found  ${wShort}`);
-
-                    for (let i = 0; i < Number(balance); i++) {
-                        const tokenId = await rpcRetry(
-                            () => npmContract.tokenOfOwnerByIndex(walletAddress, i),
-                            `${dex}.tokenOfOwnerByIndex(${i})`
-                        );
-                        const tokenIdStr = tokenId.toString();
-                        if (this.closedTokenIds.has(tokenIdStr)) {
-                            log.info(`  → #${tokenIdStr} (skipped — closed)`);
-                            continue;
-                        }
-                        log.info(`  → #${tokenIdStr}`);
-                        discovered.push({ tokenId: tokenIdStr, dex, ownerWallet: walletAddress });
-                    }
-                } catch (error) {
-                    log.error(`NPM.balanceOf failed  ${dex}  ${wShort}: ${error}`);
-                }
-            }
-
-            this.syncedWallets.add(walletAddress);
-        }
-
-        // 補入手動追蹤的 TokenId（鎖倉於 Gauge 等情境）
-        const discoveredIds = new Set(discovered.map(d => d.tokenId));
-        for (const tp of ucTrackedPositions(appState.userConfig)) {
-            if (discoveredIds.has(tp.tokenId)) continue;
-            log.info(`📍 manual  #${tp.tokenId} (${tp.dexType})`);
-            discovered.push({ tokenId: tp.tokenId, dex: tp.dexType, ownerWallet: tp.ownerWallet });
-        }
-
-        // 將新發現的倉位寫入 appState.userConfig，使 openTimestamp 等配置一併持久化
-        for (const d of discovered) {
-            if (this.closedTokenIds.has(d.tokenId)) continue;
-            appState.userConfig = ucUpsertPosition(
-                appState.userConfig, d.ownerWallet, d.tokenId,
-                { dexType: d.dex, externalStake: d.ownerWallet === 'manual' }
-            );
-        }
-
-        const activeDiscovered = discovered.filter(d => !this.closedTokenIds.has(d.tokenId));
-        this.positions = activeDiscovered.map(d =>
+        syncedWallets.forEach(w => this.syncedWallets.add(w));
+        this.positions = discovered.map(d =>
             this._makeSeedPosition(d.tokenId, d.dex, d.ownerWallet,
                 ucGetOpenTimestamp(appState.userConfig, d.tokenId))
         );
@@ -152,168 +100,10 @@ export class PositionScanner {
         log.info(`✅ chain sync done: ${this.positions.length} position(s) loaded`);
     }
 
-    /**
-     * 掃描 ERC-721 Transfer(from=wallet, to=stakingContract) 事件，自動發現質押倉位。
-     * 所有錢包合併為單次 OR-filter getLogs 掃描，避免 N 錢包 × M chunks 的重複消耗。
-     * 採增量掃描：首次用 STAKE_DISCOVERY_LOOKBACK_BLOCKS（約 3 天），之後只掃新 block。
-     */
     async scanStakedPositions(): Promise<void> {
         const walletAddresses = ucWalletAddresses(appState.userConfig);
         if (walletAddresses.length === 0) return;
-        await this._scanAllWalletsForStakes(walletAddresses);
-    }
-
-    private async _scanAllWalletsForStakes(walletAddresses: string[]): Promise<void> {
-        const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
-
-        let latestBlock: number;
-        try {
-            latestBlock = await rpcRetry(() => nextProvider().getBlockNumber(), 'getBlockNumber');
-        } catch {
-            log.warn(`StakeDiscovery: getBlockNumber failed, skipping`);
-            return;
-        }
-
-        // 所有錢包取最早的 fromBlock，統一掃描範圍
-        const fromBlock = walletAddresses.reduce((min, w) => {
-            const last = appState.stakeDiscoveryLastBlock[w.toLowerCase()] ?? 0;
-            const from = last > 0
-                ? last + 1
-                : Math.max(0, latestBlock - config.STAKE_DISCOVERY_LOOKBACK_BLOCKS);
-            return Math.min(min, from);
-        }, Infinity);
-
-        if (fromBlock > latestBlock) return;
-
-        const paddedWallets = walletAddresses.map(w => ethers.zeroPadValue(w.toLowerCase(), 32));
-        // topic1（from）→ 錢包地址映射，用於掃描結果分配
-        const walletByPadded = new Map(
-            walletAddresses.map(w => [ethers.zeroPadValue(w.toLowerCase(), 32).toLowerCase(), w])
-        );
-
-        const totalBlocks = latestBlock - fromBlock + 1;
-        const walletLabel = walletAddresses.map(w => w.slice(0, 8) + '…').join(', ');
-        log.info(`🔍 StakeDiscovery: 掃描 [${walletLabel}]，block ${fromBlock.toLocaleString()}–${latestBlock.toLocaleString()}（共 ${totalBlocks.toLocaleString()} blocks）`);
-
-        // 樂觀標記：掃描開始前先寫入 latestBlock，確保 gracefulShutdown 能存到最新進度
-        for (const w of walletAddresses) {
-            appState.stakeDiscoveryLastBlock[w.toLowerCase()] = latestBlock;
-        }
-
-        const knownIds = new Set(
-            appState.userConfig.wallets.flatMap(w => w.positions.map(p => p.tokenId))
-        );
-        let newFound = 0;
-
-        // ── PancakeSwap V3 → MasterChef ──────────────────────────────────────
-        const mcAddress = config.PANCAKE_MASTERCHEF_V3;
-        const pancakeNpm = config.NPM_ADDRESSES['PancakeSwapV3'];
-        if (mcAddress && pancakeNpm) {
-            const paddedMC = ethers.zeroPadValue(mcAddress.toLowerCase(), 32);
-            const logs = await this._getLogsChunked(
-                pancakeNpm, [TRANSFER_TOPIC, paddedWallets, paddedMC],
-                fromBlock, latestBlock, `PancakeStake [${walletLabel}]`,
-            );
-            for (const entry of logs) {
-                const tokenId = BigInt(entry.topics[3]).toString();
-                if (this.closedTokenIds.has(tokenId) || knownIds.has(tokenId)) continue;
-                const ownerWallet = walletByPadded.get(entry.topics[1].toLowerCase());
-                if (!ownerWallet) continue;
-                try {
-                    const mc = new ethers.Contract(mcAddress, config.PANCAKE_MASTERCHEF_V3_ABI, nextProvider());
-                    const info = await mc.userPositionInfos(tokenId);
-                    if (info.user.toLowerCase() !== ownerWallet.toLowerCase()) continue;
-                } catch (e: any) {
-                    log.warn(`StakeDiscovery: userPositionInfos(#${tokenId}) failed — ${e.message?.slice(0, 80)}`);
-                    continue;
-                }
-                log.info(`🔍 #${tokenId} 自動偵測質押（PancakeSwapV3 MasterChef @ ${ownerWallet.slice(0, 8)}…）`);
-                appState.userConfig = ucUpsertPosition(appState.userConfig, ownerWallet, tokenId, { dexType: 'PancakeSwapV3', externalStake: true });
-                knownIds.add(tokenId);
-                newFound++;
-            }
-        }
-
-        // ── Aerodrome → Gauge ────────────────────────────────────────────────
-        const aeroNpm = config.NPM_ADDRESSES['Aerodrome'];
-        if (aeroNpm) {
-            const voter = new ethers.Contract(config.AERO_VOTER_ADDRESS, config.AERO_VOTER_ABI, nextProvider());
-            const aeroPools = ucPoolList(appState.userConfig).filter(p => p.dex === 'Aerodrome');
-            const gaugeAddresses: string[] = [];
-            for (const pool of aeroPools) {
-                try {
-                    const gauge: string = await voter.gauges(pool.address);
-                    if (gauge && gauge !== ethers.ZeroAddress) gaugeAddresses.push(gauge.toLowerCase());
-                } catch {}
-            }
-            if (gaugeAddresses.length > 0) {
-                const paddedGauges = gaugeAddresses.map(g => ethers.zeroPadValue(g, 32));
-                const logs = await this._getLogsChunked(
-                    aeroNpm, [TRANSFER_TOPIC, paddedWallets, paddedGauges],
-                    fromBlock, latestBlock, `AeroStake [${walletLabel}]`,
-                );
-                for (const entry of logs) {
-                    const tokenId = BigInt(entry.topics[3]).toString();
-                    if (this.closedTokenIds.has(tokenId) || knownIds.has(tokenId)) continue;
-                    const ownerWallet = walletByPadded.get(entry.topics[1].toLowerCase());
-                    if (!ownerWallet) continue;
-                    const gaugeAddr = ethers.getAddress('0x' + entry.topics[2].slice(26));
-                    try {
-                        const gauge = new ethers.Contract(gaugeAddr, config.AERO_GAUGE_ABI, nextProvider());
-                        const isStaked: boolean = await gauge.stakedContains(ownerWallet, BigInt(tokenId));
-                        if (!isStaked) continue;
-                    } catch (e: any) {
-                        log.warn(`StakeDiscovery: stakedContains(#${tokenId}) failed — ${e.message?.slice(0, 80)}`);
-                        continue;
-                    }
-                    log.info(`🔍 #${tokenId} 自動偵測質押（Aerodrome Gauge ${gaugeAddr.slice(0, 10)} @ ${ownerWallet.slice(0, 8)}…）`);
-                    appState.userConfig = ucUpsertPosition(appState.userConfig, ownerWallet, tokenId, { dexType: 'Aerodrome', externalStake: true });
-                    knownIds.add(tokenId);
-                    newFound++;
-                }
-            }
-        }
-
-        log.info(`🔍 StakeDiscovery 完成${newFound > 0 ? `，新增 ${newFound} 質押倉位` : '，未發現新質押倉位'}`);
-    }
-
-    /**
-     * getLogs 分塊掃描，連續失敗超過 3 次即中止。
-     */
-    private async _getLogsChunked(
-        address: string,
-        topics: (string | string[])[],
-        fromBlock: number,
-        toBlock: number,
-        label = 'getLogs',
-    ): Promise<ethers.Log[]> {
-        const results: ethers.Log[] = [];
-        let consecutiveFailures = 0;
-        const totalBlocks = toBlock - fromBlock + 1;
-        let lastProgressLog = fromBlock;
-        const PROGRESS_INTERVAL = 10_000;
-        for (let from = fromBlock; from <= toBlock; from += config.BLOCK_SCAN_CHUNK) {
-            const to = Math.min(from + config.BLOCK_SCAN_CHUNK - 1, toBlock);
-            try {
-                const chunk = await rpcRetry(
-                    () => nextProvider().getLogs({ address, topics, fromBlock: from, toBlock: to }),
-                    `getLogs(${from}-${to})`,
-                );
-                results.push(...chunk);
-                consecutiveFailures = 0;
-            } catch (e: any) {
-                consecutiveFailures++;
-                log.warn(`_getLogsChunked ${from}–${to} failed (${consecutiveFailures}/3): ${e.message.slice(0, 80)}`);
-                if (consecutiveFailures >= 3) break;
-            }
-            if (to - lastProgressLog >= PROGRESS_INTERVAL) {
-                const scanned = to - fromBlock + 1;
-                const pct = Math.floor(scanned / totalBlocks * 100);
-                log.info(`🔍 ${label}: ${scanned.toLocaleString()}/${totalBlocks.toLocaleString()} blocks (${pct}%)`);
-                lastProgressLog = to;
-            }
-        }
-        return results;
+        await this.stakeDiscovery.scan(walletAddresses, this.closedTokenIds);
     }
 
     /** Returns the current in-memory tracked positions. */
@@ -338,15 +128,17 @@ export class PositionScanner {
             return [];
         }
 
-        const rawPositions: RawChainPosition[] = [];
-        for (const pos of this.positions) {
-            const raw = await this._fetchNpmData(pos.tokenId, pos.dex, pos.ownerWallet, pos.openTimestampMs);
-            if (raw) {
-                rawPositions.push(raw);
-            } else {
-                log.warn(`#${pos.tokenId} npm fetch failed, position will keep stale record`);
-            }
+        const { rawPositions, burnedTokenIds } = await this.chainFetcher.fetchNpmData(
+            this.positions, this.closedTokenIds
+        );
+
+        // Handle burned NFTs: clean up state
+        for (const tokenId of burnedTokenIds) {
+            this.closedTokenIds.add(tokenId);
+            this.positions = this.positions.filter(p => p.tokenId !== tokenId);
+            log.info(`#${tokenId} NFT burned — auto-closed, removed from tracking`);
         }
+
         return rawPositions;
     }
 
@@ -483,221 +275,8 @@ export class PositionScanner {
         log.info(`✅ positions.log written  ${positions.length} position(s)`);
     }
 
-    /**
-     * Fetch raw NPM data for a single position — ownerOf + positions().
-     * Dispatches to V4-specific method for UniswapV4 positions.
-     * Returns null on failure.
-     */
-    private async _fetchNpmData(
-        tokenId: string,
-        dex: Dex,
-        ownerWallet: string,
-        openTimestampMs?: number,
-    ): Promise<RawChainPosition | null> {
-        if (dex === 'UniswapV4') {
-            return this._fetchV4NpmData(tokenId, ownerWallet, openTimestampMs);
-        }
-        try {
-            const npmAddress = config.NPM_ADDRESSES[dex];
-            const npmContract = new ethers.Contract(npmAddress, config.NPM_ABI, nextProvider());
-
-            const owner = await rpcRetry(() => npmContract.ownerOf(tokenId), `${dex}.ownerOf(${tokenId})`);
-            const position = await rpcRetry(() => npmContract.positions(tokenId), `${dex}.positions(${tokenId})`) as NpmPositionData;
-
-            const feeTier = Number(position.fee);
-            const oShort = `${owner.slice(0, 6)}…${owner.slice(-4)}`;
-            log.info(`⛓  #${tokenId} ${dex}  owner ${oShort}  fee/tick=${feeTier}  liq=${position.liquidity}`);
-
-            const poolAddress = this.getPoolFromTokens(position.token0, position.token1, feeTier, dex);
-            if (!poolAddress) {
-                log.warn(`#${tokenId} no pool match  fee/tick=${feeTier}  dex=${dex}`);
-                return null;
-            }
-
-            // Aerodrome NPM 回傳的是 tickSpacing（非 fee pips），需個別轉換
-            let feeTierForStats = feeTier / 1000000;
-            if (dex === 'Aerodrome' && feeTier === 1) {
-                feeTierForStats = 0.000085; // Aerodrome returns tickSpacing=1 as fee field
-            }
-            const tickSpacing = feeTierToTickSpacing(feeTierForStats);
-
-            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(w => w.toLowerCase() === owner.toLowerCase());
-            const isStaked = !ownerIsWallet;
-
-            return {
-                tokenId,
-                dex,
-                ownerWallet,
-                owner,
-                isStaked,
-                position,
-                poolAddress,
-                feeTier,
-                feeTierForStats,
-                tickSpacing,
-                openTimestampMs,
-            };
-        } catch (error: any) {
-            const msg: string = error?.message ?? '';
-            const isBurned = msg.includes('"ID"') || msg.includes('nonexistent token');
-            if (isBurned) {
-                const walletAddr = ucFindWallet(appState.userConfig, tokenId);
-                if (walletAddr) {
-                    this.closedTokenIds.add(tokenId);
-                    appState.userConfig = ucUpsertPosition(appState.userConfig, walletAddr, tokenId, { closed: true });
-                    this.positions = this.positions.filter(p => p.tokenId !== tokenId);
-                    log.info(`#${tokenId} NFT burned — auto-closed, removed from tracking`);
-                }
-            } else {
-                log.error(`npm fetch failed  #${tokenId} (${dex}): ${error}`);
-            }
-            return null;
-        }
-    }
-
-    /**
-     * Fetch raw chain data for a Uniswap V4 position.
-     * Reads PoolKey + PositionInfo from V4 PositionManager; computes poolId from PoolKey.
-     */
-    private async _fetchV4NpmData(
-        tokenId: string,
-        ownerWallet: string,
-        openTimestampMs?: number,
-    ): Promise<RawChainPosition | null> {
-        try {
-            const npmAddress = config.NPM_ADDRESSES['UniswapV4'];
-            const npmContract = new ethers.Contract(npmAddress, config.V4_NPM_ABI, nextProvider());
-
-            const owner = await rpcRetry(() => npmContract.ownerOf(tokenId), `V4.ownerOf(${tokenId})`);
-            const [poolKey, positionInfoPacked] = await rpcRetry(
-                () => npmContract.getPoolAndPositionInfo(tokenId),
-                `V4.getPoolAndPositionInfo(${tokenId})`
-            );
-            const liquidity = await rpcRetry(
-                () => npmContract.getPositionLiquidity(tokenId),
-                `V4.getPositionLiquidity(${tokenId})`
-            );
-
-            // Decode packed PositionInfo: bits 0-23 = tickLower (int24), bits 24-47 = tickUpper (int24)
-            const info = BigInt(positionInfoPacked.toString());
-            const TICK_MASK = (1n << 24n) - 1n;
-            const tickLower = Number(BigInt.asIntN(24, info & TICK_MASK));
-            const tickUpper = Number(BigInt.asIntN(24, (info >> 24n) & TICK_MASK));
-
-            // Compute poolId = keccak256(abi.encode(PoolKey))
-            const abiCoder = ethers.AbiCoder.defaultAbiCoder();
-            const poolId = ethers.keccak256(abiCoder.encode(
-                ['address', 'address', 'uint24', 'int24', 'address'],
-                [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]
-            ));
-
-            const feeTier = Number(poolKey.fee);
-            const tickSpacing = Number(poolKey.tickSpacing);
-            const feeTierForStats = feeTier / 1_000_000;
-
-            // Normalize position to match V3 shape expected by PositionAggregator
-            const position = {
-                token0: poolKey.currency0.toLowerCase(),
-                token1: poolKey.currency1.toLowerCase(),
-                fee: poolKey.fee,
-                tickLower,
-                tickUpper,
-                liquidity,
-                // feeGrowth values not available from PositionManager; V4 FeeCalculator reads from StateView
-                feeGrowthInside0LastX128: 0n,
-                feeGrowthInside1LastX128: 0n,
-                tokensOwed0: 0n,
-                tokensOwed1: 0n,
-            };
-
-            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(w => w.toLowerCase() === owner.toLowerCase());
-            const isStaked = !ownerIsWallet;
-            const oShort = `${owner.slice(0, 6)}…${owner.slice(-4)}`;
-            log.info(`⛓  #${tokenId} UniswapV4  owner ${oShort}  fee=${feeTier}  tick=[${tickLower},${tickUpper}]  liq=${liquidity}`);
-
-            return {
-                tokenId,
-                dex: 'UniswapV4',
-                ownerWallet,
-                owner,
-                isStaked,
-                position,
-                poolAddress: poolId.toLowerCase(),
-                feeTier,
-                feeTierForStats,
-                tickSpacing,
-                openTimestampMs,
-            };
-        } catch (error) {
-            log.error(`V4 npm fetch failed  #${tokenId}: ${error}`);
-            return null;
-        }
-    }
-
-    /**
-     * Helper to find a pool address given two tokens and a fee.
-     */
-    private getPoolFromTokens(_tokenA: string, _tokenB: string, fee: number, dex: Dex): string | null {
-        // Aerodrome NPM 對部分倉位回傳 tickSpacing=1 而非 fee pips=85，統一對應到 85
-        const lookupPips = (dex === 'Aerodrome' && fee === 1) ? 85 : fee;
-        const entry = ucPoolList(appState.userConfig).find(
-            p => p.dex === dex && Math.round(p.fee * 1_000_000) === lookupPips
-        );
-        return entry?.address ?? null;
-    }
-
-    /**
-     * 背景補齊缺少 openTimestamp 的倉位。
-     * 找到後立即更新 appState.userConfig 並呼叫 saveStateCallback 持久化。
-     * 失敗次數已合併至 openTimestamp=-1（N/A 哨兵值），不再維護獨立 Map。
-     */
     async fillMissingTimestamps(saveStateCallback?: () => Promise<void>): Promise<void> {
-        // openTimestamp=undefined → 待查；openTimestamp=-1 → 已放棄（N/A）
-        const missing = this.positions.filter(p => p.openTimestampMs === undefined);
-        if (missing.length === 0) return;
-
-        log.info(`⏳ fillMissingTimestamps  ${missing.length} token(s) pending`);
-
-        const failures = new Map<string, number>(); // 本次執行期間的失敗計數
-        let filled = 0;
-
-        for (const pos of missing) {
-            const npmAddress = config.NPM_ADDRESSES[pos.dex];
-            if (!npmAddress) continue;
-
-            const tsMs = await findMintTimestampMs(pos.tokenId, npmAddress);
-            if (tsMs !== null) {
-                // 更新 in-memory positions
-                this.positions = this.positions.map(p =>
-                    p.tokenId === pos.tokenId ? { ...p, openTimestampMs: tsMs } : p
-                );
-                // 更新 appState.userConfig（持久化來源）
-                appState.userConfig = ucUpsertPosition(
-                    appState.userConfig,
-                    pos.ownerWallet,
-                    pos.tokenId,
-                    { openTimestamp: tsMs }
-                );
-                filled++;
-                if (saveStateCallback) {
-                    await saveStateCallback().catch(e => log.error(`Timestamp saveState failed: ${e}`));
-                }
-            } else {
-                const cnt = (failures.get(pos.tokenId) ?? 0) + 1;
-                failures.set(pos.tokenId, cnt);
-                if (cnt >= config.TIMESTAMP_MAX_FAILURES) {
-                    log.warn(`⏳ #${pos.tokenId} timestamp lookup failed ${cnt} times — marking N/A`);
-                    this.positions = this.positions.map(p =>
-                        p.tokenId === pos.tokenId ? { ...p, openTimestampMs: -1 } : p
-                    );
-                    appState.userConfig = ucUpsertPosition(
-                        appState.userConfig, pos.ownerWallet, pos.tokenId, { openTimestamp: -1 }
-                    );
-                }
-            }
-        }
-
-        if (filled > 0) log.info(`✅ fillMissingTimestamps  ${filled} timestamp(s) filled`);
+        this.positions = await this.timestampFiller.fill(this.positions, saveStateCallback);
     }
 }
 

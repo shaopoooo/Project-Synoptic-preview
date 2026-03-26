@@ -268,7 +268,7 @@ export function buildPoolRankingBlock(rows: PoolRankingRow[]): string {
 
 /** BB k 值 + 更新時間區塊 */
 export function buildTimestampBlock(
-    lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number },
+    lastUpdates: { cycleAt: number },
     bbKLow: number,
     bbKHigh: number
 ): string {
@@ -276,9 +276,7 @@ export function buildTimestampBlock(
         hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Taipei',
     });
     const ts = (t: number) => t === 0 ? '無紀錄' : fmt.format(new Date(t));
-    let msg = `\n\n⌛ <b>資料更新時間:</b>`;
-    msg += `\n- Pool: ${ts(lastUpdates.poolScanner)} · Position: ${ts(lastUpdates.positionScanner)}`;
-    msg += `\n- BB Engine: ${ts(lastUpdates.bbEngine)} · Risk: ${ts(lastUpdates.riskManager)}`;
+    let msg = `\n\n⌛ <b>資料更新時間:</b> ${ts(lastUpdates.cycleAt)}`;
     msg += `\n📐 BB k: low=<b>${bbKLow}</b>  high=<b>${bbKHigh}</b>`;
     return msg;
 }

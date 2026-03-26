@@ -101,7 +101,7 @@ export class TelegramBotService {
     public async sendConsolidatedReport(
         entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
         allPools: PoolStats[],
-        lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number }
+        lastUpdates: { cycleAt: number }
     ) {
         await buildAndSendReport(this.sendAlert.bind(this), entries, allPools, lastUpdates);
     }

@@ -8,20 +8,24 @@ import { bandwidthTracker } from './utils/BandwidthTracker';
 import { appState, ucWalletAddresses, ucTrackedPositions, ucPoolList } from './utils/AppState';
 import { config, validateEnv } from './config';
 import { LRUCache } from 'lru-cache';
-import { runTokenPriceFetcher, runPoolScanner, runBBEngine } from './runners/marketData';
-import { runPositionScanner, runRiskManager } from './runners/positions';
+import { prefetchAll } from './runners/prefetch';
+import { computeAll } from './runners/compute';
 import { runBotService } from './runners/reporting';
+import { runBackgroundTasks } from './runners/backgroundTasks';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
 
-// ── 排程管理 ──────────────────────────────────────────────────────────────────
+// ── 全域狀態 ──────────────────────────────────────────────────────────────────
+
 let currentIntervalMinutes = config.DEFAULT_INTERVAL_MINUTES;
 let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 
 let isCycleRunning = false;
-let isStakeScanRunning = false;
+let isBackgroundTaskRunning = false;
 let isStartupComplete = false;
+
+// ── 工具函式 ──────────────────────────────────────────────────────────────────
 
 function triggerStateSave() {
     return saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig, appState.stakeDiscoveryLastBlock);
@@ -29,13 +33,52 @@ function triggerStateSave() {
 
 // 嚴重錯誤告警（每類每 30 分鐘至多一次，避免洗版）
 const alertCooldowns = new LRUCache<string, number>({ max: 50 });
-const ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 async function sendCriticalAlert(key: string, message: string) {
     const last = alertCooldowns.get(key) ?? 0;
-    if (Date.now() - last < ALERT_COOLDOWN_MS) return;
+    if (Date.now() - last < config.CRITICAL_ALERT_COOLDOWN_MS) return;
     alertCooldowns.set(key, Date.now());
     await botService.sendAlert(`🚨 <b>DexBot 告警</b>\n${message}`).catch(() => { });
 }
+
+// ── 主週期（cron 與 FAST_STARTUP 共用）───────────────────────────────────────
+// 順序：TokenPrice → Pool → BB → Position → Risk → Bot → save
+// 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
+// 首次啟動（無倉位）由 main() 的初始掃描路徑處理，不走此函式。
+
+async function runCycle() {
+    const data = await prefetchAll(sendCriticalAlert);
+    if (!data) return;
+
+    const result = computeAll(data);
+    positionScanner.updatePositions(result.positions);
+    appState.commit(data, { positions: positionScanner.getTrackedPositions() });
+
+    await runBotService(botService, isStartupComplete).catch((e) => log.error(`BotService: ${e}`));
+    await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
+
+    // 記錄 snapshot 至 positions.log
+    const bbForLog = appState.positions[0]
+        ? (appState.bbs[appState.positions[0].poolAddress.toLowerCase()] ?? null)
+        : null;
+    await positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol)
+        .catch((e) => log.error(`LogSnapshots: ${e}`));
+}
+
+// ── 低優先級背景任務（由呼叫方在主週期完成後觸發，runCycle 本身不觸發）──────
+
+function scheduleBackgroundTasks(label: string) {
+    if (isBackgroundTaskRunning) return;
+    if (isCycleRunning) {
+        log.info('BackgroundTasks: 主週期執行中，延後至下次觸發');
+        return;
+    }
+    isBackgroundTaskRunning = true;
+    runBackgroundTasks(triggerStateSave)
+        .catch((e) => log.error(`BackgroundTasks (${label}): ${e}`))
+        .finally(() => { isBackgroundTaskRunning = false; });
+}
+
+// ── 排程管理 ──────────────────────────────────────────────────────────────────
 
 function buildCronJob() {
     return cron.schedule(minutesToCron(currentIntervalMinutes), async () => {
@@ -51,8 +94,7 @@ function buildCronJob() {
         } finally {
             isCycleRunning = false;
         }
-        // 質押偵測：低優先級，isCycleRunning 已 false 後才啟動
-        runStakeDiscovery().catch((e) => log.error(`StakeDiscovery (cycle): ${e}`));
+        scheduleBackgroundTasks('cycle');
     });
 }
 
@@ -64,44 +106,13 @@ function reschedule(minutes: number) {
     log.info(`🔄 排程已更新為每 ${minutes} 分鐘 (cron: ${minutesToCron(minutes)})`);
 }
 
-// ── 質押偵測（低優先級，在主週期完成後才執行）────────────────────────────────
-async function runStakeDiscovery() {
-    if (isStakeScanRunning) return;
-    if (isCycleRunning) {
-        log.info('StakeDiscovery: 主週期執行中，延後至下次觸發');
-        return;
-    }
-    isStakeScanRunning = true;
-    log.info('🔍 StakeDiscovery: 開始掃描質押倉位');
-    try {
-        await positionScanner.scanStakedPositions();
-        await triggerStateSave();
-    } catch (e) {
-        log.error(`StakeDiscovery: ${e}`);
-    } finally {
-        isStakeScanRunning = false;
-    }
-}
-
-// ── 標準週期執行序列（cron 與 FAST_STARTUP 共用）────────────────────────────
-// 順序：TokenPrice → Pool → BB → Position → Risk → Bot → save → fillTimestamps
-// 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
-// 首次啟動（無倉位）由 main() 的初始掃描路徑處理，不走此函式。
-async function runCycle() {
-    await runTokenPriceFetcher().catch((e) => log.error(`TokenPrice: ${e}`));
-    await runPoolScanner(sendCriticalAlert).catch((e) => log.error(`PoolScanner: ${e}`));
-    await runBBEngine().catch((e) => log.error(`BBEngine: ${e}`));
-    await runPositionScanner(sendCriticalAlert).catch((e) => log.error(`PositionScanner: ${e}`));
-    await runRiskManager().catch((e) => log.error(`RiskManager: ${e}`));
-    await runBotService(botService, isStartupComplete).catch((e) => log.error(`BotService: ${e}`));
-    await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
-    positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
-}
+// ── 啟動 ──────────────────────────────────────────────────────────────────────
 
 async function main() {
     validateEnv();
     log.section('DexInfoBot startup');
 
+    // ── 1. Bot 初始化 ────────────────────────────────────────────────────────
     botService.setPositionScanner(positionScanner);
     botService.setRescheduleCallback(reschedule);
     botService.setUserConfigChangeCallback(async (cfg) => {
@@ -139,6 +150,7 @@ async function main() {
     });
     botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
 
+    // ── 2. State restore ─────────────────────────────────────────────────────
     const savedState = await loadState();
     if (savedState) {
         restoreState(savedState);
@@ -148,7 +160,6 @@ async function main() {
         log.info('✅ state restored from previous session');
     }
 
-    // 從 state.json 恢復 userConfig（遷移已在 loadState 處理，包含 sortBy / intervalMinutes / bbK）
     if (savedState?.userConfig) {
         appState.userConfig = savedState.userConfig;
         const uc = appState.userConfig;
@@ -174,6 +185,7 @@ async function main() {
         ...appState.userConfig,
     };
 
+    // ── 3. Position restore / chain sync ────────────────────────────────────
     const hasWallets = ucWalletAddresses(appState.userConfig).length > 0;
 
     if (!hasWallets) {
@@ -199,27 +211,24 @@ async function main() {
             if (hasNewTracked) log.info('New tracked positions detected — forcing chain sync');
             await positionScanner.syncFromChain(true);
         }
+    }
 
-        const fastStartup = config.FAST_STARTUP;
-        if (fastStartup) {
-            log.info('⚡ FAST_STARTUP=true — skipping initial scan, first cron cycle fires in 5s');
-        } else {
-            await runTokenPriceFetcher();
-            await runPoolScanner(sendCriticalAlert);
-
+    // ── 4. 初始掃描（非 FAST_STARTUP 才執行）────────────────────────────────
+    if (!config.FAST_STARTUP && hasWallets) {
+        const data = await prefetchAll(sendCriticalAlert);
+        if (data) {
             if (savedState) {
-                for (const pool of appState.pools) refreshPriceBuffer(pool.id, pool.tick);
-                log.info(`✅ PriceBuffer refreshed for ${appState.pools.length} pool(s) after restore`);
+                for (const pool of data.pools) refreshPriceBuffer(pool.id, pool.tick);
+                log.info(`✅ PriceBuffer refreshed for ${data.pools.length} pool(s) after restore`);
             }
-
-            await runPositionScanner(sendCriticalAlert);
-            await runBBEngine();
-            await runRiskManager();
+            const result = computeAll(data);
+            positionScanner.updatePositions(result.positions);
+            appState.commit(data, { positions: positionScanner.getTrackedPositions() });
         }
     }
 
+    // ── 5. 啟動完成，建立排程 ────────────────────────────────────────────────
     isStartupComplete = true;
-
     await triggerStateSave();
     log.info(`startup complete — scheduler enabled (interval: ${currentIntervalMinutes}m)`);
     log.section('ready');
@@ -228,6 +237,7 @@ async function main() {
 
     // FAST_STARTUP: 5 秒後立即觸發第一輪完整週期，不等到下一個整點
     if (config.FAST_STARTUP) {
+        log.info('⚡ FAST_STARTUP=true — skipping initial scan, first cron cycle fires in 5s');
         setTimeout(() => {
             log.info('⚡ FAST_STARTUP: triggering first cycle now');
             if (isCycleRunning) {
@@ -240,14 +250,15 @@ async function main() {
                 .catch((e) => log.error(`FastStartup cycle: ${e}`))
                 .finally(() => {
                     isCycleRunning = false;
-                    runStakeDiscovery().catch((e) => log.error(`StakeDiscovery (fast): ${e}`));
+                    scheduleBackgroundTasks('fast');
                 });
         }, 5000);
     }
 
-    // 開始搜尋遺失的時間戳記（背景執行）
-    positionScanner.fillMissingTimestamps(triggerStateSave).catch((e) => log.error(`TimestampFiller: ${e}`));
+    scheduleBackgroundTasks('startup');
 }
+
+// ── 關閉處理 ──────────────────────────────────────────────────────────────────
 
 let isShuttingDown = false;
 

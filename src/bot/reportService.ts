@@ -110,7 +110,7 @@ export async function sendConsolidatedReport(
     sendAlert: (msg: string) => Promise<void>,
     entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
     allPools: PoolStats[],
-    lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number }
+    lastUpdates: { cycleAt: number }
 ): Promise<void> {
     const timeFormatter = new Intl.DateTimeFormat('zh-TW', {
         year: 'numeric', month: '2-digit', day: '2-digit',

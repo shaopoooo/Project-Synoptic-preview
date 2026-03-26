@@ -5,7 +5,7 @@
  * vars in index.ts. All pipeline functions read and write through this object
  * so it's easy to reason about data ownership and to mock in tests.
  */
-import { PoolStats, PositionRecord, BBResult, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig } from '../types';
+import { PoolStats, PositionRecord, BBResult, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig, CycleData, CycleResult, OpeningStrategy } from '../types';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 
@@ -103,9 +103,9 @@ export function ucUpsertPosition(
             externalStake: update.externalStake ?? false,
             openTimestamp: update.openTimestamp,
         };
-        newPositions =[...wallet.positions, newPos];
+        newPositions = [...wallet.positions, newPos];
     } else {
-        newPositions =wallet.positions.map((p, i) =>
+        newPositions = wallet.positions.map((p, i) =>
             i === posIdx ? { ...p, ...update } : p
         );
     }
@@ -144,6 +144,9 @@ class AppState {
     positions: PositionRecord[] = [];
     bbs: Record<string, BBResult> = {};
 
+    /** MC 引擎計算出的最優開倉策略，key 為 poolAddress */
+    strategies: Record<string, OpeningStrategy> = {};
+
     /** Runtime-adjustable BB k values (default from config, overridable via /bbk) */
     bbKLowVol: number = config.BB_K_LOW_VOL;
     bbKHighVol: number = config.BB_K_HIGH_VOL;
@@ -159,14 +162,22 @@ class AppState {
     stakeDiscoveryLastBlock: Record<string, number> = {};
 
     readonly lastUpdated = {
-        poolScanner: 0,
-        positionScanner: 0,
-        bbEngine: 0,
-        riskManager: 0,
+        cycleAt: 0,
     };
 
-    /** Remove BB entries whose pools are no longer in activePositions. */
-    pruneStaleBBs(): void {
+    /**
+     * Phase 0 + Phase 1 完成後的唯一寫入點。
+     * 更新 pools、bbs、positions，並清除過時的 BB 條目。
+     */
+    commit(data: CycleData, result: CycleResult): void {
+        this.pools = data.pools;
+        this.bbs = data.bbs;
+        this.positions = result.positions.filter(p => Number(p.liquidity) > 0);
+        this.lastUpdated.cycleAt = Date.now();
+        this._pruneStaleBBs();
+    }
+
+    private _pruneStaleBBs(): void {
         const active = new Set(this.positions.map(p => p.poolAddress.toLowerCase()));
         for (const k of Object.keys(this.bbs)) {
             if (!active.has(k)) delete this.bbs[k];

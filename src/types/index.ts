@@ -196,6 +196,44 @@ export interface RewardsQueryResult {
     depositorWallet: string;
 }
 
+/** FeeQueryResult + RewardsQueryResult 合併，由 FeeFetcher 批次取得後傳入 PositionAggregator */
+export interface FetchedFees {
+    unclaimed0: bigint;
+    unclaimed1: bigint;
+    unclaimed2: bigint;
+    fees2USD: number;
+    token2Symbol: string;
+    depositorWallet: string;
+    gaugeAddress?: string;
+}
+
+/** Phase 0 完整輸出：所有鏈上 / API 資料，供 computeAll 純計算使用 */
+export interface CycleData {
+    pools: PoolStats[];
+    bbs: Record<string, BBResult>;
+    rawPositions: RawChainPosition[];
+    feeMaps: Map<string, FetchedFees>;
+    gasCostUSD: number;
+}
+
+/** Phase 1 計算輸出 */
+export interface CycleResult {
+    positions: PositionRecord[];
+}
+
+/** MC 引擎計算出的最優開倉策略，寫入 appState.strategies */
+export interface OpeningStrategy {
+    poolAddress: string;
+    sigmaOpt: number;
+    score: number;
+    cvar95: number;
+    coreBand: { lower: number; upper: number };
+    bufferBand: { lower: number; upper: number };
+    trancheCore: number;
+    trancheBuffer: number;
+    computedAt: number;
+}
+
 /** Input for PositionAggregator.assemble() */
 export interface AggregateInput {
     tokenId: string;
@@ -413,7 +451,7 @@ export interface PortfolioSummary {
     totalPnLPct: number | null;    // totalPnL / totalInitialCapital × 100
 }
 
-// ─── ChainEventScanner ────────────────────────────────────────────────────────
+// ─── EventLogScanner ──────────────────────────────────────────────────────────
 
 export interface ScanRequest {
     tokenId: string;
