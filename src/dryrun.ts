@@ -4,7 +4,7 @@
  *
  * Usage: npm run dryrun
  */
-import { positionScanner } from './services/PositionScanner';
+import { positionScanner } from './services/position/PositionScanner';
 import { prefetchAll } from './runners/prefetch';
 import { computeAll } from './runners/compute';
 import { appState } from './utils/AppState';
@@ -39,7 +39,7 @@ async function main() {
         const poolData = data.pools.find(
             p => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
         );
-        const bb = data.bbs[pos.poolAddress.toLowerCase()];
+        const bb = data.marketSnapshots[pos.poolAddress.toLowerCase()];
         const risk = pos.riskAnalysis;
         const label = poolData
             ? `${poolData.dex} ${(poolData.feeTier * 100).toFixed(4).replace(/\.?0+$/, '')}%`

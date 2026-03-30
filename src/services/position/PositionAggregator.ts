@@ -1,10 +1,10 @@
-import { BBResult, PoolStats, PositionRecord, AggregateInput, RawChainPosition, FetchedFees } from '../types';
-import { config } from '../config';
-import { createServiceLogger } from '../utils/logger';
-import { getTokenPrices } from '../utils/tokenPrices';
+import { MarketSnapshot, PoolStats, PositionRecord, AggregateInput, RawChainPosition, FetchedFees } from '../../types';
+import { config } from '../../config';
+import { createServiceLogger } from '../../utils/logger';
+import { getTokenPrices } from '../market/TokenPriceService';
 import { TickMath } from '@uniswap/v3-sdk';
-import { tickToPrice, calculateCapitalEfficiency, normalizeAmount, normalizeRawAmount } from '../utils/math';
-import { getTokenDecimals, getTokenSymbol } from '../utils/tokenInfo';
+import { tickToPrice, calculateCapitalEfficiency, normalizeAmount, normalizeRawAmount } from '../../utils/math';
+import { getTokenDecimals, getTokenSymbol } from '../../utils/tokenInfo';
 
 const FMT = config.FMT;
 const log = createServiceLogger('PositionAggregator');
@@ -32,7 +32,7 @@ export class PositionAggregator {
         const fee0Normalized = normalizeRawAmount(unclaimed0.toString(), dec0);
         const fee1Normalized = normalizeRawAmount(unclaimed1.toString(), dec1);
 
-        // bb may be null on the very first startup scan (PositionScanner runs before BBEngine).
+        // bb may be null on the very first startup scan (PositionScanner runs before PoolMarketService).
         // Fall back to getTokenPrices() which was already refreshed by runTokenPriceFetcher.
         const fallbackPrices = getTokenPrices();
         const wethPrice  = bb?.ethPrice   || fallbackPrices.ethPrice;
@@ -135,7 +135,7 @@ export class PositionAggregator {
     static aggregateAll(
         rawPositions: RawChainPosition[],
         feeMaps: Map<string, FetchedFees>,
-        latestBBs: Record<string, BBResult>,
+        latestBBs: Record<string, MarketSnapshot>,
         latestPools: PoolStats[],
     ): PositionRecord[] {
         const results: PositionRecord[] = [];

@@ -1,8 +1,8 @@
 import { ethers } from 'ethers';
-import { config } from '../config';
-import { appState, ucWalletAddresses, ucUpsertPosition, ucPoolList } from '../utils/AppState';
-import { createServiceLogger } from '../utils/logger';
-import { rpcRetry, nextProvider } from '../utils/rpcProvider';
+import { config } from '../../config';
+import { appState, ucWalletAddresses, ucUpsertPosition, ucPoolList } from '../../utils/AppState';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcRetry, nextProvider } from '../../utils/rpcProvider';
 
 const log = createServiceLogger('StakeDiscovery');
 

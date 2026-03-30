@@ -1,12 +1,12 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
-import { poolVolCache } from '../utils/cache';
-import { config } from '../config';
-import { createServiceLogger } from '../utils/logger';
-import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../utils/rpcProvider';
-import { PoolStats, Dex } from '../types';
-import { POOL_ADDRESS_RE, POOL_V4_ID_RE } from '../utils/validation';
-import { getTokenPrices } from '../utils/tokenPrices';
+import { poolVolCache, historicalReturnsCache } from '../../utils/cache';
+import { config } from '../../config';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../../utils/rpcProvider';
+import { PoolStats, Dex } from '../../types';
+import { POOL_ADDRESS_RE, POOL_V4_ID_RE } from '../../utils/validation';
+import { getTokenPrices } from './TokenPriceService';
 
 
 const log = createServiceLogger('PoolScanner');
@@ -33,9 +33,23 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
         return entry;
     };
 
+    // ── 優先從 historicalReturnsCache 推算（零額外 API 請求）─────────────────
+    // 每根 HourlyReturn 已含 volume（USD），加總即得日/週交易量。
+    // 冷啟動時 cache 為空，自動 fall-through 至下方 API fallback。
+    const hrEntry = historicalReturnsCache.get(key);
+    if (hrEntry && hrEntry.returns.length >= 24) {
+        const last24 = hrEntry.returns.slice(-24);
+        const last168 = hrEntry.returns.slice(-168);
+        const daily = last24.reduce((s, hr) => s + hr.volume, 0);
+        // avg7d：實際有幾天就除幾天，不足 7 天時為部分估算
+        const daysAvailable = last168.length / 24;
+        const avg7d = last168.reduce((s, hr) => s + hr.volume, 0) / Math.max(daysAvailable, 1);
+        return save(daily, avg7d, 'OHLCV cache');
+    }
+
     // Aerodrome 等無 subgraph 端點的 DEX，直接跳至 GeckoTerminal
     if (!config.SUBGRAPHS[dex]) {
-        log.info(`⏭  no subgraph for ${dex}, skip to GeckoTerminal`);
+        log.debug(`⏭  no subgraph for ${dex}, skip to GeckoTerminal`);
     } else try {
         // 🔥 終極大招：同時查詢 Uniswap 舊格式與 Messari 新格式
         const query = `{
@@ -81,9 +95,9 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
         try {
             const geckoRes = await geckoRequest(() => axios.get(
                 `${config.API_URLS.GECKOTERMINAL_OHLCV}/${key}/ohlcv/day?limit=7`,
-                { 
-                  timeout: 8000,
-                  headers: { 'User-Agent': config.USER_AGENT }
+                {
+                    timeout: 8000,
+                    headers: { 'User-Agent': config.USER_AGENT }
                 }
             ));
             const ohlcvList: any[][] = geckoRes.data?.data?.attributes?.ohlcv_list ?? [];
@@ -248,7 +262,7 @@ export class PoolScanner {
             }
             // cakePerSecond is stored scaled by 1e30
             const cakePerSec = Number(info.cakePerSecond) / Number(config.MASTERCHEF_CAKE_PER_SEC_PRECISION);
-            const { cakePrice } = await import('../utils/tokenPrices').then(m => m.getTokenPrices());
+            const { cakePrice } = await import('./TokenPriceService').then(m => m.getTokenPrices());
             const farmApr = (cakePerSec * 86400 * 365 * cakePrice) / tvlUSD;
             log.info(`🍰 farmApr  ${poolAddress.slice(0, 10)}  cps=${cakePerSec.toFixed(6)} cake/s  apr=${(farmApr * 100).toFixed(2)}%`);
             return farmApr;
@@ -286,7 +300,7 @@ export class PoolScanner {
             // Use hardcoded decimals for known tokens to avoid CALL_EXCEPTION on public nodes
             const knownDec = (addr: string): number | null => {
                 const a = addr.toLowerCase();
-                if (a === config.TOKEN_ADDRESSES.WETH.toLowerCase())  return config.TOKEN_DECIMALS.WETH;
+                if (a === config.TOKEN_ADDRESSES.WETH.toLowerCase()) return config.TOKEN_DECIMALS.WETH;
                 if (a === config.TOKEN_ADDRESSES.CBBTC.toLowerCase()) return config.TOKEN_DECIMALS.cbBTC;
                 return null;
             };
@@ -296,9 +310,9 @@ export class PoolScanner {
                 rpcRetry(() => t1.balanceOf(poolAddress), 'erc20.bal1'),
                 knownDec(token1Addr) ?? rpcRetry(() => t1.decimals(), 'erc20.dec1'),
             ]);
-            const prices = await getTokenPrices();
+            const prices = getTokenPrices();
             const priceMap: Record<string, number> = {
-                [config.TOKEN_ADDRESSES.WETH.toLowerCase()]:  prices.ethPrice,
+                [config.TOKEN_ADDRESSES.WETH.toLowerCase()]: prices.ethPrice,
                 [config.TOKEN_ADDRESSES.CBBTC.toLowerCase()]: prices.cbbtcPrice,
             };
             const p0 = priceMap[token0Addr.toLowerCase()];

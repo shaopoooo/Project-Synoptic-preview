@@ -1,10 +1,10 @@
 import pLimit from 'p-limit';
-import { FetchedFees, RawChainPosition, PoolStats, BBResult } from '../types';
+import { FetchedFees, RawChainPosition, PoolStats, MarketSnapshot } from '../../types';
 import { FeeCalculator } from './FeeCalculator';
-import { config } from '../config';
-import { appState, ucWalletAddresses } from '../utils/AppState';
-import { createServiceLogger } from '../utils/logger';
-import { getTokenPrices } from '../utils/tokenPrices';
+import { config } from '../../config';
+import { appState, ucWalletAddresses } from '../../utils/AppState';
+import { createServiceLogger } from '../../utils/logger';
+import { getTokenPrices } from '../market/TokenPriceService';
 
 const log = createServiceLogger('FeeFetcher');
 
@@ -17,26 +17,32 @@ export class FeeFetcher {
     static async fetchAll(
         rawPositions: RawChainPosition[],
         pools: PoolStats[],
-        bbs: Record<string, BBResult>,
-    ): Promise<Map<string, FetchedFees>> {
+        marketSnapshots: Record<string, MarketSnapshot>,
+    ): Promise<{ feeMaps: Map<string, FetchedFees>; warnings: string[] }> {
         const limit = pLimit(config.AGGREGATE_CONCURRENCY);
-        const results = new Map<string, FetchedFees>();
+        const feeMaps = new Map<string, FetchedFees>();
+        const warnings: string[] = [];
 
         const tasks = rawPositions.map((raw) => limit(async () => {
             const poolKey = raw.poolAddress.toLowerCase();
             const poolStats = pools.find(p => p.id.toLowerCase() === poolKey && p.dex === raw.dex);
             if (!poolStats) {
-                log.warn(`#${raw.tokenId} no poolStats — skipping fee fetch`);
+                const msg = `#${raw.tokenId} 找不到對應 poolStats，跳過手續費抓取`;
+                log.warn(msg);
+                warnings.push(msg);
                 return;
             }
 
-            const bb = bbs[poolKey] ?? null;
+            const bb = marketSnapshots[poolKey] ?? null;
             const npmAddress = config.NPM_ADDRESSES[raw.dex];
             const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(
                 w => w.toLowerCase() === raw.owner.toLowerCase()
             );
 
             try {
+                // 巨量 Payload 傾印 (Trace)：查看 NonfungiblePositionManager 回傳的原始合約物件
+                log.trace(`[FeeFetcher] Raw position payload for #${raw.tokenId}: %o`, raw);
+                
                 const feeResult = await FeeCalculator.fetchUnclaimedFees(
                     raw.tokenId, raw.dex, raw.owner, ownerIsWallet, raw.poolAddress,
                     raw.position, poolStats.tick, raw.isStaked, npmAddress,
@@ -51,7 +57,7 @@ export class FeeFetcher {
                     feeResult.gaugeAddress,
                 );
 
-                results.set(raw.tokenId, {
+                feeMaps.set(raw.tokenId, {
                     unclaimed0: feeResult.unclaimed0,
                     unclaimed1: feeResult.unclaimed1,
                     unclaimed2: rewardsResult.unclaimed2,
@@ -61,12 +67,14 @@ export class FeeFetcher {
                     gaugeAddress: feeResult.gaugeAddress,
                 });
             } catch (e) {
-                log.error(`#${raw.tokenId} fee fetch failed: ${e}`);
+                const msg = `#${raw.tokenId} 手續費抓取失敗: ${e}`;
+                log.error(msg);
+                warnings.push(msg);
             }
         }));
 
         await Promise.allSettled(tasks);
-        log.info(`✅ fees fetched: ${results.size}/${rawPositions.length} position(s)`);
-        return results;
+        log.info(`✅ fees fetched: ${feeMaps.size}/${rawPositions.length} position(s)`);
+        return { feeMaps, warnings };
     }
 }

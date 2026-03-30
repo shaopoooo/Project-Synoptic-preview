@@ -11,14 +11,13 @@
  * 主要 exports：
  *   runMCSimulation(params)             — 單區間模擬 → MCSimResult（比率形式）
  *   calcCandidateRanges(capital, ...)   — ±1σ / ±2σ / ±3σ 三組候選區間 EV
- *   calcTranchePlan70_30(capital, ...)  — 70/30 分倉佈局完整計畫
+ *   calcTranchePlan(capital, ...)       — 雙倉佈局完整計畫（比例可配置）
  */
 
-import { BBResult, MCSimResult, PoolStats, TranchePlan, CoreTranche, BufferTranche } from '../types';
-import { config } from '../config';
-import { fetchHistoricalReturns } from './BBEngine';
-import { calculateCapitalEfficiency } from '../utils/math';
-import { createServiceLogger } from '../utils/logger';
+import { MarketSnapshot, MCSimResult, PoolStats, TranchePlan, CoreTranche, BufferTranche, RangeGuards } from '../../types';
+import { config } from '../../config';
+import { calculateCapitalEfficiency } from '../../utils/math';
+import { createServiceLogger } from '../../utils/logger';
 import {
     computeL,
     computeLpValueToken0,
@@ -180,20 +179,23 @@ export interface RangeCandidateResult {
 }
 
 /**
- * 計算 ±1σ / ±2σ / ±3σ 三組候選區間的 EV（蒙地卡羅模擬）。
+ * 計算多組 sigma 候選區間的 MC EV（純計算，無 I/O）。
  * 三組全部 go=false → 建議空倉等待。
  *
- * @param capital   token0 單位資金
- * @param pool      池子資訊（APR、farmApr）
- * @param bb        BBResult（含 sma、stdDev1H）
- * @param sigmas    要評估的 σ 倍數陣列，預設 [1.0, 2.0, 3.0]
+ * @param capital            token0 單位資金
+ * @param pool               池子資訊（APR、farmApr）
+ * @param bb                 MarketSnapshot（含 sma、stdDev1H）
+ * @param historicalReturns  歷史 log 報酬率陣列（由 prefetch 階段注入）
+ * @param sigmas             要評估的 σ 倍數陣列，預設 [1.0, 2.0, 3.0]
  */
-export async function calcCandidateRanges(
+export function calcCandidateRanges(
     capital: number,
     pool: PoolStats,
-    bb: BBResult,
+    bb: MarketSnapshot,
+    historicalReturns: number[],
     sigmas = [1.0, 2.0, 3.0],
-): Promise<RangeCandidateResult[]> {
+    guards?: RangeGuards,
+): RangeCandidateResult[] {
     const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
     if (!sma || sma <= 0) return [];
 
@@ -203,9 +205,8 @@ export async function calcCandidateRanges(
     const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
     const totalApr = pool.apr + (pool.farmApr ?? 0);
 
-    const returns = await fetchHistoricalReturns(pool.id, pool.dex);
     const baseParams = {
-        historicalReturns: returns,
+        historicalReturns,
         horizon: config.MC_HORIZON_DAYS,
         numPaths: config.MC_NUM_PATHS,
         P0: sma,
@@ -213,8 +214,24 @@ export async function calcCandidateRanges(
     };
 
     return sigmas.map(sigma => {
-        const lowerPrice = Math.max(sma - maxOffset, sma - sigma * stdDev);
-        const upperPrice = Math.min(sma + maxOffset, sma + sigma * stdDev);
+        let lowerPrice = Math.max(sma - maxOffset, sma - sigma * stdDev);
+        let upperPrice = Math.min(sma + maxOffset, sma + sigma * stdDev);
+
+        if (guards) {
+            // Track 2：ATR 下限 — 當 sigma 由 ATR 反推時 k>=1 不會觸發，
+            // 保留作為非 ATR 路徑的安全網
+            const halfWidth = (upperPrice - lowerPrice) / 2;
+            if (halfWidth < guards.atrHalfWidth) {
+                lowerPrice = sma - guards.atrHalfWidth;
+                upperPrice = sma + guards.atrHalfWidth;
+            }
+            // Track 3：Percentile 天花板 — 確保不超出歷史價格範圍
+            if (guards.p5 > 0)         lowerPrice = Math.max(lowerPrice, guards.p5);
+            if (guards.p95 < Infinity) upperPrice = Math.min(upperPrice, guards.p95);
+        }
+
+        if (upperPrice <= lowerPrice) return null;
+
         const capitalEfficiency = calculateCapitalEfficiency(upperPrice, lowerPrice, sma) ?? 1;
         const dailyFeesToken0 = capital * (totalApr / 365) * capitalEfficiency;
 
@@ -226,46 +243,52 @@ export async function calcCandidateRanges(
         });
 
         return { sigma, lowerPrice, upperPrice, capitalEfficiency, dailyFeesToken0, mc };
-    });
+    }).filter((r): r is RangeCandidateResult => r !== null);
 }
 
 // ─── Public: 70/30 tranche plan ───────────────────────────────────────────────
 
 /**
- * 計算 70/30 分倉佈局完整計畫。
+ * 計算雙倉佈局完整計畫（純計算，無 I/O）。
  *
- * Core (70%)：±TRANCHE_CORE_SIGMA × stdDev1H，緊貼現價，高 APR 主力倉。
- * Buffer (30%)：單邊防禦深水區，依 smaSlope 決定方向（預設下方）。
+ * Core（主倉比例由 config.TRANCHE_CORE_RATIO 決定，預設 70%）：
+ *   ±TRANCHE_CORE_SIGMA × stdDev1H，緊貼現價，高 APR 主力倉。
+ * Buffer（餘量）：單邊防禦深水區，依 smaSlope 決定方向（預設下方）。
  *   - 平時完全 OTM（不在 range，不消耗 rebalance Gas）
  *   - 主倉被打穿後才被動進入 range，自動接落刀
  *
- * Buffer MC 說明：
- *   - P0 = sma（高於 buffer range），L 以「純 token0 初始化」公式計算
- *   - 大多數路徑中 buffer 不在 range（fees ≈ 0）
- *   - 僅極端下跌路徑才觸發 buffer，CVaR 反映真實最壞情境
+ * @param totalCapital       總資金（token0 單位）
+ * @param pool               池子資訊
+ * @param bb                 MarketSnapshot（含 sma、stdDev1H、smaSlope）
+ * @param historicalReturns  歷史 log 報酬率陣列（由 prefetch 階段注入）
  */
-export async function calcTranchePlan70_30(
+export function calcTranchePlan(
     totalCapital: number,
     pool: PoolStats,
-    bb: BBResult,
-): Promise<TranchePlan | null> {
+    bb: MarketSnapshot,
+    historicalReturns: number[],
+): TranchePlan | null {
     const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
     if (!sma || sma <= 0) return null;
 
     const stdDev = rawStdDev ?? (sma * volatility30D / Math.sqrt(365 * 24));
     if (stdDev <= 0) return null;
 
+    if (historicalReturns.length < 2) {
+        log.warn(`calcTranchePlan: 歷史報酬率不足（${historicalReturns.length} 筆），無法執行 MC`);
+    }
+
     const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
     const totalApr = pool.apr + (pool.farmApr ?? 0);
 
-    // ── Core Tranche (70%) ────────────────────────────────────────────────────
+    // ── Core Tranche ──────────────────────────────────────────────────────────
     const coreCapital = totalCapital * config.TRANCHE_CORE_RATIO;
     const coreLower = Math.max(sma - maxOffset, sma - config.TRANCHE_CORE_SIGMA * stdDev);
     const coreUpper = Math.min(sma + maxOffset, sma + config.TRANCHE_CORE_SIGMA * stdDev);
     const coreEff = calculateCapitalEfficiency(coreUpper, coreLower, sma) ?? 1;
     const coreDailyFees = coreCapital * (totalApr / 365) * coreEff;
 
-    // ── Buffer Tranche (30%) ──────────────────────────────────────────────────
+    // ── Buffer Tranche ────────────────────────────────────────────────────────
     const bufferCapital = totalCapital * (1 - config.TRANCHE_CORE_RATIO);
 
     // 方向判斷：SMA 上升趨勢 → 防守上方；其餘 → 防守下方（預設）
@@ -282,29 +305,20 @@ export async function calcTranchePlan70_30(
         bufferLower = sma + config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev;
         bufferUpper = sma + config.TRANCHE_BUFFER_SIGMA_FAR * stdDev;
     }
-    // 安全下限：確保 bufferLower 不為負
     if (bufferLower <= 0) bufferLower = sma * 0.001;
 
-    // Buffer active efficiency：以 buffer 中點模擬「啟動後」的資金效率
     const bufferMid = (bufferLower + bufferUpper) / 2;
     const bufferEff = calculateCapitalEfficiency(bufferUpper, bufferLower, bufferMid) ?? 0;
-    // Buffer 平時 OTM，每日費收以「啟動態」計算供 MC 使用
     const bufferDailyFees = bufferCapital * (totalApr / 365) * bufferEff;
 
-    // ── Fetch historical returns (可能有網路延遲) ─────────────────────────────
-    const returns = await fetchHistoricalReturns(pool.id, pool.dex);
-    if (returns.length < 2) {
-        log.warn(`calcTranchePlan70_30: 歷史報酬率不足（${returns.length} 筆），無法執行 MC`);
-    }
+    // ── Simulations ───────────────────────────────────────────────────────────
+    log.debug(`MC: Core [${coreLower.toPrecision(4)}, ${coreUpper.toPrecision(4)}]  Buffer dir=${direction}`);
 
     const baseParams = {
-        historicalReturns: returns,
+        historicalReturns,
         horizon: config.MC_HORIZON_DAYS,
         numPaths: config.MC_NUM_PATHS,
     };
-
-    // ── Simulations ───────────────────────────────────────────────────────────
-    log.info(`MC: Core [${coreLower.toFixed(8)}, ${coreUpper.toFixed(8)}]  Buffer dir=${direction}`);
 
     const coreMC = runMCSimulation({
         ...baseParams,
@@ -313,7 +327,6 @@ export async function calcTranchePlan70_30(
         capital: coreCapital, dailyFeesToken0: coreDailyFees,
     });
 
-    // Buffer：P0 = sma（高於 buffer range），OTM 初始化
     const bufferMC = runMCSimulation({
         ...baseParams,
         P0: sma,
@@ -321,7 +334,7 @@ export async function calcTranchePlan70_30(
         capital: bufferCapital, dailyFeesToken0: bufferDailyFees,
     });
 
-    log.info(`MC: Core go=${coreMC.go} CVaR=${(coreMC.cvar95 * 100).toFixed(2)}%  Buffer go=${bufferMC.go} CVaR=${(bufferMC.cvar95 * 100).toFixed(2)}%`);
+    log.debug(`MC: Core go=${coreMC.go} CVaR=${(coreMC.cvar95 * 100).toFixed(2)}%  Buffer go=${bufferMC.go} CVaR=${(bufferMC.cvar95 * 100).toFixed(2)}%`);
 
     // ── Assemble ──────────────────────────────────────────────────────────────
     const coreTranche: CoreTranche = {
@@ -346,7 +359,6 @@ export async function calcTranchePlan70_30(
         mc: bufferMC,
     };
 
-    // 整體 Go/No-Go 由主倉決定（buffer 是防禦性質，不要求獨立通過）
     const cvar95Combined =
         coreMC.cvar95 * config.TRANCHE_CORE_RATIO +
         bufferMC.cvar95 * (1 - config.TRANCHE_CORE_RATIO);
@@ -355,7 +367,7 @@ export async function calcTranchePlan70_30(
         core: coreTranche,
         buffer: bufferTranche,
         combined: {
-            totalDailyFees: coreDailyFees, // buffer 平時 OTM，不計入正常日費
+            totalDailyFees: coreDailyFees,
             cvar95: cvar95Combined,
             go: coreMC.go,
             noGoReason: coreMC.go ? undefined : coreMC.noGoReason,

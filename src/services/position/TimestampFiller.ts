@@ -1,8 +1,8 @@
-import { config } from '../config';
-import { appState, ucUpsertPosition } from '../utils/AppState';
-import { PositionRecord } from '../types';
-import { createServiceLogger } from '../utils/logger';
-import { findMintTimestampMs } from './EventLogScanner';
+import { config } from '../../config';
+import { appState, ucUpsertPosition } from '../../utils/AppState';
+import { PositionRecord } from '../../types';
+import { createServiceLogger } from '../../utils/logger';
+import { findMintTimestampMs } from '../events/EventLogScanner';
 
 const log = createServiceLogger('TimestampFiller');
 

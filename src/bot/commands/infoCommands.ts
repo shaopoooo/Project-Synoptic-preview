@@ -93,7 +93,7 @@ export function registerInfoCommands(bot: Bot): void {
             `SMA = 最近 20 筆小時 tick 均價\n` +
             `帶寬 = k × σ（stdDev，EWMA 平滑）\n` +
             `震盪市（Low Vol）: k_low；趨勢市（High Vol）: k_high\n` +
-            `用 /bbk 調整，目前 k=${appState.bbKLowVol}/${appState.bbKHighVol}\n\n` +
+            `用 /bbk 調整，目前 k=${appState.marketKLowVol}/${appState.marketKHighVol}\n\n` +
             `<b>DRIFT 警告</b>\n` +
             `重疊度 = 你的倉位區間落在 BB 內的比例\n` +
             `&lt; ${config.DRIFT_WARNING_PCT}% 時觸發，建議依 BB 重建倉\n\n` +

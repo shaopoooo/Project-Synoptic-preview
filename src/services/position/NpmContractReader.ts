@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
-import { config } from '../config';
-import { appState, ucWalletAddresses, ucTrackedPositions, ucUpsertPosition, ucFindWallet, ucPoolList } from '../utils/AppState';
-import { Dex, NpmPositionData, RawChainPosition } from '../types';
-import { createServiceLogger } from '../utils/logger';
-import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { feeTierToTickSpacing } from '../utils/math';
+import { config } from '../../config';
+import { appState, ucWalletAddresses, ucTrackedPositions, ucUpsertPosition, ucFindWallet, ucPoolList } from '../../utils/AppState';
+import { Dex, NpmPositionData, RawChainPosition } from '../../types';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcRetry, nextProvider } from '../../utils/rpcProvider';
+import { feeTierToTickSpacing } from '../../utils/math';
 
 const log = createServiceLogger('NpmContractReader');
 

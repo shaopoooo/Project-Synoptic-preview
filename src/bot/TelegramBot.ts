@@ -1,8 +1,8 @@
 import { Bot } from 'grammy';
 import { config } from '../config';
-import { PoolStats, BBResult, PositionRecord, RiskAnalysis, UserConfig } from '../types';
+import { PoolStats, MarketSnapshot, PositionRecord, RiskAnalysis, UserConfig } from '../types';
 import { createServiceLogger } from '../utils/logger';
-import type { PositionScanner } from '../services/PositionScanner';
+import type { PositionScanner } from '../services/position/PositionScanner';
 import { BotDeps } from './commands/context';
 import { registerInfoCommands } from './commands/infoCommands';
 import { registerConfigCommands } from './commands/configCommands';
@@ -99,7 +99,7 @@ export class TelegramBotService {
 
     /** 將所有倉位合併為單一 Telegram 報告 */
     public async sendConsolidatedReport(
-        entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
+        entries: Array<{ position: PositionRecord; pool: PoolStats; bb: MarketSnapshot | null; risk: RiskAnalysis }>,
         allPools: PoolStats[],
         lastUpdates: { cycleAt: number }
     ) {

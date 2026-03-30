@@ -5,7 +5,7 @@
  * 本模組不依賴 TelegramBot 實例，只接收 sendAlert callback，方便測試。
  */
 import { LRUCache } from 'lru-cache';
-import type { BBResult, PositionRecord, PoolStats } from '../types';
+import type { MarketSnapshot, PositionRecord, PoolStats } from '../types';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 
@@ -17,21 +17,21 @@ const cooldowns = new LRUCache<string, number>({ max: 100 });
 /**
  * 檢查 Kill Switch（帶寬爆表）與非對稱撤倉（Buffer 穿入 80%）告警。
  *
- * @param bbs        appState.bbs
+ * @param marketSnapshots        appState.marketSnapshots
  * @param positions  appState.positions
  * @param pools      appState.pools（用來取 DEX label）
  * @param getAvg30D  bandwidthTracker.getAvg（只讀，不影響狀態）
  * @param sendAlert  botService.sendAlert callback
  */
 export async function checkMarketAlerts(
-    bbs: Record<string, BBResult>,
+    marketSnapshots: Record<string, MarketSnapshot>,
     positions: PositionRecord[],
     pools: PoolStats[],
     getAvg30D: (poolKey: string) => number | null,
     sendAlert: (msg: string) => Promise<void>,
 ): Promise<void> {
     // ── Kill Switch：帶寬超過 2.5× 30D 均值 ──────────────────────────────────
-    for (const [poolKey, bb] of Object.entries(bbs)) {
+    for (const [poolKey, bb] of Object.entries(marketSnapshots)) {
         if (!bb.bandwidth) continue;
 
         const avg30D = getAvg30D(poolKey);
@@ -45,10 +45,10 @@ export async function checkMarketAlerts(
                 const poolLabel = pools.find(p => p.id.toLowerCase() === poolKey)?.dex ?? poolKey.slice(0, 8);
                 const ratio = (bb.bandwidth / avg30D).toFixed(1);
                 await sendAlert(
-                    `🚨 <b>Kill Switch 告警</b>\n` +
+                    `🚨 <b>Kill Switch A — 帶寬擴張</b>\n` +
                     `池子 <code>${poolLabel}</code> 帶寬爆表！\n` +
                     `當前帶寬 ${(bb.bandwidth * 100).toFixed(2)}%，30D 均 ${(avg30D * 100).toFixed(2)}%（×${ratio}）\n` +
-                    `建議暫停開新倉，等待波動回落。`
+                    `建議暫停開新倉，等待波動回落。（每 4h 持續提醒）`
                 ).catch(() => { });
                 log.warn(`🚨 Kill Switch triggered for ${poolKey} (bw ×${ratio} avg30D)`);
             }

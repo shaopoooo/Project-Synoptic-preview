@@ -1,5 +1,5 @@
-import { PositionRecord, PoolStats, BBResult, RiskAnalysis, TokenPrices } from '../types';
-import type { CalcResult } from '../services/PositionCalculator';
+import { PositionRecord, PoolStats, MarketSnapshot, RiskAnalysis, TokenPrices, OpeningStrategy } from '../types';
+import type { CalcResult } from '../services/strategy/PositionCalculator';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 import { normalizeRawAmount } from './math';
@@ -72,7 +72,7 @@ export function buildTelegramPositionBlock(
     index: number,
     position: PositionRecord,
     pool: PoolStats,
-    bb: BBResult | null,
+    bb: MarketSnapshot | null,
     risk: RiskAnalysis,
     compact = false,
     diff?: { dPos: number; dUncl: number; dIl: number | null }
@@ -369,7 +369,7 @@ function toCST(d: Date): { date: string; hh: string; mm: string } {
 }
 
 /** Build the snapshot header line (with optional price row) for positions.log. */
-export function buildLogSnapshotHeader(bb?: BBResult | null, kLow?: number, kHigh?: number): string {
+export function buildLogSnapshotHeader(bb?: MarketSnapshot | null, kLow?: number, kHigh?: number): string {
     const now = new Date();
     const { date, hh, mm } = toCST(now);
     const timestamp = `${date} ${hh}:${mm} UTC+8`;
@@ -381,7 +381,7 @@ export function buildLogSnapshotHeader(bb?: BBResult | null, kLow?: number, kHig
 }
 
 /** Format a single position as a plain-text block for positions.log. */
-export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record<string, number>, bb?: BBResult | null): string {
+export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record<string, number>, bb?: MarketSnapshot | null): string {
     const now = new Date();
     const { hh, mm } = toCST(now);
     const timeStr = `${hh}:${mm}`;
@@ -563,4 +563,42 @@ export function buildCalcReport(r: CalcResult): string {
     }
 
     return lines.join('\n');
+}
+
+// ─── MC 策略報告（從 appState.strategies 讀取）──────────────────────────────
+
+/**
+ * 格式化預計算的 MC 開倉策略。
+ * capital 為使用者輸入的 token0 資金量，用於縮放分倉金額。
+ */
+export function buildStrategyReport(
+    strategy: OpeningStrategy,
+    pool: PoolStats,
+    capital: number,
+): string {
+    const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+    const coreCapital = capital * strategy.trancheCore;
+    const bufferCapital = capital * strategy.trancheBuffer;
+    const ageMinutes = Math.round((Date.now() - strategy.computedAt) / 60000);
+    const ageStr = ageMinutes < 60
+        ? `${ageMinutes} 分鐘前`
+        : `${Math.round(ageMinutes / 60)} 小時前`;
+
+    const feePct = `${(pool.feeTier * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
+    const totalApr = (pool.apr + (pool.farmApr ?? 0)) * 100;
+
+    return [
+        `📐 <b>MC 開倉策略</b>  ${pool.dex} ${feePct}  APR <b>${totalApr.toFixed(FMT.PCT_HUNDREDTH)}%</b>`,
+        ``,
+        `💰 資金: <b>${capital.toFixed(4)}</b> token0  （${ageStr}計算）`,
+        `🎯 最優 σ: <b>${strategy.sigmaOpt}</b>  Score: <b>${strategy.score.toFixed(3)}</b>`,
+        `📉 CVaR₉₅: <b>${pct(strategy.cvar95)}</b>`,
+        ``,
+        `─────────────────────────`,
+        `🔵 主倉 ${(strategy.trancheCore * 100).toFixed(0)}%  <b>${coreCapital.toFixed(4)}</b> token0`,
+        `   區間 [${strategy.coreBand.lower.toFixed(FMT.PRICE)}, ${strategy.coreBand.upper.toFixed(FMT.PRICE)}]`,
+        ``,
+        `🟡 緩衝倉 ${(strategy.trancheBuffer * 100).toFixed(0)}%  <b>${bufferCapital.toFixed(4)}</b> token0  OTM 待機`,
+        `   區間 [${strategy.bufferBand.lower.toFixed(FMT.PRICE)}, ${strategy.bufferBand.upper.toFixed(FMT.PRICE)}]`,
+    ].join('\n');
 }

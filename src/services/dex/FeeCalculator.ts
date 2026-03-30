@@ -1,10 +1,10 @@
 import { ethers } from 'ethers';
-import { config } from '../config';
-import { appState, ucWalletAddresses } from '../utils/AppState';
-import { createServiceLogger } from '../utils/logger';
-import { rpcRetry, nextProvider } from '../utils/rpcProvider';
-import { FeeQueryResult, RewardsQueryResult, Dex, NpmPositionData } from '../types';
-import { normalizeRawAmount, MAX_UINT128, Q128, sub256 } from '../utils/math';
+import { config } from '../../config';
+import { appState, ucWalletAddresses } from '../../utils/AppState';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcRetry, nextProvider } from '../../utils/rpcProvider';
+import { FeeQueryResult, RewardsQueryResult, Dex, NpmPositionData } from '../../types';
+import { normalizeRawAmount, MAX_UINT128, Q128, sub256 } from '../../utils/math';
 
 
 const log = createServiceLogger('FeeCalculator');
@@ -47,7 +47,7 @@ export class FeeCalculator {
                         'aero.voter.gauges'
                     );
                     cachedGaugeAddress = canonicalGauge;
-                    log.info(`🏛  #${tokenId} owner=${owner.slice(0, 10)}  canonicalGauge=${canonicalGauge?.slice(0, 10) ?? 'none'}`);
+                    log.debug(`🏛  #${tokenId} owner=${owner.slice(0, 10)}  canonicalGauge=${canonicalGauge?.slice(0, 10) ?? 'none'}`);
 
                     let pendingFeesOk = false;
                     if (canonicalGauge && canonicalGauge !== ethers.ZeroAddress) {
@@ -69,12 +69,12 @@ export class FeeCalculator {
                                 const [f0, f1] = await gauge.pendingFees(tokenId);
                                 unclaimed0 = BigInt(f0);
                                 unclaimed1 = BigInt(f1);
-                                log.info(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [canonical_gauge.pendingFees]`);
+                                log.debug(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [canonical_gauge.pendingFees]`);
                                 source = 'gauge.pendingFees';
                                 pendingFeesOk = true;
                             } catch (e) { log.debug(`#${tokenId} gauge.pendingFees failed: ${e}`); }
                         } else {
-                            log.info(`#${tokenId} gauge owns NFT but not staked → skip pendingFees`);
+                            log.debug(`#${tokenId} gauge owns NFT but not staked → skip pendingFees`);
                         }
                     }
 
@@ -86,7 +86,7 @@ export class FeeCalculator {
                             );
                             unclaimed0 = BigInt(collected.amount0);
                             unclaimed1 = BigInt(collected.amount1);
-                            log.info(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [npm.collect.staticCall from gauge]`);
+                            log.debug(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [npm.collect.staticCall from gauge]`);
                             source = 'collect.staticCall';
                             // 只有在 collect.staticCall 返回非零時才視為成功；
                             // staked 倉位 LP fees 由 gauge 追蹤，NPM 可能返回 0 即使有費用累積
@@ -118,7 +118,7 @@ export class FeeCalculator {
                     unclaimed0 = fees0;
                     unclaimed1 = fees1;
                     source = 'pool.feeGrowth';
-                    log.info(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [pool.feeGrowth]`);
+                    log.debug(`💸 #${tokenId} aero fees  ${unclaimed0} / ${unclaimed1}  [pool.feeGrowth]`);
                 }
             } catch (e: any) {
                 log.warn(`#${tokenId} aero fees failed: ${e.message} — using tokensOwed`);
@@ -139,7 +139,7 @@ export class FeeCalculator {
                 unclaimed0 = BigInt(collected[0]);
                 unclaimed1 = BigInt(collected[1]);
                 source = 'collect.staticCall';
-                log.info(`💸 #${tokenId} fees  ${unclaimed0} / ${unclaimed1}`);
+                log.debug(`💸 #${tokenId} fees  ${unclaimed0} / ${unclaimed1}`);
             } catch (e: any) {
                 log.warn(`#${tokenId} collect.staticCall failed (${dex}): ${e.message} — using tokensOwed`);
                 unclaimed0 = BigInt(position.tokensOwed0);
@@ -190,7 +190,7 @@ export class FeeCalculator {
                         const aeroNormalized = normalizeRawAmount(unclaimed2.toString(), config.TOKEN_DECIMALS.AERO);
                         fees2USD = aeroNormalized * aeroPrice;
                         token2Symbol = 'AERO';
-                        log.info(`💸 #${tokenId} AERO  ${aeroNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [gauge.earned]`);
+                        log.debug(`💸 #${tokenId} AERO  ${aeroNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [gauge.earned]`);
                     }
                 }
             } catch (e: any) {
@@ -214,7 +214,7 @@ export class FeeCalculator {
                         const cakeNormalized = normalizeRawAmount(unclaimed2.toString(), config.TOKEN_DECIMALS.CAKE);
                         fees2USD = cakeNormalized * resolvedCakePrice;
                         token2Symbol = 'CAKE';
-                        log.info(`💸 #${tokenId} CAKE  ${cakeNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [${addr.slice(0, 10)}]`);
+                        log.debug(`💸 #${tokenId} CAKE  ${cakeNormalized.toFixed(6)}  ($${fees2USD.toFixed(3)})  [${addr.slice(0, 10)}]`);
                     }
                     if (!updatedDepositorWallet) {
                         try {
@@ -272,7 +272,7 @@ export class FeeCalculator {
         const fees0 = liquidity * sub256(curFg0, lastFg0) / Q128;
         const fees1 = liquidity * sub256(curFg1, lastFg1) / Q128;
 
-        log.info(`💸 #${tokenId} V4 fees  ${fees0} / ${fees1}  [StateView.feeGrowth]`);
+        log.debug(`💸 #${tokenId} V4 fees  ${fees0} / ${fees1}  [StateView.feeGrowth]`);
         return { unclaimed0: fees0, unclaimed1: fees1, depositorWallet: owner, source: 'V4.StateView.feeGrowth' };
     }
 

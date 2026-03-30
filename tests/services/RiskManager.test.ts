@@ -1,7 +1,7 @@
-import { RiskManager } from '../../src/services/RiskManager';
-import { BBResult, PositionState } from '../../src/types';
+import { RiskManager } from '../../src/services/strategy/RiskManager';
+import { MarketSnapshot, PositionState } from '../../src/types';
 
-const makeBB = (overrides: Partial<BBResult> = {}): BBResult => ({
+const makeBB = (overrides: Partial<MarketSnapshot> = {}): MarketSnapshot => ({
     sma: 0.03,
     upperPrice: 0.033,
     lowerPrice: 0.027,

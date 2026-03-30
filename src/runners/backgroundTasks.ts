@@ -1,4 +1,4 @@
-import { positionScanner } from '../services/PositionScanner';
+import { positionScanner } from '../services/position/PositionScanner';
 import { createServiceLogger } from '../utils/logger';
 
 const log = createServiceLogger('BackgroundTasks');

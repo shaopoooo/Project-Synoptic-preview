@@ -5,10 +5,10 @@
  * 新增事件類型只需實作 ScanHandler 介面並呼叫 eventLogScanner.registerHandler()。
  */
 import { ethers } from 'ethers';
-import { createServiceLogger } from '../utils/logger';
-import { rpcRetry, delay, nextProvider } from '../utils/rpcProvider';
-import { config } from '../config';
-import { ScanRequest, ScanHandler } from '../types';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcRetry, delay, nextProvider } from '../../utils/rpcProvider';
+import { config } from '../../config';
+import { ScanRequest, ScanHandler } from '../../types';
 
 const log = createServiceLogger('EventLogScanner');
 
@@ -93,7 +93,7 @@ export class EventLogScanner {
             allTokenIdTopics,
         ];
 
-        log.info(`⛓  [${handler.name}] scanning ${activeRequests.length} tokenId(s) on NPM ${npmAddress.slice(0, 10)}…`);
+        log.debug(`⛓  [${handler.name}] scanning ${activeRequests.length} tokenId(s) on NPM ${npmAddress.slice(0, 10)}…`);
 
         // For stopOnFirstMatch: track which tokenIds are still pending
         const pendingSet: Set<string> | null = handler.stopOnFirstMatch
@@ -228,7 +228,7 @@ export async function findMintTimestampMs(
     tokenId: string,
     npmAddress: string,
 ): Promise<number | null> {
-    log.info(`🔍 [MintSearch] #${tokenId} binary search on ${npmAddress.slice(0, 10)}…`);
+    log.debug(`🔍 [MintSearch] #${tokenId} binary search on ${npmAddress.slice(0, 10)}…`);
 
     let currentBlock: number;
     try {
@@ -273,7 +273,7 @@ export async function findMintTimestampMs(
 
     if (!block) return null;
     const tsMs = block.timestamp * 1000;
-    log.info(`💾 [MintSearch] #${tokenId} minted at block ${mintBlock} (${new Date(tsMs).toISOString().slice(0, 10)})`);
+    log.debug(`💾 [MintSearch] #${tokenId} minted at block ${mintBlock} (${new Date(tsMs).toISOString().slice(0, 10)})`);
     return tsMs;
 }
 

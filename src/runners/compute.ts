@@ -5,17 +5,18 @@
  * 計算順序：aggregate → PnL → Risk → Rebalance
  */
 import { CycleData, CycleResult, PositionState } from '../types';
-import { PositionAggregator } from '../services/PositionAggregator';
-import { RiskManager } from '../services/RiskManager';
-import { RebalanceService } from '../services/rebalance';
-import { PnlCalculator } from '../services/PnlCalculator';
-import { bandwidthTracker } from '../utils/BandwidthTracker';
+import { PositionAggregator } from '../services/position/PositionAggregator';
+import { RiskManager } from '../services/strategy/RiskManager';
+import { RebalanceService } from '../services/strategy/rebalance';
+import { PnlCalculator } from '../services/strategy/PnlCalculator';
 import { createServiceLogger } from '../utils/logger';
+import { logCalc } from '../utils/logger';
+import { appState } from '../utils/AppState';
 
 const log = createServiceLogger('Compute');
 
 export function computeAll(data: CycleData): CycleResult {
-    const assembled = PositionAggregator.aggregateAll(data.rawPositions, data.feeMaps, data.bbs, data.pools);
+    const assembled = PositionAggregator.aggregateAll(data.rawPositions, data.feeMaps, data.marketSnapshots, data.pools);
 
     for (const rec of assembled) {
         // ── PnL ──────────────────────────────────────────────────────────────
@@ -30,16 +31,18 @@ export function computeAll(data: CycleData): CycleResult {
         }
 
         // ── Risk + Rebalance（需要 poolData + bb）────────────────────────────
-        const poolData = data.pools.find(
-            p => p.id.toLowerCase() === rec.poolAddress.toLowerCase() && p.dex === rec.dex
-        );
-        if (!poolData) continue;
-        const bb = data.bbs[poolData.id.toLowerCase()];
+        const poolData = appState.findPool(rec.poolAddress, rec.dex)
+            ?? data.pools.find(p => p.id.toLowerCase() === rec.poolAddress.toLowerCase() && p.dex === rec.dex);
+        if (!poolData) {
+            data.warnings.push(`compute: #${rec.tokenId} 找不到 poolData，跳過 Risk/Rebalance`);
+            continue;
+        }
+        const bb = data.marketSnapshots[poolData.id.toLowerCase()];
         if (!bb) continue;
 
         const poolKey = poolData.id.toLowerCase();
         const currentBandwidth = (bb.upperPrice - bb.lowerPrice) / bb.sma;
-        const avg30DBandwidth = bandwidthTracker.update(poolKey, currentBandwidth);
+        const avg30DBandwidth = data.bandwidthAvg30D.get(poolKey) ?? currentBandwidth;
 
         const positionState: PositionState = {
             capital: rec.positionValueUSD,
@@ -56,6 +59,31 @@ export function computeAll(data: CycleData): CycleResult {
         rec.overlapPercent = risk.driftOverlapPct;
         rec.breakevenDays = risk.ilBreakevenDays;
         rec.healthScore = risk.healthScore;
+
+        logCalc({
+            phase: 'P1',
+            layer: 'POSITION',
+            event: 'position_risk',
+            tokenId: rec.tokenId,
+            pool: rec.poolAddress.slice(0, 10),
+            dex: rec.dex,
+            positionValueUSD: rec.positionValueUSD,
+            unclaimedFeesUSD: rec.unclaimedFeesUSD,
+            ilUSD: rec.ilUSD ?? null,
+            openedDays: rec.openedDays ?? null,
+            profitRate: rec.profitRate ?? null,
+            currentBandwidth,
+            avg30DBandwidth,
+            driftOverlapPct: risk.driftOverlapPct,
+            driftWarning: risk.driftWarning,
+            ilBreakevenDays: risk.ilBreakevenDays,
+            healthScore: risk.healthScore,
+            redAlert: risk.redAlert,
+            highVolatilityAvoid: risk.highVolatilityAvoid,
+            compoundSignal: risk.compoundSignal ?? null,
+            compoundThreshold: risk.compoundThreshold ?? null,
+            compoundIntervalDays: risk.compoundIntervalDays ?? null,
+        });
 
         const rb = RebalanceService.getRebalanceSuggestion(
             parseFloat(rec.currentPriceStr),

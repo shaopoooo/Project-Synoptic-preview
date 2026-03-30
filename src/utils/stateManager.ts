@@ -7,7 +7,7 @@ import * as fs from 'fs-extra';
 import { rename } from 'fs/promises';
 import * as path from 'path';
 import { createServiceLogger } from './logger';
-import { bbVolCache, poolVolCache, snapshotCache, restoreCache } from './cache';
+import { volatilityCache, poolVolCache, historicalReturnsCache, snapshotCache, restoreCache } from './cache';
 import { Dex, UserConfig, WalletEntry, WalletPosition, SortBy, DiscoveredPosition, PersistedState } from '../types';
 import { ucUpsertPosition } from './AppState';
 import { config } from '../config';
@@ -113,10 +113,10 @@ export async function loadState(): Promise<PersistedState | null> {
                 userConfig.sortBy = raw.sortBy as SortBy;
             if (raw.intervalMinutes && userConfig.intervalMinutes === undefined)
                 userConfig.intervalMinutes = raw.intervalMinutes;
-            if (raw.bbKLowVol !== undefined && userConfig.bbKLowVol === undefined)
-                userConfig.bbKLowVol = raw.bbKLowVol;
-            if (raw.bbKHighVol !== undefined && userConfig.bbKHighVol === undefined)
-                userConfig.bbKHighVol = raw.bbKHighVol;
+            if (raw.marketKLowVol !== undefined && userConfig.marketKLowVol === undefined)
+                userConfig.marketKLowVol = raw.marketKLowVol;
+            if (raw.marketKHighVol !== undefined && userConfig.marketKHighVol === undefined)
+                userConfig.marketKHighVol = raw.marketKHighVol;
             // 舊版 closedTokenIds[] → 標記對應 WalletPosition.closed = true
             if (raw.closedTokenIds?.length) {
                 const closedSet = new Set(raw.closedTokenIds);
@@ -150,10 +150,11 @@ export async function saveState(
     try {
         await fs.ensureDir(path.dirname(STATE_FILE));
         const state: PersistedState = {
-            volCacheBB:   snapshotCache(bbVolCache),
-            volCachePool: snapshotCache(poolVolCache),
-            priceBuffer,
-            bandwidthWindows,
+            volatilityCache:        snapshotCache(volatilityCache),
+            poolVolumeCache:        snapshotCache(poolVolCache),
+            historicalReturnsCache: snapshotCache(historicalReturnsCache),
+            priceHistory:           priceBuffer,
+            rpcBandwidthWindows: bandwidthWindows,
             stakeDiscoveryLastBlock,
             userConfig,
         };
@@ -166,6 +167,7 @@ export async function saveState(
 }
 
 export function restoreState(state: PersistedState) {
-    restoreCache(bbVolCache,   state.volCacheBB   ?? {});
-    restoreCache(poolVolCache, state.volCachePool ?? {});
+    restoreCache(volatilityCache,        state.volatilityCache        ?? {});
+    restoreCache(poolVolCache,           state.poolVolumeCache        ?? {});
+    restoreCache(historicalReturnsCache, state.historicalReturnsCache ?? {});
 }

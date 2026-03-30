@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { TelegramBotService, minutesToCron, VALID_INTERVALS, IntervalMinutes } from './bot/TelegramBot';
-import { positionScanner } from './services/PositionScanner';
-import { getPriceBufferSnapshot, restorePriceBuffer, refreshPriceBuffer } from './services/BBEngine';
+import { positionScanner } from './services/position/PositionScanner';
+import { getPriceBufferSnapshot, restorePriceBuffer, refreshPriceBuffer } from './services/market/PoolMarketService';
 import { createServiceLogger } from './utils/logger';
 import { loadState, saveState, restoreState } from './utils/stateManager';
 import { bandwidthTracker } from './utils/BandwidthTracker';
@@ -12,6 +12,7 @@ import { prefetchAll } from './runners/prefetch';
 import { computeAll } from './runners/compute';
 import { runBotService } from './runners/reporting';
 import { runBackgroundTasks } from './runners/backgroundTasks';
+import { runMCEngine } from './runners/mcEngine';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
@@ -23,6 +24,7 @@ let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 
 let isCycleRunning = false;
 let isBackgroundTaskRunning = false;
+let isMCEngineRunning = false;
 let isStartupComplete = false;
 
 // ── 工具函式 ──────────────────────────────────────────────────────────────────
@@ -41,7 +43,7 @@ async function sendCriticalAlert(key: string, message: string) {
 }
 
 // ── 主週期（cron 與 FAST_STARTUP 共用）───────────────────────────────────────
-// 順序：TokenPrice → Pool → BB → Position → Risk → Bot → save
+// 順序：TokenPrice → Pool → BB → Position → Risk → MC策略 → Bot → save
 // 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
 // 首次啟動（無倉位）由 main() 的初始掃描路徑處理，不走此函式。
 
@@ -53,15 +55,26 @@ async function runCycle() {
     positionScanner.updatePositions(result.positions);
     appState.commit(data, { positions: positionScanner.getTrackedPositions() });
 
-    await runBotService(botService, isStartupComplete).catch((e) => log.error(`BotService: ${e}`));
-    await triggerStateSave().catch((e) => log.error(`State save: ${e}`));
+    // MC 策略引擎：commit 後 pools/bbs 已更新，可安全計算
+    // guard 避免 Telegram 指令手動觸發時與主排程重疊
+    if (!isMCEngineRunning) {
+        isMCEngineRunning = true;
+        runMCEngine(data.historicalReturns, botService.sendAlert.bind(botService))
+            .catch((e) => log.error(`MCEngine`, e))
+            .finally(() => { isMCEngineRunning = false; });
+    } else {
+        log.info('MCEngine: 已在執行中，本輪跳過');
+    }
+
+    await runBotService(botService, isStartupComplete).catch((e) => log.error(`BotService`, e));
+    await triggerStateSave().catch((e) => log.error(`State save`, e));
 
     // 記錄 snapshot 至 positions.log
     const bbForLog = appState.positions[0]
-        ? (appState.bbs[appState.positions[0].poolAddress.toLowerCase()] ?? null)
+        ? (appState.marketSnapshots[appState.positions[0].poolAddress.toLowerCase()] ?? null)
         : null;
-    await positionScanner.logSnapshots(appState.positions, bbForLog, appState.bbKLowVol, appState.bbKHighVol)
-        .catch((e) => log.error(`LogSnapshots: ${e}`));
+    await positionScanner.logSnapshots(appState.positions, bbForLog, appState.marketKLowVol, appState.marketKHighVol)
+        .catch((e) => log.error(`LogSnapshots`, e));
 }
 
 // ── 低優先級背景任務（由呼叫方在主週期完成後觸發，runCycle 本身不觸發）──────
@@ -74,7 +87,7 @@ function scheduleBackgroundTasks(label: string) {
     }
     isBackgroundTaskRunning = true;
     runBackgroundTasks(triggerStateSave)
-        .catch((e) => log.error(`BackgroundTasks (${label}): ${e}`))
+        .catch((e) => log.error(`BackgroundTasks (${label})`, e))
         .finally(() => { isBackgroundTaskRunning = false; });
 }
 
@@ -123,9 +136,9 @@ async function main() {
         const addedTracked = ucTrackedPositions(cfg).filter(t => !prevTrackedIds.has(t.tokenId));
 
         appState.userConfig = cfg;
-        // bbKLowVol / bbKHighVol 在 userConfig 更新後同步到 appState runtime 欄位（BBEngine 使用）
-        if (cfg.bbKLowVol  !== undefined) appState.bbKLowVol  = cfg.bbKLowVol;
-        if (cfg.bbKHighVol !== undefined) appState.bbKHighVol = cfg.bbKHighVol;
+        // marketKLowVol / marketKHighVol 在 userConfig 更新後同步到 appState runtime 欄位（PoolMarketService 使用）
+        if (cfg.marketKLowVol  !== undefined) appState.marketKLowVol  = cfg.marketKLowVol;
+        if (cfg.marketKHighVol !== undefined) appState.marketKHighVol = cfg.marketKHighVol;
         await saveState(
             getPriceBufferSnapshot(),
             bandwidthTracker.snapshot(),
@@ -145,17 +158,17 @@ async function main() {
             log.info(`🔍 ${reason}，背景觸發 chain scan`);
             positionScanner.syncFromChain(true)
                 .then(() => saveState(getPriceBufferSnapshot(), bandwidthTracker.snapshot(), appState.userConfig))
-                .catch(e => log.error(`Auto sync (new tracked): ${e}`));
+                .catch(e => log.error(`Auto sync (new tracked)`, e));
         }
     });
-    botService.startBot().catch((e) => log.error(`Bot start error: ${e}`));
+    botService.startBot().catch((e) => log.fatal(`Bot start error`, e));
 
     // ── 2. State restore ─────────────────────────────────────────────────────
     const savedState = await loadState();
     if (savedState) {
         restoreState(savedState);
-        restorePriceBuffer(savedState.priceBuffer ?? {});
-        bandwidthTracker.restore(savedState.bandwidthWindows ?? {});
+        restorePriceBuffer(savedState.priceHistory ?? {});
+        bandwidthTracker.restore(savedState.rpcBandwidthWindows ?? {});
         appState.stakeDiscoveryLastBlock = savedState.stakeDiscoveryLastBlock ?? {};
         log.info('✅ state restored from previous session');
     }
@@ -165,8 +178,8 @@ async function main() {
         const uc = appState.userConfig;
         if (uc.intervalMinutes && VALID_INTERVALS.includes(uc.intervalMinutes as IntervalMinutes))
             currentIntervalMinutes = uc.intervalMinutes;
-        if (uc.bbKLowVol  !== undefined) appState.bbKLowVol  = uc.bbKLowVol;
-        if (uc.bbKHighVol !== undefined) appState.bbKHighVol = uc.bbKHighVol;
+        if (uc.marketKLowVol  !== undefined) appState.marketKLowVol  = uc.marketKLowVol;
+        if (uc.marketKHighVol !== undefined) appState.marketKHighVol = uc.marketKHighVol;
         const wallets = ucWalletAddresses(uc);
         const totalPositions = uc.wallets.reduce((s, w) => s + w.positions.length, 0);
         log.info(`✅ userConfig restored — wallets: ${wallets.length}, positions: ${totalPositions}`);
@@ -180,8 +193,8 @@ async function main() {
         intervalMinutes: currentIntervalMinutes,
         flashIntervalMinutes: config.DEFAULT_FLASH_INTERVAL_MINUTES,
         fullReportIntervalMinutes: config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES,
-        bbKLowVol: appState.bbKLowVol,
-        bbKHighVol: appState.bbKHighVol,
+        marketKLowVol: appState.marketKLowVol,
+        marketKHighVol: appState.marketKHighVol,
         ...appState.userConfig,
     };
 
@@ -189,7 +202,7 @@ async function main() {
     const hasWallets = ucWalletAddresses(appState.userConfig).length > 0;
 
     if (!hasWallets) {
-        log.warn('No wallet addresses configured — skipping startup scan. Use /wallet add in Telegram to add a wallet.');
+        log.warn('No wallet addresses configured — skipping position restore. Use /wallet add in Telegram to add a wallet.');
     } else {
         positionScanner.restoreFromUserConfig();
         const allKnownIds = new Set(
@@ -214,7 +227,7 @@ async function main() {
     }
 
     // ── 4. 初始掃描（非 FAST_STARTUP 才執行）────────────────────────────────
-    if (!config.FAST_STARTUP && hasWallets) {
+    if (!config.FAST_STARTUP) {
         const data = await prefetchAll(sendCriticalAlert);
         if (data) {
             if (savedState) {
@@ -247,7 +260,7 @@ async function main() {
             isCycleRunning = true;
             Promise.resolve()
                 .then(runCycle)
-                .catch((e) => log.error(`FastStartup cycle: ${e}`))
+                .catch((e) => log.error(`FastStartup cycle`, e))
                 .finally(() => {
                     isCycleRunning = false;
                     scheduleBackgroundTasks('fast');
@@ -270,7 +283,7 @@ async function gracefulShutdown(signal: string) {
         await triggerStateSave();
         log.info('✅ state saved — exiting');
     } catch (e) {
-        log.error(`graceful shutdown save failed: ${e}`);
+        log.fatal(`graceful shutdown save failed`, e);
     }
     process.exit(0);
 }
@@ -278,4 +291,4 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-main().catch((e) => log.error(`Main error: ${e}`));
+main().catch((e) => log.fatal(`Main error`, e));

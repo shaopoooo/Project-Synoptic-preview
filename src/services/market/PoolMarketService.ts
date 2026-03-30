@@ -1,16 +1,17 @@
 import axios from 'axios';
 import { nearestUsableTick } from '@uniswap/v3-sdk';
-import { tickToRatio } from '../utils/math';
-import { bbVolCache, historicalReturnsCache } from '../utils/cache';
-import { createServiceLogger } from '../utils/logger';
-import { geckoRequest } from '../utils/rpcProvider';
-import { config } from '../config';
-import { getTokenPrices } from '../utils/tokenPrices';
-import { BBPattern, BBResult, BBVolEntry, Dex, HistoricalReturnsEntry } from '../types';
-import { appState } from '../utils/AppState';
+import { tickToRatio } from '../../utils/math';
+import { volatilityCache, historicalReturnsCache } from '../../utils/cache';
+import { createServiceLogger } from '../../utils/logger';
+import { geckoRequest } from '../../utils/rpcProvider';
+import { config } from '../../config';
+import { getTokenPrices } from './TokenPriceService';
+import { MarketPattern, MarketSnapshot, VolatilityEntry, Dex, HistoricalReturnsEntry, HourlyReturn } from '../../types';
+import { appState } from '../../utils/AppState';
+import { detectBBPattern } from '../strategy/BollingerBands';
 
 
-const log = createServiceLogger('BBEngine');
+const log = createServiceLogger('PoolMarketService');
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -30,19 +31,19 @@ function calcVol(prices: number[]): number {
  *  Results are cached 2 hours to avoid hitting free-tier rate limits. */
 async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
   const key = poolAddress.toLowerCase();
-  const cached = bbVolCache.get(key);
+  const cached = volatilityCache.get(key);
   if (cached && Date.now() < cached.expiresAt) return cached.vol;
 
   const tag = poolAddress.slice(0, 10);
   const save = (vol: number) => {
-    bbVolCache.set(key, { vol, expiresAt: Date.now() + config.BB_VOL_CACHE_TTL_MS });
-    log.info(`💾 30D vol  ${tag}  ${(vol * 100).toFixed(1)}%  (${config.BB_VOL_CACHE_TTL_MS / 3600000}h cache)`);
+    volatilityCache.set(key, { vol, expiresAt: Date.now() + config.BB_VOL_CACHE_TTL_MS });
+    log.debug(`💾 30D vol  ${tag}  ${(vol * 100).toFixed(1)}%  (${config.BB_VOL_CACHE_TTL_MS / 3600000}h cache)`);
     return vol;
   };
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      log.info(`🌐 30D vol  ${tag}  attempt ${attempt}/3`);
+      log.debug(`🌐 30D vol  ${tag}  attempt ${attempt}/3`);
       const res = await geckoRequest(() => axios.get(
         `${config.API_URLS.GECKOTERMINAL_OHLCV}/${key}/ohlcv/day?limit=30`,
         {
@@ -80,77 +81,164 @@ async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
  * In-memory Price Buffer to replace hourly GeckoTerminal calls.
  * Stores the close price for each hour.
  */
-/**
- * 取得 720 根 1H K 線的歷史 log 報酬率（Bootstrap MC 引擎的抽樣母體，720H = 30 天）。
- * 呼叫 GeckoTerminal /ohlcv/hour?limit=720，TTL=24h。
- * 失敗時回傳空陣列——MC 引擎會將此視為「資料不足，不執行模擬」。
- */
-export async function fetchHistoricalReturns(poolAddress: string, dex: Dex, hours = config.HISTORICAL_RETURNS_HOURS): Promise<number[]> {
-    const key = poolAddress.toLowerCase();
-    const cached = historicalReturnsCache.get(key);
-    if (cached && Date.now() < cached.expiresAt) return cached.returns;
+/** GeckoTerminal 原始蠟燭格式（內部使用） */
+interface RawCandle {
+    ts: number;     // c[0] Unix 秒
+    open: number;   // c[1]
+    high: number;   // c[2]
+    low: number;    // c[3]
+    close: number;  // c[4]
+    volume: number; // c[5] USD 交易量
+}
 
-    const tag = poolAddress.slice(0, 10);
+/**
+ * 從 GeckoTerminal 抓取最近 N 根 1H K 線，保留全部 OHLCV 欄位（c[0]~c[5]）。
+ * 回傳「舊→新」排序；失敗時回傳 null。
+ */
+async function fetchOHLCVWithTs(poolKey: string, hours: number): Promise<RawCandle[] | null> {
+    const tag = poolKey.slice(0, 10);
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            log.info(`🌐 歷史報酬率  ${tag}  limit=${hours}H  attempt ${attempt}/3`);
             const res = await geckoRequest(() => axios.get(
-                `${config.API_URLS.GECKOTERMINAL_OHLCV}/${key}/ohlcv/hour?limit=${hours}`,
+                `${config.API_URLS.GECKOTERMINAL_OHLCV}/${poolKey}/ohlcv/hour?limit=${hours}`,
                 { timeout: 12000, headers: { 'User-Agent': config.USER_AGENT } }
             ));
-            const dailyList: any[][] = res.data?.data?.attributes?.ohlcv_list ?? [];
-            if (dailyList.length > 1) {
-                // GeckoTerminal 回傳「最新在前」，reverse 轉為「舊→新」
-                const prices = dailyList.map((c: any[]) => parseFloat(c[4])).reverse();
-                const returns = prices.slice(1).map((p, i) => Math.log(p / prices[i]));
-                const entry: HistoricalReturnsEntry = {
-                    returns,
-                    expiresAt: Date.now() + config.HISTORICAL_RETURNS_CACHE_TTL_MS,
-                };
-                historicalReturnsCache.set(key, entry);
-                log.info(`💾 歷史報酬率  ${tag}  ${returns.length} 筆  (24h 快取)`);
-                return returns;
+            const list: any[][] = res.data?.data?.attributes?.ohlcv_list ?? [];
+            if (list.length > 1) {
+                // GeckoTerminal 格式：[timestamp, open, high, low, close, volume]，最新在前
+                return list.map((c: any[]): RawCandle => ({
+                    ts:     c[0] as number,
+                    open:   parseFloat(c[1]),
+                    high:   parseFloat(c[2]),
+                    low:    parseFloat(c[3]),
+                    close:  parseFloat(c[4]),
+                    volume: parseFloat(c[5]),
+                })).reverse(); // 轉為「舊→新」
             }
-            break; // 有效回應但無資料，不重試
+            return null;
         } catch (e: any) {
             const is429 = e.response?.status === 429;
             if (attempt < 3) {
                 const base = is429 ? 15000 : 5000;
                 const backoff = base * attempt + Math.random() * 5000;
-                log.warn(`歷史報酬率 ${is429 ? '429' : 'error'}  ${tag}  retry in ${(backoff / 1000).toFixed(1)}s`);
+                log.warn(`OHLCV ${is429 ? '429' : 'error'}  ${tag}  retry in ${(backoff / 1000).toFixed(1)}s`);
                 await delay(backoff);
             } else {
-                log.error(`歷史報酬率 fetch 失敗  ${tag}: ${e.message}`);
+                log.error(`OHLCV fetch 失敗  ${tag}: ${(e as Error).message}`);
             }
         }
     }
-    return [];
+    return null;
 }
 
 /**
- * 根據當前帶寬與 30D 均值判斷 BB 型態。
- * 可從 BBEngine.computeDynamicBB 內部呼叫，或在 index.ts 寫回 BBResult 時呼叫。
+ * 將「舊→新」排序的 RawCandle[] 轉為 HourlyReturn[]。
+ * r = ln(close_i / close_{i-1})；第 0 根蠟燭無前一根，故結果比輸入少 1 筆。
  */
-export function detectBBPattern(
-    bandwidth: number,
-    avg30DBandwidth: number,
-    currentPrice: number,
-    sma: number,
-    upperPrice: number,
-    lowerPrice: number,
-): BBPattern {
-    if (bandwidth < avg30DBandwidth * config.BB_SQUEEZE_THRESHOLD) {
-        return 'squeeze';
+function ohlcvToHourlyReturns(ohlcv: RawCandle[]): HourlyReturn[] {
+    return ohlcv.slice(1).map((c, i) => ({
+        ts:     c.ts,
+        open:   c.open,
+        high:   c.high,
+        low:    c.low,
+        close:  c.close,
+        volume: c.volume,
+        r:      Math.log(c.close / ohlcv[i].close),
+    }));
+}
+
+/**
+ * 從 log return 陣列計算衍生統計量（mean、stdHourly、annualizedVol、skewness、kurtosis）。
+ * 結果直接存入 HistoricalReturnsEntry，供外部查詢無需重算。
+ */
+function computeReturnStats(rs: number[]): Pick<HistoricalReturnsEntry, 'mean' | 'stdHourly' | 'annualizedVol' | 'skewness' | 'kurtosis'> {
+    const n = rs.length;
+    if (n < 2) return { mean: 0, stdHourly: 0, annualizedVol: 0, skewness: 0, kurtosis: 0 };
+    const mean = rs.reduce((s, r) => s + r, 0) / n;
+    const diffs = rs.map(r => r - mean);
+    const variance = diffs.reduce((s, d) => s + d * d, 0) / n;
+    const std = Math.sqrt(variance);
+    const m3 = diffs.reduce((s, d) => s + d ** 3, 0) / n;
+    const m4 = diffs.reduce((s, d) => s + d ** 4, 0) / n;
+    return {
+        mean,
+        stdHourly: std,
+        annualizedVol: std * Math.sqrt(8760),
+        skewness: std > 0 ? m3 / std ** 3 : 0,
+        kurtosis: std > 0 ? m4 / std ** 4 - 3 : 0,
+    };
+}
+
+/**
+ * 取得歷史 log 報酬率（Bootstrap MC 引擎的抽樣母體）。
+ *
+ * 快取策略（三段式）：
+ *   < 1H 老：直接回傳快取，無 API 請求。
+ *   1H ~ 24H：增量更新——只抓新的 N 小時 + 1 重疊根，與快取合併後滑動視窗。
+ *   > 24H 或無快取：全量抓取 hours 根 K 線重建陣列。
+ *
+ * 失敗時回傳舊快取或空陣列——MC 引擎視資料不足為 No-Go。
+ */
+export async function fetchHistoricalReturns(poolAddress: string, _dex: Dex, hours = config.HISTORICAL_RETURNS_HOURS): Promise<HourlyReturn[]> {
+    const key = poolAddress.toLowerCase();
+    const cached = historicalReturnsCache.get(key);
+    const now = Date.now();
+
+    if (cached && cached.returns.length >= 2) {
+        // 以快取末筆的實際時間戳判斷新鮮度，避免重啟後時間基準跑掉
+        const latestTsMs = cached.returns[cached.returns.length - 1].ts * 1000;
+        const ageMs = now - latestTsMs;
+
+        // ── 資料新鮮（末筆距今 < 1H）→ 直接回傳 ────────────────────────────
+        if (ageMs < 3_600_000) return cached.returns;
+
+        // ── 增量補齊：從末筆 ts 往後只抓缺少的小時數 ────────────────────────
+        const hoursNeeded = Math.ceil(ageMs / 3_600_000) + 1; // +1 確保至少 1 根重疊（修正未完結蠟燭）
+        const ohlcv = await fetchOHLCVWithTs(key, hoursNeeded);
+        if (ohlcv && ohlcv.length >= 2) {
+            const freshReturns = ohlcvToHourlyReturns(ohlcv);
+            // 以 ts 去重：新資料覆蓋舊快取中相同 ts（修正未完結蠟燭），保留其餘舊資料
+            const freshTsSet = new Set(freshReturns.map(hr => hr.ts));
+            const kept = cached.returns.filter(hr => !freshTsSet.has(hr.ts));
+            const merged = [...kept, ...freshReturns].slice(-hours);
+            const stats = computeReturnStats(merged.map(hr => hr.r));
+            const entry: HistoricalReturnsEntry = {
+                returns: merged, ...stats,
+                fetchedAt: now,
+                expiresAt: cached.expiresAt,
+            };
+            historicalReturnsCache.set(key, entry);
+            log.debug(`📈 增量更新  ${key.slice(0, 10)}  +${hoursNeeded - 1}H  共 ${merged.length} 筆  vol=${(stats.annualizedVol * 100).toFixed(1)}%`);
+            return merged;
+        }
+
+        // 增量失敗 → 沿用現有快取（不丟棄已有資料）
+        log.warn(`增量更新失敗  ${key.slice(0, 10)}  使用現有快取（${cached.returns.length} 筆）`);
+        return cached.returns;
     }
-    if (bandwidth > avg30DBandwidth * config.BB_EXPANSION_THRESHOLD) {
-        // trending：帶寬放大且價格緊貼上/下軌
-        const halfBand = (upperPrice - lowerPrice) / 2;
-        const priceOffset = Math.abs(currentPrice - sma);
-        return priceOffset > halfBand * config.BB_TRENDING_OFFSET_THRESHOLD
-            ? 'trending'
-            : 'expansion';
+
+    // ── 快取不存在或資料不足 → 全量抓取 ─────────────────────────────────────
+    const tag = key.slice(0, 10);
+    log.debug(`🌐 歷史報酬率全量抓取  ${tag}  limit=${hours}H`);
+    const ohlcv = await fetchOHLCVWithTs(key, hours);
+    if (ohlcv && ohlcv.length >= 2) {
+        const returns = ohlcvToHourlyReturns(ohlcv);
+        const stats = computeReturnStats(returns.map(hr => hr.r));
+        const entry: HistoricalReturnsEntry = {
+            returns, ...stats,
+            fetchedAt: now,
+            expiresAt: now + config.HISTORICAL_RETURNS_CACHE_TTL_MS,
+        };
+        historicalReturnsCache.set(key, entry);
+        log.debug(`💾 歷史報酬率  ${tag}  ${returns.length} 筆  vol=${(stats.annualizedVol * 100).toFixed(1)}%  skew=${stats.skewness.toFixed(2)}  kurt=${stats.kurtosis.toFixed(2)}`);
+        return returns;
     }
-    return 'normal';
+
+    if (cached) {
+        log.warn(`全量抓取失敗  ${tag}  使用過期快取（${cached.returns.length} 筆）`);
+        return cached.returns;
+    }
+    return [];
 }
 
 export class PriceBuffer {
@@ -248,25 +336,25 @@ export class PriceBuffer {
 }
 
 export function getPriceBufferSnapshot(): Record<string, Record<string, number>> {
-  return BBEngine._priceBuffer.serialize();
+  return PoolMarketService._priceBuffer.serialize();
 }
 
 export function restorePriceBuffer(data: Record<string, Record<string, number>>) {
-  BBEngine._priceBuffer.restore(data);
+  PoolMarketService._priceBuffer.restore(data);
 }
 
-/** 在 runPoolScanner 後、runBBEngine 前呼叫，確保 buffer 有最新當前小時 entry。 */
+/** 在 runPoolScanner 後、runPoolMarketService 前呼叫，確保 buffer 有最新當前小時 entry。 */
 export function refreshPriceBuffer(poolAddress: string, currentTick: number) {
   const price = tickToRatio(currentTick);
-  BBEngine._priceBuffer.addPrice(poolAddress, price);
+  PoolMarketService._priceBuffer.addPrice(poolAddress, price);
 }
 
-export class BBEngine {
+export class PoolMarketService {
   /** @internal Exposed for dependency injection in tests. */
   static _priceBuffer = new PriceBuffer();
 
   /** Replace the price buffer with a test double. */
-  static _setPriceBuffer(pb: PriceBuffer) { BBEngine._priceBuffer = pb; }
+  static _setPriceBuffer(pb: PriceBuffer) { PoolMarketService._priceBuffer = pb; }
   /**
    * Fetches historical OHLCV data from GeckoTerminal (Free API, requires no key)
    * Base Network ID is 'base'
@@ -281,22 +369,22 @@ export class BBEngine {
     tickSpacing: number,
     currentTick: number,
     avg30DBandwidth?: number | null,
-  ): Promise<BBResult | null> {
+  ): Promise<MarketSnapshot | null> {
     try {
       const currentPrice = tickToRatio(currentTick);
 
       // 1. Update the price buffer with the current live price
-      BBEngine._priceBuffer.addPrice(poolAddress, currentPrice);
+      PoolMarketService._priceBuffer.addPrice(poolAddress, currentPrice);
 
       // 價格單位說明：priceBuffer 只存 tickToRatio(tick) 的 tick-ratio 值（例如 WETH/cbBTC ≈ 0.029）。
       // GeckoTerminal hourly backfill 曾被移除，原因是它返回 USD 價格（例如 $70k），
       // 與 tick-ratio 單位完全不同，混用會導致 SMA/方差計算失真。
-      const prices1H = BBEngine._priceBuffer.getPrices(poolAddress);
+      const prices1H = PoolMarketService._priceBuffer.getPrices(poolAddress);
 
       // 2. 先取得 30D 年化波動率（k 值與 stdDev fallback 都需要）
       const annualizedVol = await fetchDailyVol(poolAddress, dex);
-      const k = annualizedVol < config.BB_VOL_THRESHOLD ? appState.bbKLowVol : appState.bbKHighVol;
-      const regime = k <= appState.bbKLowVol ? 'Low Vol (震盪市)' : 'High Vol (趨勢市)';
+      const k = annualizedVol < config.BB_VOL_THRESHOLD ? appState.marketKLowVol : appState.marketKHighVol;
+      const regime = k <= appState.marketKLowVol ? 'Low Vol (震盪市)' : 'High Vol (趨勢市)';
 
       // 3. SMA：用現有資料計算，不足時以當前價格替代
       const sma = prices1H.length > 0
@@ -318,7 +406,7 @@ export class BBEngine {
         // 冷啟動：用 30D vol 換算 1H stdDev；標記 isFallback 讓 UI 顯示「資料累積中」
         stdDev1H = sma * annualizedVol / Math.sqrt(365 * 24); // √(365×24) = √8760 hourly annualization
         isWarmupFallback = true;
-        log.info(`📊 vol-derived stdDev  ${poolAddress.slice(0, 10)}  candles=${prices1H.length}/${config.MIN_CANDLES_FOR_EWMA}  stdDev=${stdDev1H.toExponential(3)} (warmup)`);
+        log.debug(`📊 vol-derived stdDev  ${poolAddress.slice(0, 10)}  candles=${prices1H.length}/${config.MIN_CANDLES_FOR_EWMA}  stdDev=${stdDev1H.toExponential(3)} (warmup)`);
       }
 
       const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
@@ -337,7 +425,7 @@ export class BBEngine {
       const tickLower = nearestUsableTick(tickLowerRaw, tickSpacing);
       const tickUpper = nearestUsableTick(tickUpperRaw, tickSpacing);
 
-      // 幣價由獨立的 tokenPrices 模組管理，BBEngine 只讀快取
+      // 幣價由獨立的 tokenPrices 模組管理，PoolMarketService 只讀快取
       const { ethPrice, cbbtcPrice, cakePrice, aeroPrice } = getTokenPrices();
 
       const minPriceRatio = ethPrice > 0 ? ethPrice / upperPrice : 0;
@@ -373,7 +461,8 @@ export class BBEngine {
         aeroPrice,
         minPriceRatio,
         maxPriceRatio,
-        isFallback: isWarmupFallback,
+        isFallback: false,
+        isWarmup: isWarmupFallback,
         regime: isWarmupFallback ? '資料累積中' : regime,
         bandwidth,
         stdDev1H,
@@ -383,7 +472,7 @@ export class BBEngine {
 
     } catch (error) {
       log.error(`BB compute failed  ${poolAddress.slice(0, 10)} (${dex}): ${error}`);
-      return BBEngine.createFallbackBB(currentTick, tickSpacing);
+      return PoolMarketService.createFallbackBB(currentTick, tickSpacing);
     }
   }
 
@@ -391,7 +480,7 @@ export class BBEngine {
    * Generates a safe fallback BB block when external APIs fail.
    * Uses the current tick as the SMA and creates a standard 10% wide band.
    */
-  private static createFallbackBB(currentTick: number, tickSpacing: number): BBResult {
+  private static createFallbackBB(currentTick: number, tickSpacing: number): MarketSnapshot {
     const k = config.BB_FALLBACK_K;
     const volatility30D = config.BB_FALLBACK_VOL;
     const currentPrice = tickToRatio(currentTick);

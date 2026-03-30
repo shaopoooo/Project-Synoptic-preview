@@ -1,4 +1,4 @@
-import { PnlCalculator } from '../../src/services/PnlCalculator';
+import { PnlCalculator } from '../../src/services/strategy/PnlCalculator';
 import { appState } from '../../src/utils/AppState';
 import { UserConfig } from '../../src/types';
 

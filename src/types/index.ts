@@ -11,7 +11,7 @@ export type Dex = 'UniswapV3' | 'UniswapV4' | 'PancakeSwapV3' | 'PancakeSwapV2' 
  * - trending:  expansion 且價格緊貼上/下軌 → 單邊強趨勢，建議觀望
  * - normal:    正常波動範圍
  */
-export type BBPattern = 'squeeze' | 'expansion' | 'trending' | 'normal';
+export type MarketPattern = 'squeeze' | 'expansion' | 'trending' | 'normal';
 
 export interface PoolStats {
     id: string;
@@ -26,7 +26,7 @@ export interface PoolStats {
     volSource: string;
 }
 
-export interface BBResult {
+export interface MarketSnapshot {
     sma: number;
     upperPrice: number;
     lowerPrice: number;
@@ -40,10 +40,13 @@ export interface BBResult {
     aeroPrice: number;
     minPriceRatio: number;
     maxPriceRatio: number;
+    /** true = API/RPC 完全失敗，BB 由 tick+spacing 估算，不可用於 MC 計算 */
     isFallback?: boolean;
+    /** true = priceBuffer 暖機中（< MIN_CANDLES），BB 由 30D vol 換算 stdDev，仍可用於 MC 計算 */
+    isWarmup?: boolean;
     regime: string;
 
-    // ── Step 2 以後由 BBEngine 填入（optional until BBEngine upgrade）──────────
+    // ── Step 2 以後由 PoolMarketService 填入（optional until PoolMarketService upgrade）──────────
     /** (upperPrice - lowerPrice) / sma，無量綱帶寬；越大代表波動越劇烈 */
     bandwidth?: number;
     /** 計算 BB 所用的 1H 標準差（price-ratio 單位），供 MC 引擎直接使用 */
@@ -54,10 +57,10 @@ export interface BBResult {
      */
     smaSlope?: number;
     /**
-     * BB 帶寬型態，由 BBEngine 對比 avg30DBandwidth 後判斷。
+     * BB 帶寬型態，由 PoolMarketService 對比 avg30DBandwidth 後判斷。
      * 需要 BandwidthTracker.getAvg() 資料，啟動初期可能為 undefined。
      */
-    bbPattern?: BBPattern;
+    bbPattern?: MarketPattern;
 }
 
 export interface PositionState {
@@ -210,10 +213,17 @@ export interface FetchedFees {
 /** Phase 0 完整輸出：所有鏈上 / API 資料，供 computeAll 純計算使用 */
 export interface CycleData {
     pools: PoolStats[];
-    bbs: Record<string, BBResult>;
+    marketSnapshots: Record<string, MarketSnapshot>;
+    tokenPrices: TokenPrices;
     rawPositions: RawChainPosition[];
     feeMaps: Map<string, FetchedFees>;
     gasCostUSD: number;
+    /** poolId.toLowerCase() → 歷史 log 報酬率（含時間戳），供 MC 引擎使用 */
+    historicalReturns: Map<string, HourlyReturn[]>;
+    /** poolId.toLowerCase() → 30D 帶寬滾動均值，Phase 0 更新後傳入 Phase 1 使用（避免 compute 有副作用） */
+    bandwidthAvg30D: Map<string, number>;
+    /** Phase 0 期間收集的非致命警告，透過 commit() 寫入 appState.cycleWarnings */
+    warnings: string[];
 }
 
 /** Phase 1 計算輸出 */
@@ -222,6 +232,24 @@ export interface CycleResult {
 }
 
 /** MC 引擎計算出的最優開倉策略，寫入 appState.strategies */
+/** 市場狀態分析結果（CHOP + Hurst 雙重指標） */
+export interface MarketRegime {
+    chop: number;    // CHOP 指數 [0,100]：>55 震盪，<45 趨勢
+    hurst: number;   // Hurst 指數 [0,1]：<0.5 均值回歸，>0.5 趨勢延續
+    atr: number;     // ATR(14) 絕對值（price-ratio 單位），供 Track 2 使用
+    signal: 'range' | 'trend' | 'neutral';
+}
+
+/** 三軌驗證的邊界參數，由 MarketRegimeAnalyzer.computeRangeGuards() 產生 */
+export interface RangeGuards {
+    /** Track 2：ATR 下限，開倉半寬不得小於此值 */
+    atrHalfWidth: number;
+    /** Track 3：歷史 P5 下界，開倉不得低於此價 */
+    p5: number;
+    /** Track 3：歷史 P95 上界，開倉不得高於此價 */
+    p95: number;
+}
+
 export interface OpeningStrategy {
     poolAddress: string;
     sigmaOpt: number;
@@ -231,6 +259,7 @@ export interface OpeningStrategy {
     bufferBand: { lower: number; upper: number };
     trancheCore: number;
     trancheBuffer: number;
+    marketRegime?: MarketRegime;
     computedAt: number;
 }
 
@@ -244,7 +273,7 @@ export interface AggregateInput {
     position: NpmPositionData;
     poolAddress: string;
     poolStats: PoolStats;
-    bb: BBResult | null;
+    bb: MarketSnapshot | null;
     unclaimed0: bigint;
     unclaimed1: bigint;
     unclaimed2: bigint;
@@ -302,9 +331,10 @@ export interface UserConfig {
     intervalMinutes?: number; // 掃描間隔（分鐘），預設由 config.DEFAULT_INTERVAL_MINUTES
     flashIntervalMinutes?: number;  // 快訊推播間隔（分鐘），預設 60；必須 > intervalMinutes 且為 10 倍數
     fullReportIntervalMinutes?: number; // 完整報告間隔（分鐘），預設 1440；必須 ≥ flashIntervalMinutes 且為 10 倍數
-    bbKLowVol?: number;     // BB k 值（低波動市），預設由 config.BB_K_LOW_VOL
-    bbKHighVol?: number;    // BB k 值（高波動市），預設由 config.BB_K_HIGH_VOL
+    marketKLowVol?: number;     // BB k 值（低波動市），預設由 config.BB_K_LOW_VOL
+    marketKHighVol?: number;    // BB k 值（高波動市），預設由 config.BB_K_HIGH_VOL
     compactMode?: boolean;  // 簡化訊息模式，開啟時每倉位壓縮為約 2 行
+    trancheCore?: number;   // MC 主倉比例（0~1），預設 config.TRANCHE_CORE_RATIO
 }
 
 // ─── Report snapshots ─────────────────────────────────────────────────────────
@@ -318,7 +348,7 @@ export interface FullReportSnapshot {
 
 // ─── Cache entry types ────────────────────────────────────────────────────────
 
-export interface BBVolEntry {
+export interface VolatilityEntry {
     vol: number;
     expiresAt: number;
 }
@@ -330,11 +360,45 @@ export interface PoolVolEntry {
     expiresAt: number;
 }
 
-/** GeckoTerminal 180D 歷史報酬率快取（Bootstrap 抽樣用） */
+/**
+ * 單筆小時 OHLCV 資料點，保留 GeckoTerminal 原始欄位 c[0]~c[5]。
+ * 新策略可直接使用 high/low/volume，無需修改抓取層。
+ */
+export interface HourlyReturn {
+    /** c[0] Unix timestamp（秒），對齊到小時 */
+    ts: number;
+    /** c[1] 開盤價（token1/token0 USD 報價） */
+    open: number;
+    /** c[2] 最高價 */
+    high: number;
+    /** c[3] 最低價 */
+    low: number;
+    /** c[4] 收盤價 */
+    close: number;
+    /** c[5] 當根蠟燭的 USD 交易量；可用於計算 dailyFeesUSD，取代 PoolScanner 的獨立 API call */
+    volume: number;
+    /** 衍生值：ln(close_i / close_{i-1})，Bootstrap MC 抽樣母體 */
+    r: number;
+}
+
+/** GeckoTerminal 歷史報酬率快取（Bootstrap 抽樣用） */
 export interface HistoricalReturnsEntry {
-    /** 每日 log return：ln(close_i / close_{i-1})，按時間順序（舊→新） */
-    returns: number[];
+    /** 每小時報酬率（含時間戳），按時間順序（舊→新） */
+    returns: HourlyReturn[];
+    /** 每小時 log return 的平均值 μ */
+    mean: number;
+    /** 每小時標準差 σ（原始，未年化） */
+    stdHourly: number;
+    /** 年化波動率：stdHourly × √8760 */
+    annualizedVol: number;
+    /** 偏態（Skewness）：衡量尾部不對稱，>0 右尾偏長 */
+    skewness: number;
+    /** 超額峰度（Excess Kurtosis）：>0 表示比常態分佈更胖尾 */
+    kurtosis: number;
+    /** 下次需全量重取的時間戳（毫秒）；僅作日誌參考，增量邏輯以 returns 末筆 ts 為準 */
     expiresAt: number;
+    /** 最後一次（全量或增量）更新的時間戳（毫秒） */
+    fetchedAt: number;
 }
 
 // ─── Monte Carlo simulation ───────────────────────────────────────────────────
@@ -425,10 +489,10 @@ export interface TranchePlan {
 // ─── Token prices ─────────────────────────────────────────────────────────────
 
 export interface TokenPrices {
-    ethPrice: number;    ethFetchedAt: number;
-    cbbtcPrice: number;  cbbtcFetchedAt: number;
-    cakePrice: number;   cakeFetchedAt: number;
-    aeroPrice: number;   aeroFetchedAt: number;
+    ethPrice: number; ethFetchedAt: number;
+    cbbtcPrice: number; cbbtcFetchedAt: number;
+    cakePrice: number; cakeFetchedAt: number;
+    aeroPrice: number; aeroFetchedAt: number;
     fetchedAt: number;   // 最近一次 fetch 嘗試時間（用於 TTL 判斷）
 }
 
@@ -498,10 +562,11 @@ export interface DiscoveredPosition {
 }
 
 export interface PersistedState {
-    volCacheBB:   Record<string, BBVolEntry>;
-    volCachePool: Record<string, PoolVolEntry>;
-    priceBuffer:  Record<string, Record<string, number>>;  // poolAddr → hourTs → price
-    bandwidthWindows?: Record<string, number[]>;            // poolAddr → rolling 30D bandwidth window
+    volatilityCache: Record<string, VolatilityEntry>;              // 30天年化波動率，BB 計算用
+    poolVolumeCache: Record<string, PoolVolEntry>;                 // 池子 daily/avg7d 成交量
+    historicalReturnsCache?: Record<string, HistoricalReturnsEntry>; // 720根1H K線報酬率，Bootstrap MC 用
+    priceHistory: Record<string, Record<string, number>>;          // poolAddr → hourTs → price
+    rpcBandwidthWindows?: Record<string, number[]>;                // RPC 限速用流量視窗
     stakeDiscoveryLastBlock?: Record<string, number>;       // wallet → 最後一次質押偵測掃到的 block，用於增量掃描
     userConfig?: UserConfig;                                // 錢包 + 倉位配置（含 openTimestamp、sortBy、intervalMinutes、bbK、closedTokenIds）
 
@@ -512,10 +577,10 @@ export interface PersistedState {
     sortBy?: string;
     /** @deprecated 已合併至 userConfig.intervalMinutes */
     intervalMinutes?: number;
-    /** @deprecated 已合併至 userConfig.bbKLowVol */
-    bbKLowVol?: number;
-    /** @deprecated 已合併至 userConfig.bbKHighVol */
-    bbKHighVol?: number;
+    /** @deprecated 已合併至 userConfig.marketKLowVol */
+    marketKLowVol?: number;
+    /** @deprecated 已合併至 userConfig.marketKHighVol */
+    marketKHighVol?: number;
     /** @deprecated 已合併至 userConfig.wallets[].positions[].openTimestamp */
     openTimestamps?: Record<string, number>;
     /** @deprecated 已合併至 userConfig.wallets[].positions[] */

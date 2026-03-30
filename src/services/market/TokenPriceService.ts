@@ -1,13 +1,13 @@
 /**
  * tokenPrices.ts — 獨立幣價快取
  *
- * 與 BBEngine 解耦，讓代幣價格可在 cron 任意位置刷新，
- * 不受 BBEngine 是否成功執行影響。
+ * 與 PoolMarketService 解耦，讓代幣價格可在 cron 任意位置刷新，
+ * 不受 PoolMarketService 是否成功執行影響。
  */
 import axios from 'axios';
-import { config } from '../config';
-import { createServiceLogger } from './logger';
-import { TokenPrices } from '../types';
+import { config } from '../../config';
+import { createServiceLogger } from '../../utils/logger';
+import { TokenPrices } from '../../types';
 
 const log = createServiceLogger('TokenPrices');
 
@@ -35,13 +35,20 @@ export async function fetchTokenPrices(): Promise<TokenPrices> {
     ]);
 
     const now = Date.now();
+    const prev = cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
+
+    // pick：API 回傳 price=0（空 pairs）與 API 失敗同等對待，均 fallback 到上一輪快取
     const pick = (r: PromiseSettledResult<any>, name: string, prevPrice: number, prevTs: number): { price: number; ts: number } => {
-        if (r.status === 'fulfilled') return { price: bestPrice(r.value.data?.pairs), ts: now };
-        log.warn(`${name} price fetch failed: ${r.reason?.message} — keeping ${prevPrice > 0 ? `$${prevPrice}` : 'zero'}`);
+        if (r.status === 'fulfilled') {
+            const price = bestPrice(r.value.data?.pairs);
+            if (price > 0) return { price, ts: now };
+            log.warn(`${name} price parsed as 0 (empty pairs?) — keeping ${prevPrice > 0 ? `$${prevPrice}` : 'no history'}`);
+        } else {
+            log.warn(`${name} price fetch failed: ${r.reason?.message} — keeping ${prevPrice > 0 ? `$${prevPrice}` : 'no history'}`);
+        }
         return { price: prevPrice, ts: prevTs };
     };
 
-    const prev = cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
     const eth   = pick(wethRes,  'WETH',  prev.ethPrice,   prev.ethFetchedAt);
     const btc   = pick(cbbtcRes, 'cbBTC', prev.cbbtcPrice, prev.cbbtcFetchedAt);
     const cake  = pick(cakeRes,  'CAKE',  prev.cakePrice,  prev.cakeFetchedAt);
@@ -53,9 +60,17 @@ export async function fetchTokenPrices(): Promise<TokenPrices> {
         aeroPrice: aero.price,   aeroFetchedAt: aero.ts,
         fetchedAt: now,
     };
-    log.info(`💹 WETH $${cache.ethPrice.toFixed(0)}  cbBTC $${cache.cbbtcPrice.toFixed(0)}  CAKE $${cache.cakePrice.toFixed(3)}  AERO $${cache.aeroPrice.toFixed(3)}`);
 
-    return cache ?? { ethPrice: 0, ethFetchedAt: 0, cbbtcPrice: 0, cbbtcFetchedAt: 0, cakePrice: 0, cakeFetchedAt: 0, aeroPrice: 0, aeroFetchedAt: 0, fetchedAt: 0 };
+    // ETH / cbBTC 為 USD 計算的關鍵幣價，任一為 0 代表資料完全不可用
+    if (cache.ethPrice === 0 || cache.cbbtcPrice === 0) {
+        throw new Error(
+            `TokenPrices: 關鍵幣價為 0（ETH=$${cache.ethPrice} cbBTC=$${cache.cbbtcPrice}），` +
+            `API 與歷史快取均無法提供有效價格`
+        );
+    }
+
+    log.info(`💹 WETH $${cache.ethPrice.toFixed(0)}  cbBTC $${cache.cbbtcPrice.toFixed(0)}  CAKE $${cache.cakePrice.toFixed(3)}  AERO $${cache.aeroPrice.toFixed(3)}`);
+    return cache;
 }
 
 /** 同步讀取快取（不觸發 API），無快取時回傳全零。 */

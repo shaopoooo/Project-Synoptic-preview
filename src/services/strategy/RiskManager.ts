@@ -1,5 +1,5 @@
-import { BBResult, PositionState, RiskAnalysis } from '../types';
-import { config } from '../config';
+import { MarketSnapshot, PositionState, RiskAnalysis } from '../../types';
+import { config } from '../../config';
 
 
 export class RiskManager {
@@ -30,7 +30,7 @@ export class RiskManager {
      */
     public static analyzePosition(
         state: PositionState,
-        bb: BBResult,
+        bb: MarketSnapshot,
         poolDailyFeesUSD: number, // 整池日手續費；內部按倉位佔 TVL 比例縮放
         avg30DBandwidth: number,
         currentBandwidth: number,
@@ -67,8 +67,8 @@ export class RiskManager {
 
         // 4. IL Breakeven Days
         // IL Breakeven Days = Cumulative IL USD / (24h Fees / 24)
-        // Wait rule says `Cumulative IL USD / (24h Fees / 24)`. 
-        // This implies breakeven in HOURS if dividing by / 24, but it says "(以天數計)". 
+        // Wait rule says `Cumulative IL USD / (24h Fees / 24)`.
+        // This implies breakeven in HOURS if dividing by / 24, but it says "(以天數計)".
         // Usually it's `IL / DailyFees` for Days. Let's use `Math.abs(IL) / dailyFeesUSD` representing Days.
         // ilBreakevenDays 只在淨虧損（cumulativeIL < 0）時有意義；盈利中回傳 0
         const ilBreakevenDays = (dailyFeesUSD > 0 && state.cumulativeIL < 0)

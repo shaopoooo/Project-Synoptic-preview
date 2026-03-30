@@ -4,7 +4,7 @@ import { checkMarketAlerts } from '../bot/alertService';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 import type { TelegramBotService } from '../bot/TelegramBot';
-import type { PositionRecord, PoolStats, BBResult, RiskAnalysis } from '../types';
+import type { PositionRecord, PoolStats, MarketSnapshot, RiskAnalysis } from '../types';
 
 const log = createServiceLogger('Reporting');
 
@@ -44,24 +44,30 @@ export async function runBotService(
 
         // 完整報告（獨立計時器，快訊之後送出）
         if (Math.floor(now / fullReportIntervalMs) > Math.floor(lastFullReportAt / fullReportIntervalMs)) {
-            const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }> = [];
+            const entries: Array<{ position: PositionRecord; pool: PoolStats; bb: MarketSnapshot | null; risk: RiskAnalysis }> = [];
             for (const pos of appState.positions) {
-                const poolData = appState.pools.find(
-                    (p) => p.id.toLowerCase() === pos.poolAddress.toLowerCase() && p.dex === pos.dex
-                );
-                const bb = appState.bbs[poolData?.id.toLowerCase() || ''];
+                const poolData = appState.findPool(pos.poolAddress, pos.dex);
+                const bb = poolData ? (appState.marketSnapshots[poolData.id.toLowerCase()] ?? null) : null;
                 const risk = pos.riskAnalysis;
                 if (!poolData || !risk) {
                     log.warn(`Missing data for position ${pos.tokenId}, skipping.`);
                     continue;
                 }
-                entries.push({ position: pos, pool: poolData, bb: bb || null, risk });
+                entries.push({ position: pos, pool: poolData, bb, risk });
             }
             if (entries.length > 0) {
                 await bot.sendConsolidatedReport(entries, appState.pools, appState.lastUpdated);
                 lastFullReportAt = now;
                 reportSent = true;
                 log.info(`✅ Telegram full report sent  ${entries.length} position(s)`);
+
+                // ── 本週期警告附加於完整報告之後 ─────────────────────────────
+                if (appState.cycleWarnings.length > 0) {
+                    const warnMsg = `⚠️ <b>本週期警告（${appState.cycleWarnings.length} 項）</b>\n`
+                        + appState.cycleWarnings.map(w => `  • ${w}`).join('\n');
+                    await bot.sendAlert(warnMsg).catch(() => { });
+                    log.warn(`CycleWarnings sent: ${appState.cycleWarnings.length} item(s)`);
+                }
             }
         }
 
@@ -70,7 +76,7 @@ export async function runBotService(
         }
 
         await checkMarketAlerts(
-            appState.bbs,
+            appState.marketSnapshots,
             appState.positions,
             appState.pools,
             (key) => bandwidthTracker.getAvg(key),

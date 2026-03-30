@@ -1,6 +1,6 @@
 import { config } from '../config';
-import { PoolStats, BBResult, PositionRecord, RiskAnalysis, FullReportSnapshot } from '../types';
-import { getTokenPrices } from '../utils/tokenPrices';
+import { PoolStats, MarketSnapshot, PositionRecord, RiskAnalysis, FullReportSnapshot } from '../types';
+import { getTokenPrices } from '../services/market/TokenPriceService';
 import {
     buildTelegramPositionBlock,
     buildSummaryBlock,
@@ -108,7 +108,7 @@ export async function sendFlashReport(
 // ── sendConsolidatedReport ────────────────────────────────────────────────────
 export async function sendConsolidatedReport(
     sendAlert: (msg: string) => Promise<void>,
-    entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
+    entries: Array<{ position: PositionRecord; pool: PoolStats; bb: MarketSnapshot | null; risk: RiskAnalysis }>,
     allPools: PoolStats[],
     lastUpdates: { cycleAt: number }
 ): Promise<void> {
@@ -201,7 +201,7 @@ export async function sendConsolidatedReport(
 
             // 區間 APR
             let inRangeApr: number | null = null;
-            const bb = appState.bbs[p.id.toLowerCase()];
+            const bb = appState.marketSnapshots[p.id.toLowerCase()];
             if (bb && !bb.isFallback && bb.sma > 0) {
                 const eff = calculateCapitalEfficiency(bb.upperPrice, bb.lowerPrice, bb.sma);
                 if (eff !== null) inRangeApr = totalApr * eff;
@@ -233,7 +233,7 @@ export async function sendConsolidatedReport(
     }
 
     // ── 更新時間 + BB k 值 ────────────────────────────────────
-    msg += buildTimestampBlock(lastUpdates, appState.bbKLowVol, appState.bbKHighVol);
+    msg += buildTimestampBlock(lastUpdates, appState.marketKLowVol, appState.marketKHighVol);
 
     // 更新 fullReportSnapshot
     for (const { position } of entries) {

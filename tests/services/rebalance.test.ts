@@ -1,7 +1,7 @@
-import { RebalanceService } from '../../src/services/rebalance';
-import { BBResult } from '../../src/types';
+import { RebalanceService } from '../../src/services/strategy/rebalance';
+import { MarketSnapshot } from '../../src/types';
 
-const makeBB = (overrides: Partial<BBResult> = {}): BBResult => ({
+const makeBB = (overrides: Partial<MarketSnapshot> = {}): MarketSnapshot => ({
     sma: 0.030,
     upperPrice: 0.033,
     lowerPrice: 0.027,

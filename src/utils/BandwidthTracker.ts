@@ -23,7 +23,7 @@ class BandwidthTracker {
 
     /**
      * 查詢指定 pool 的目前 30D 帶寬滾動均值，不修改窗口。
-     * 供 BBEngine 在計算 bbPattern 前讀取上一週期的均值。
+     * 供 PoolMarketService 在計算 bbPattern 前讀取上一週期的均值。
      * 窗口不存在或為空時回傳 null。
      */
     getAvg(poolKey: string): number | null {

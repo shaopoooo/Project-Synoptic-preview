@@ -100,7 +100,7 @@ export async function fetchGasCostUSD(): Promise<number> {
             return usd;
         }
     } catch (e: any) {
-        log.warn(`gas oracle failed: ${e.message}`);
+        log.warn(`gas oracle failed`, e);
     }
     return config.DEFAULT_GAS_COST_USD; // fallback
 }
@@ -145,10 +145,10 @@ export async function rpcRetry<T>(fn: () => Promise<T>, label: string, retries =
 
             if (isRetryable && attempt < retries) {
                 const wait = backoffMs * attempt;
-                log.warn(`RPC transient error on ${label} (attempt ${attempt}/${retries}), retry in ${wait}ms: ${error.message.slice(0, 80)}`);
+                log.warn(`RPC transient error on ${label} (attempt ${attempt}/${retries}), retry in ${wait}ms`, error);
                 await delay(wait);
             } else {
-                log.error(`RPC failed permanently on ${label}: ${error.message} (code: ${error.code})`);
+                log.error(`RPC failed permanently on ${label}`, error);
                 throw error;
             }
         }

@@ -5,7 +5,7 @@
  * vars in index.ts. All pipeline functions read and write through this object
  * so it's easy to reason about data ownership and to mock in tests.
  */
-import { PoolStats, PositionRecord, BBResult, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig, CycleData, CycleResult, OpeningStrategy } from '../types';
+import { PoolStats, PositionRecord, MarketSnapshot, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig, CycleData, CycleResult, OpeningStrategy } from '../types';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 
@@ -142,14 +142,14 @@ function buildUserConfigFromEnv(): UserConfig {
 class AppState {
     pools: PoolStats[] = [];
     positions: PositionRecord[] = [];
-    bbs: Record<string, BBResult> = {};
+    marketSnapshots: Record<string, MarketSnapshot> = {};
 
     /** MC 引擎計算出的最優開倉策略，key 為 poolAddress */
     strategies: Record<string, OpeningStrategy> = {};
 
     /** Runtime-adjustable BB k values (default from config, overridable via /bbk) */
-    bbKLowVol: number = config.BB_K_LOW_VOL;
-    bbKHighVol: number = config.BB_K_HIGH_VOL;
+    marketKLowVol: number = config.BB_K_LOW_VOL;
+    marketKHighVol: number = config.BB_K_HIGH_VOL;
 
     /**
      * User-configurable via Telegram; seeded from .env on first boot,
@@ -161,9 +161,24 @@ class AppState {
     /** wallet → 最後一次質押偵測掃到的 block（增量掃描用，持久化至 state.json） */
     stakeDiscoveryLastBlock: Record<string, number> = {};
 
+    /** 本週期收集的非致命警告（Phase 0 + Phase 1），每次 commit 時刷新 */
+    cycleWarnings: string[] = [];
+
     readonly lastUpdated = {
         cycleAt: 0,
     };
+
+    /**
+     * 依 poolAddress 查找池子。
+     * @param addr  pool 合約地址（不區分大小寫）
+     * @param dex   若指定，同時比對 DEX 類型
+     */
+    findPool(addr: string, dex?: Dex): PoolStats | undefined {
+        const key = addr.toLowerCase();
+        return dex
+            ? this.pools.find(p => p.id.toLowerCase() === key && p.dex === dex)
+            : this.pools.find(p => p.id.toLowerCase() === key);
+    }
 
     /**
      * Phase 0 + Phase 1 完成後的唯一寫入點。
@@ -171,16 +186,17 @@ class AppState {
      */
     commit(data: CycleData, result: CycleResult): void {
         this.pools = data.pools;
-        this.bbs = data.bbs;
+        this.marketSnapshots = data.marketSnapshots;
         this.positions = result.positions.filter(p => Number(p.liquidity) > 0);
+        this.cycleWarnings = [...data.warnings];
         this.lastUpdated.cycleAt = Date.now();
         this._pruneStaleBBs();
     }
 
     private _pruneStaleBBs(): void {
-        const active = new Set(this.positions.map(p => p.poolAddress.toLowerCase()));
-        for (const k of Object.keys(this.bbs)) {
-            if (!active.has(k)) delete this.bbs[k];
+        const monitored = new Set(this.pools.map(p => p.id.toLowerCase()));
+        for (const k of Object.keys(this.marketSnapshots)) {
+            if (!monitored.has(k)) delete this.marketSnapshots[k];
         }
     }
 }

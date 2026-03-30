@@ -2,9 +2,9 @@
  * PositionCalculator — 開倉試算器
  * 計算在特定池子、指定區間、指定資金量下的 IL（以 token0 為本位）與回本天數
  */
-import { appState } from '../utils/AppState';
-import { calculateCapitalEfficiency } from '../utils/math';
-import type { PoolStats, BBResult, TranchePlan } from '../types';
+import { appState } from '../../utils/AppState';
+import { calculateCapitalEfficiency } from '../../utils/math';
+import type { PoolStats, MarketSnapshot, TranchePlan } from '../../types';
 import type { RangeCandidateResult } from './MonteCarloEngine';
 
 export interface CalcScenario {
@@ -18,7 +18,7 @@ export interface CalcScenario {
 export interface CalcResult {
     poolRank: number;
     pool: PoolStats;
-    bb: BBResult | null;
+    bb: MarketSnapshot | null;
     rangeSource: 'BB' | 'user' | 'fallback';
     capital: number;          // token0 units
     currentPrice: number;     // token1 / token0
@@ -103,11 +103,11 @@ export function computeHodlValueToken0(x0: number, y0: number, P: number): numbe
 /**
  * 取得 pools 按 APR（含 farmApr）排序後的索引
  */
-function sortedPoolsByApr(): { pool: PoolStats; bb: BBResult | null; originalIdx: number }[] {
+function sortedPoolsByApr(): { pool: PoolStats; bb: MarketSnapshot | null; originalIdx: number }[] {
     return appState.pools
         .map((pool, originalIdx) => {
             const bbKey = pool.id.toLowerCase();
-            const bb = appState.bbs[bbKey] ?? null;
+            const bb = appState.marketSnapshots[bbKey] ?? null;
             return { pool, bb, originalIdx };
         })
         .sort((a, b) => {
@@ -212,18 +212,6 @@ export async function calcOpenPosition(
         downScenarios,
         upScenarios,
     };
-
-    // ── Monte Carlo（可選，需要 BB 資料）───────────────────────────────────────
-    if (runMC && bb) {
-        // 延遲 import 避免循環依賴（MonteCarloEngine → PositionCalculator → MonteCarloEngine）
-        const { calcCandidateRanges, calcTranchePlan70_30 } = await import('./MonteCarloEngine');
-        const [candidates, tranche] = await Promise.all([
-            calcCandidateRanges(capital, pool, bb).catch(() => undefined),
-            calcTranchePlan70_30(capital, pool, bb).catch(() => null),
-        ]);
-        if (candidates) base.candidates = candidates;
-        if (tranche)    base.tranche    = tranche;
-    }
 
     return base;
 }
