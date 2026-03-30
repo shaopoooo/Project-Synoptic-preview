@@ -1,16 +1,16 @@
 /**
- * ChainEventScanner — 統一鏈上事件掃描器
+ * EventLogScanner — 統一鏈上事件掃描器
  *
  * 所有 getLogs 掃描邏輯（分塊、重試、連續失敗中止）集中於此。
- * 新增事件類型只需實作 ScanHandler 介面並呼叫 chainEventScanner.registerHandler()。
+ * 新增事件類型只需實作 ScanHandler 介面並呼叫 eventLogScanner.registerHandler()。
  */
 import { ethers } from 'ethers';
-import { createServiceLogger } from '../utils/logger';
-import { rpcRetry, delay, nextProvider } from '../utils/rpcProvider';
-import { config } from '../config';
-import { ScanRequest, ScanHandler } from '../types';
+import { createServiceLogger } from '../../utils/logger';
+import { rpcRetry, delay, nextProvider } from '../../utils/rpcProvider';
+import { config } from '../../config';
+import { ScanRequest, ScanHandler } from '../../types';
 
-const log = createServiceLogger('ChainEventScanner');
+const log = createServiceLogger('EventLogScanner');
 
 const CHUNK = config.BLOCK_SCAN_CHUNK;
 const MAX_CONSECUTIVE_FAILURES = config.COLLECTED_FEES_MAX_FAILURES;
@@ -19,9 +19,9 @@ const CHUNK_DELAY_MS = config.COLLECTED_FEES_CHUNK_DELAY_MS;
 const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
 const FROM_ZERO_TOPIC = ethers.zeroPadValue(ethers.ZeroAddress, 32);
 
-// ─── ChainEventScanner ──────────────────────────────────────────────────────
+// ─── EventLogScanner ────────────────────────────────────────────────────────
 
-export class ChainEventScanner {
+export class EventLogScanner {
     private handlers: ScanHandler[] = [];
 
     registerHandler(h: ScanHandler): void {
@@ -93,7 +93,7 @@ export class ChainEventScanner {
             allTokenIdTopics,
         ];
 
-        log.info(`⛓  [${handler.name}] scanning ${activeRequests.length} tokenId(s) on NPM ${npmAddress.slice(0, 10)}…`);
+        log.debug(`⛓  [${handler.name}] scanning ${activeRequests.length} tokenId(s) on NPM ${npmAddress.slice(0, 10)}…`);
 
         // For stopOnFirstMatch: track which tokenIds are still pending
         const pendingSet: Set<string> | null = handler.stopOnFirstMatch
@@ -228,7 +228,7 @@ export async function findMintTimestampMs(
     tokenId: string,
     npmAddress: string,
 ): Promise<number | null> {
-    log.info(`🔍 [MintSearch] #${tokenId} binary search on ${npmAddress.slice(0, 10)}…`);
+    log.debug(`🔍 [MintSearch] #${tokenId} binary search on ${npmAddress.slice(0, 10)}…`);
 
     let currentBlock: number;
     try {
@@ -273,7 +273,7 @@ export async function findMintTimestampMs(
 
     if (!block) return null;
     const tsMs = block.timestamp * 1000;
-    log.info(`💾 [MintSearch] #${tokenId} minted at block ${mintBlock} (${new Date(tsMs).toISOString().slice(0, 10)})`);
+    log.debug(`💾 [MintSearch] #${tokenId} minted at block ${mintBlock} (${new Date(tsMs).toISOString().slice(0, 10)})`);
     return tsMs;
 }
 

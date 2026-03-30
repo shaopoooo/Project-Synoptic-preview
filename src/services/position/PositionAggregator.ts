@@ -1,13 +1,10 @@
-import pLimit from 'p-limit';
-import { BBResult, PoolStats, PositionRecord, AggregateInput, RawChainPosition } from '../types';
-import { FeeCalculator } from './FeeCalculator';
-import { config } from '../config';
-import { appState, ucWalletAddresses } from '../utils/AppState';
-import { createServiceLogger } from '../utils/logger';
-import { getTokenPrices } from '../utils/tokenPrices';
+import { MarketSnapshot, PoolStats, PositionRecord, AggregateInput, RawChainPosition, FetchedFees } from '../../types';
+import { config } from '../../config';
+import { createServiceLogger } from '../../utils/logger';
+import { getTokenPrices } from '../market/TokenPriceService';
 import { TickMath } from '@uniswap/v3-sdk';
-import { tickToPrice, calculateCapitalEfficiency, normalizeAmount, normalizeRawAmount } from '../utils/math';
-import { getTokenDecimals, getTokenSymbol } from '../utils/tokenInfo';
+import { tickToPrice, calculateCapitalEfficiency, normalizeAmount, normalizeRawAmount } from '../../utils/math';
+import { getTokenDecimals, getTokenSymbol } from '../../utils/tokenInfo';
 
 const FMT = config.FMT;
 const log = createServiceLogger('PositionAggregator');
@@ -35,7 +32,7 @@ export class PositionAggregator {
         const fee0Normalized = normalizeRawAmount(unclaimed0.toString(), dec0);
         const fee1Normalized = normalizeRawAmount(unclaimed1.toString(), dec1);
 
-        // bb may be null on the very first startup scan (PositionScanner runs before BBEngine).
+        // bb may be null on the very first startup scan (PositionScanner runs before PoolMarketService).
         // Fall back to getTokenPrices() which was already refreshed by runTokenPriceFetcher.
         const fallbackPrices = getTokenPrices();
         const wethPrice  = bb?.ethPrice   || fallbackPrices.ethPrice;
@@ -131,77 +128,56 @@ export class PositionAggregator {
     }
 
     /**
-     * Full pipeline: for each RawChainPosition, fetch fees, look up pool stats & BB,
-     * then assemble a base PositionRecord. Called by runPositionScanner() in index.ts.
-     * Business metrics (PnL / Risk / Rebalance) are enriched by the caller after this returns.
+     * Phase 1 純計算：接收 feeMaps（由 FeeFetcher 於 Phase 0 取得），
+     * 查找 poolStats / BB，組裝基礎 PositionRecord。
+     * 禁止任何 await / RPC / API。
      */
-    static async aggregateAll(
+    static aggregateAll(
         rawPositions: RawChainPosition[],
-        latestBBs: Record<string, BBResult>,
+        feeMaps: Map<string, FetchedFees>,
+        latestBBs: Record<string, MarketSnapshot>,
         latestPools: PoolStats[],
-    ): Promise<PositionRecord[]> {
-        const limit = pLimit(config.AGGREGATE_CONCURRENCY);
+    ): PositionRecord[] {
+        const results: PositionRecord[] = [];
 
-        const tasks = rawPositions.map((raw) => limit(async () => {
+        for (const raw of rawPositions) {
             const poolKey = raw.poolAddress.toLowerCase();
-
             const poolStats = latestPools.find(
                 p => p.id.toLowerCase() === poolKey && p.dex === raw.dex
             );
             if (!poolStats) {
-                log.warn(`#${raw.tokenId} no poolStats in latestPools (${raw.poolAddress.slice(0, 10)}) — skipping`);
-                return null;
+                log.warn(`#${raw.tokenId} no poolStats (${raw.poolAddress.slice(0, 10)}) — skipping`);
+                continue;
+            }
+
+            const fees = feeMaps.get(raw.tokenId);
+            if (!fees) {
+                log.warn(`#${raw.tokenId} no fee data in feeMaps — skipping`);
+                continue;
             }
 
             const bb = latestBBs[poolKey] ?? null;
-
-            const npmAddress = config.NPM_ADDRESSES[raw.dex];
-            const ownerIsWallet = ucWalletAddresses(appState.userConfig).some(
-                w => w.toLowerCase() === raw.owner.toLowerCase()
-            );
-
-            const feeResult = await FeeCalculator.fetchUnclaimedFees(
-                raw.tokenId, raw.dex, raw.owner, ownerIsWallet, raw.poolAddress,
-                raw.position, poolStats.tick, raw.isStaked, npmAddress,
-            );
-
-            const fallback = getTokenPrices();
-            const rewardsResult = await FeeCalculator.fetchThirdPartyRewards(
-                raw.tokenId, raw.dex, raw.owner, ownerIsWallet, raw.poolAddress,
-                raw.isStaked, feeResult.depositorWallet,
-                bb?.aeroPrice || fallback.aeroPrice,
-                bb?.cakePrice || fallback.cakePrice,
-            );
-
-            return this.assemble({
+            const rec = this.assemble({
                 tokenId: raw.tokenId,
                 dex: raw.dex,
                 owner: raw.owner,
-                depositorWallet: rewardsResult.depositorWallet || feeResult.depositorWallet,
+                depositorWallet: fees.depositorWallet,
                 isStaked: raw.isStaked,
                 position: raw.position,
                 poolAddress: raw.poolAddress,
                 poolStats,
                 bb,
-                unclaimed0: feeResult.unclaimed0,
-                unclaimed1: feeResult.unclaimed1,
-                unclaimed2: rewardsResult.unclaimed2,
-                fees2USD: rewardsResult.fees2USD,
-                token2Symbol: rewardsResult.token2Symbol,
+                unclaimed0: fees.unclaimed0,
+                unclaimed1: fees.unclaimed1,
+                unclaimed2: fees.unclaimed2,
+                fees2USD: fees.fees2USD,
+                token2Symbol: fees.token2Symbol,
                 feeTierForStats: raw.feeTierForStats,
                 openTimestampMs: raw.openTimestampMs,
             });
-        }));
-
-        const settled = await Promise.allSettled(tasks);
-        const results: PositionRecord[] = [];
-        for (const outcome of settled) {
-            if (outcome.status === 'fulfilled' && outcome.value !== null) {
-                results.push(outcome.value);
-            } else if (outcome.status === 'rejected') {
-                log.error(`aggregateAll: ${outcome.reason?.message ?? outcome.reason}`);
-            }
+            results.push(rec);
         }
+
         return results;
     }
 }

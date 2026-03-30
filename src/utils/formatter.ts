@@ -1,4 +1,5 @@
-import { PositionRecord, PoolStats, BBResult, RiskAnalysis, TokenPrices } from '../types';
+import { PositionRecord, PoolStats, MarketSnapshot, RiskAnalysis, TokenPrices, OpeningStrategy } from '../types';
+import type { CalcResult } from '../services/strategy/PositionCalculator';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
 import { normalizeRawAmount } from './math';
@@ -71,7 +72,7 @@ export function buildTelegramPositionBlock(
     index: number,
     position: PositionRecord,
     pool: PoolStats,
-    bb: BBResult | null,
+    bb: MarketSnapshot | null,
     risk: RiskAnalysis,
     compact = false,
     diff?: { dPos: number; dUncl: number; dIl: number | null }
@@ -267,7 +268,7 @@ export function buildPoolRankingBlock(rows: PoolRankingRow[]): string {
 
 /** BB k 值 + 更新時間區塊 */
 export function buildTimestampBlock(
-    lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number },
+    lastUpdates: { cycleAt: number },
     bbKLow: number,
     bbKHigh: number
 ): string {
@@ -275,9 +276,7 @@ export function buildTimestampBlock(
         hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Taipei',
     });
     const ts = (t: number) => t === 0 ? '無紀錄' : fmt.format(new Date(t));
-    let msg = `\n\n⌛ <b>資料更新時間:</b>`;
-    msg += `\n- Pool: ${ts(lastUpdates.poolScanner)} · Position: ${ts(lastUpdates.positionScanner)}`;
-    msg += `\n- BB Engine: ${ts(lastUpdates.bbEngine)} · Risk: ${ts(lastUpdates.riskManager)}`;
+    let msg = `\n\n⌛ <b>資料更新時間:</b> ${ts(lastUpdates.cycleAt)}`;
     msg += `\n📐 BB k: low=<b>${bbKLow}</b>  high=<b>${bbKHigh}</b>`;
     return msg;
 }
@@ -370,7 +369,7 @@ function toCST(d: Date): { date: string; hh: string; mm: string } {
 }
 
 /** Build the snapshot header line (with optional price row) for positions.log. */
-export function buildLogSnapshotHeader(bb?: BBResult | null, kLow?: number, kHigh?: number): string {
+export function buildLogSnapshotHeader(bb?: MarketSnapshot | null, kLow?: number, kHigh?: number): string {
     const now = new Date();
     const { date, hh, mm } = toCST(now);
     const timestamp = `${date} ${hh}:${mm} UTC+8`;
@@ -382,7 +381,7 @@ export function buildLogSnapshotHeader(bb?: BBResult | null, kLow?: number, kHig
 }
 
 /** Format a single position as a plain-text block for positions.log. */
-export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record<string, number>, bb?: BBResult | null): string {
+export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record<string, number>, bb?: MarketSnapshot | null): string {
     const now = new Date();
     const { hh, mm } = toCST(now);
     const timeStr = `${hh}:${mm}`;
@@ -453,4 +452,153 @@ export function buildLogPositionBlock(pos: PositionRecord, tokenDecimals: Record
     lines.push('─'.repeat(44));
 
     return lines.join('\n');
+}
+
+// ─── /calc 開倉試算報告 ───────────────────────────────────────────────────────
+
+export function buildCalcReport(r: CalcResult): string {
+    const dex = r.pool.dex;
+    const feePct = `${(r.pool.feeTier * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
+    const totalApr = (r.pool.apr + (r.pool.farmApr ?? 0)) * 100;
+    const lowerPct = ((r.lowerPrice - r.currentPrice) / r.currentPrice * 100).toFixed(1);
+    const upperPct = ((r.upperPrice - r.currentPrice) / r.currentPrice * 100).toFixed(1);
+    const rangeSourceLabel = r.rangeSource === 'BB' ? 'BB' : r.rangeSource === 'user' ? '自訂' : '預設 ±5%';
+
+    const lines: string[] = [
+        `📊 <b>開倉試算 — 池 #${r.poolRank}</b>`,
+        `🏊 ${dex} ${feePct}  APR <b>${totalApr.toFixed(FMT.PCT_HUNDREDTH)}%</b>`,
+        ``,
+        `💰 資金: <b>${r.capital.toFixed(4)}</b> token0`,
+        `📍 當前價: <b>${r.currentPrice.toFixed(FMT.PRICE)}</b>`,
+        `📐 區間: ${lowerPct}% ~ +${upperPct}%  (${rangeSourceLabel})`,
+        `   Pa=${r.lowerPrice.toFixed(FMT.PRICE)}  Pb=${r.upperPrice.toFixed(FMT.PRICE)}`,
+        `⚡ 資金效率: <b>${r.capitalEfficiency.toFixed(1)}×</b>`,
+        `💵 估算日費: <b>${r.dailyFeesToken0.toFixed(6)}</b> token0/day`,
+        ``,
+        `<b>⬇️ 下跌場景（token0 本位 IL）</b>`,
+    ];
+
+    for (const s of r.downScenarios) {
+        const ilStr = s.ilToken0 < 0
+            ? `-${Math.abs(s.ilToken0).toFixed(6)}`
+            : `+${s.ilToken0.toFixed(6)}`;
+        const dayStr = s.breakevenDays !== null
+            ? `回本 ${s.breakevenDays.toFixed(1)} 天`
+            : '已盈利';
+        lines.push(`  ${s.label} (${s.priceChangePct.toFixed(1)}%): IL=${ilStr}  ${dayStr}`);
+    }
+
+    lines.push(``, `<b>⬆️ 上漲場景（token0 本位 IL）</b>`);
+
+    for (const s of r.upScenarios) {
+        const ilStr = s.ilToken0 < 0
+            ? `-${Math.abs(s.ilToken0).toFixed(6)}`
+            : `+${s.ilToken0.toFixed(6)}`;
+        const dayStr = s.breakevenDays !== null
+            ? `回本 ${s.breakevenDays.toFixed(1)} 天`
+            : '已盈利';
+        const pctStr = s.priceChangePct >= 0 ? `+${s.priceChangePct.toFixed(1)}` : s.priceChangePct.toFixed(1);
+        lines.push(`  ${s.label} (${pctStr}%): IL=${ilStr}  ${dayStr}`);
+    }
+
+    if (r.rangeSource === 'fallback') {
+        lines.push(``, `⚠️ 無 BB 資料，使用預設 ±5% 區間`);
+    }
+
+    // ── BB Pattern 狀態 ───────────────────────────────────────────────────────
+    if (r.bb?.bbPattern) {
+        const patternMap: Record<string, string> = {
+            squeeze:   '🔴 收縮（低波動蓄力，區間可能即將突破）',
+            expansion: '🟡 擴張（波動放大，謹慎建倉）',
+            trending:  '🟠 趨勢（單邊行情，建議縮小區間）',
+            normal:    '🟢 正常',
+        };
+        const bwStr = r.bb.bandwidth ? ` 帶寬 ${(r.bb.bandwidth * 100).toFixed(2)}%` : '';
+        lines.push(``, `📊 BB 狀態: ${patternMap[r.bb.bbPattern] ?? r.bb.bbPattern}${bwStr}`);
+    }
+
+    // ── Monte Carlo 候選區間 ──────────────────────────────────────────────────
+    if (r.candidates && r.candidates.length > 0) {
+        lines.push(``, `─────────────────────────`, `🎲 <b>蒙地卡羅分析</b>（${r.candidates[0].mc.numPaths.toLocaleString()} 路徑 × ${r.candidates[0].mc.horizon} 天）`);
+        const allNoGo = r.candidates.every(c => !c.mc.go);
+        if (allNoGo) {
+            lines.push(`🚫 三組區間 CVaR 均不通過，建議空倉觀望。`);
+        }
+        for (const c of r.candidates) {
+            const goTag = c.mc.go ? '✅ Go' : '❌ No-Go';
+            const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+            lines.push(
+                ``,
+                `±${c.sigma}σ  效率 ${c.capitalEfficiency.toFixed(1)}×  ${goTag}`,
+                `  區間 [${c.lowerPrice.toFixed(FMT.PRICE)}, ${c.upperPrice.toFixed(FMT.PRICE)}]`,
+                `  CVaR₉₅ ${pct(c.mc.cvar95)}  均值 ${pct(c.mc.mean)}  在範圍 ${c.mc.inRangeDays.toFixed(1)} 天`,
+            );
+            if (!c.mc.go && c.mc.noGoReason) {
+                lines.push(`  ⚠️ ${c.mc.noGoReason}`);
+            }
+        }
+    }
+
+    // ── 70/30 分倉計畫 ────────────────────────────────────────────────────────
+    if (r.tranche) {
+        const t = r.tranche;
+        const dirIcon = t.buffer.direction === 'down' ? '⬇️' : '⬆️';
+        const combinedGoTag = t.combined.go ? '✅ Go' : '❌ No-Go';
+        const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+
+        lines.push(
+            ``, `─────────────────────────`,
+            `📐 <b>70/30 分倉佈局</b>  整體 ${combinedGoTag}  合計 CVaR₉₅ ${pct(t.combined.cvar95)}`,
+            ``,
+            `  主倉 ${(t.core.ratio * 100).toFixed(0)}%  ${t.core.capital.toFixed(4)} token0  ±${t.core.sigma}σ  效率 ${t.core.capitalEfficiency.toFixed(1)}×`,
+            `  [${t.core.lowerPrice.toFixed(FMT.PRICE)}, ${t.core.upperPrice.toFixed(FMT.PRICE)}]  日費 ${t.core.dailyFeesToken0.toFixed(6)}  CVaR ${pct(t.core.mc.cvar95)}`,
+            ``,
+            `  緩衝倉 ${(t.buffer.ratio * 100).toFixed(0)}%  ${t.buffer.capital.toFixed(4)} token0  ${dirIcon} [-${t.buffer.sigmaRange[0]}σ, -${t.buffer.sigmaRange[1]}σ]  OTM 待機`,
+            `  [${t.buffer.lowerPrice.toFixed(FMT.PRICE)}, ${t.buffer.upperPrice.toFixed(FMT.PRICE)}]` +
+                (t.buffer.mc ? `  CVaR ${pct(t.buffer.mc.cvar95)}` : ''),
+        );
+        if (!t.combined.go && t.combined.noGoReason) {
+            lines.push(`  ⚠️ ${t.combined.noGoReason}`);
+        }
+    }
+
+    return lines.join('\n');
+}
+
+// ─── MC 策略報告（從 appState.strategies 讀取）──────────────────────────────
+
+/**
+ * 格式化預計算的 MC 開倉策略。
+ * capital 為使用者輸入的 token0 資金量，用於縮放分倉金額。
+ */
+export function buildStrategyReport(
+    strategy: OpeningStrategy,
+    pool: PoolStats,
+    capital: number,
+): string {
+    const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+    const coreCapital = capital * strategy.trancheCore;
+    const bufferCapital = capital * strategy.trancheBuffer;
+    const ageMinutes = Math.round((Date.now() - strategy.computedAt) / 60000);
+    const ageStr = ageMinutes < 60
+        ? `${ageMinutes} 分鐘前`
+        : `${Math.round(ageMinutes / 60)} 小時前`;
+
+    const feePct = `${(pool.feeTier * 100).toFixed(FMT.FEE_TIER).replace(/\.?0+$/, '')}%`;
+    const totalApr = (pool.apr + (pool.farmApr ?? 0)) * 100;
+
+    return [
+        `📐 <b>MC 開倉策略</b>  ${pool.dex} ${feePct}  APR <b>${totalApr.toFixed(FMT.PCT_HUNDREDTH)}%</b>`,
+        ``,
+        `💰 資金: <b>${capital.toFixed(4)}</b> token0  （${ageStr}計算）`,
+        `🎯 最優 σ: <b>${strategy.sigmaOpt}</b>  Score: <b>${strategy.score.toFixed(3)}</b>`,
+        `📉 CVaR₉₅: <b>${pct(strategy.cvar95)}</b>`,
+        ``,
+        `─────────────────────────`,
+        `🔵 主倉 ${(strategy.trancheCore * 100).toFixed(0)}%  <b>${coreCapital.toFixed(4)}</b> token0`,
+        `   區間 [${strategy.coreBand.lower.toFixed(FMT.PRICE)}, ${strategy.coreBand.upper.toFixed(FMT.PRICE)}]`,
+        ``,
+        `🟡 緩衝倉 ${(strategy.trancheBuffer * 100).toFixed(0)}%  <b>${bufferCapital.toFixed(4)}</b> token0  OTM 待機`,
+        `   區間 [${strategy.bufferBand.lower.toFixed(FMT.PRICE)}, ${strategy.bufferBand.upper.toFixed(FMT.PRICE)}]`,
+    ].join('\n');
 }

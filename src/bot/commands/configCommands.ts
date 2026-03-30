@@ -63,10 +63,10 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
     bot.command('bbk', async (ctx) => {
         const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
         if (parts.length === 0) {
-            const { bbKLowVol, bbKHighVol } = appState;
+            const { marketKLowVol, marketKHighVol } = appState;
             ctx.reply(
                 `📐 <b>BB k 值設定</b>\n\n` +
-                `目前: k_low=<b>${bbKLowVol}</b>  k_high=<b>${bbKHighVol}</b>\n\n` +
+                `目前: k_low=<b>${marketKLowVol}</b>  k_high=<b>${marketKHighVol}</b>\n\n` +
                 `用法: <code>/bbk &lt;low&gt; &lt;high&gt;</code>\n` +
                 `範例: <code>/bbk 1.8 2.5</code>\n\n` +
                 `震盪市 (Low Vol) 用 k_low，趨勢市 (High Vol) 用 k_high。\n` +
@@ -85,9 +85,9 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
             ctx.reply('❌ 數值無效。low 與 high 需為正數且 low ≤ high');
             return;
         }
-        appState.bbKLowVol = kLow;
-        appState.bbKHighVol = kHigh;
-        const newCfg = { ...appState.userConfig, bbKLowVol: kLow, bbKHighVol: kHigh };
+        appState.marketKLowVol = kLow;
+        appState.marketKHighVol = kHigh;
+        const newCfg = { ...appState.userConfig, marketKLowVol: kLow, marketKHighVol: kHigh };
         if (deps.onUserConfigChange) await deps.onUserConfigChange(newCfg);
         ctx.reply(
             `✅ BB k 值已更新\nk_low=<b>${kLow}</b>  k_high=<b>${kHigh}</b>\n（下個週期生效）`,
@@ -136,6 +136,53 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
         ctx.reply(`✅ ${label}間隔已設為 <b>${fmtInterval(minutes)}</b>（下個週期生效）`, { parse_mode: 'HTML' });
     });
 
+    bot.command('tranche', async (ctx) => {
+        const parts = (ctx.match?.trim() ?? '').split(/\s+/).filter(Boolean);
+        const currentCore = appState.userConfig.trancheCore ?? config.TRANCHE_CORE_RATIO;
+
+        if (parts.length === 0) {
+            ctx.reply(
+                `📐 <b>分倉比例設定</b>\n\n` +
+                `目前: 主倉 <b>${(currentCore * 100).toFixed(0)}%</b>  緩衝倉 <b>${((1 - currentCore) * 100).toFixed(0)}%</b>\n\n` +
+                `用法: <code>/tranche &lt;主倉%&gt; &lt;緩衝倉%&gt;</code>\n` +
+                `範例: <code>/tranche 70 30</code>\n\n` +
+                `條件：兩數加總須為 100，各 ≥ 10%\n` +
+                `（下次 MC 引擎計算後生效）`,
+                { parse_mode: 'HTML' }
+            );
+            return;
+        }
+
+        if (parts.length !== 2) {
+            ctx.reply('❌ 格式錯誤。用法: <code>/tranche &lt;主倉%&gt; &lt;緩衝倉%&gt;</code>', { parse_mode: 'HTML' });
+            return;
+        }
+
+        const corePct = parseFloat(parts[0]);
+        const bufferPct = parseFloat(parts[1]);
+
+        if (isNaN(corePct) || isNaN(bufferPct)) {
+            ctx.reply('❌ 數值無效，請輸入整數百分比，例如: <code>/tranche 70 30</code>', { parse_mode: 'HTML' });
+            return;
+        }
+        if (Math.round(corePct + bufferPct) !== 100) {
+            ctx.reply(`❌ 主倉 + 緩衝倉須加總為 100（目前 ${corePct + bufferPct}）`);
+            return;
+        }
+        if (corePct < 10 || bufferPct < 10) {
+            ctx.reply('❌ 每個倉位比例須 ≥ 10%');
+            return;
+        }
+
+        const coreRatio = corePct / 100;
+        const newCfg = { ...appState.userConfig, trancheCore: coreRatio };
+        if (deps.onUserConfigChange) await deps.onUserConfigChange(newCfg);
+        ctx.reply(
+            `✅ 分倉比例已更新\n主倉 <b>${corePct.toFixed(0)}%</b>  緩衝倉 <b>${bufferPct.toFixed(0)}%</b>\n（下次 MC 引擎計算後生效）`,
+            { parse_mode: 'HTML' }
+        );
+    });
+
     bot.command('compact', async (ctx) => {
         const current = appState.userConfig.compactMode ?? false;
         const newMode = !current;
@@ -150,8 +197,8 @@ export function registerConfigCommands(bot: Bot, deps: BotDeps): void {
         const flash   = cfg.flashIntervalMinutes      ?? config.DEFAULT_FLASH_INTERVAL_MINUTES;
         const full    = cfg.fullReportIntervalMinutes ?? config.DEFAULT_FULL_REPORT_INTERVAL_MINUTES;
         const sortBy  = cfg.sortBy ?? 'size';
-        const kLow    = appState.bbKLowVol;
-        const kHigh   = appState.bbKHighVol;
+        const kLow    = appState.marketKLowVol;
+        const kHigh   = appState.marketKHighVol;
         const compact = cfg.compactMode ? '開啟' : '關閉';
 
         const walletLines = (cfg.wallets ?? []).map(w => {

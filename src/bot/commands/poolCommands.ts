@@ -24,7 +24,8 @@ export function registerPoolCommands(bot: Bot, deps: BotDeps): void {
             const src = isCustomized ? '（自訂）' : '（預設）';
             ctx.reply(
                 `🏊 <b>監測池清單 ${src}</b>\n\n${lines.join('\n')}\n\n` +
-                `用法:\n/pool add &lt;address&gt; &lt;dex&gt; &lt;fee%&gt;\n/pool rm &lt;address&gt;`,
+                `用法:\n/pool add &lt;address&gt; &lt;dex&gt; &lt;fee%&gt;\n/pool rm &lt;address&gt;\n\n` +
+                `fee% 請輸入百分比數字，例如 <code>0.05</code> 代表 0.05%（= 5 bps）`,
                 { parse_mode: 'HTML' }
             );
             return;

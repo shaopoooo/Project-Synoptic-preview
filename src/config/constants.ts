@@ -50,6 +50,8 @@ export const constants = {
     // 25M → 3M（約 70 天）：stopOnFirstMatch 從新往舊掃，近期建倉幾乎立即命中；
     // 超過 70 天的舊倉位開倉時間會顯示 N/A，建議手動設定 INITIAL_INVESTMENT_<tokenId>。
     BLOCK_LOOKBACK: 3_000_000,
+    // 質押偵測回看範圍：約 5 天（Base block time ≈ 2s，5d × 86400 / 2 = 216,000 blocks）
+    STAKE_DISCOVERY_LOOKBACK_BLOCKS: 216_000,
     BASE_BLOCK_TIME_MS: 2_000,
     COLLECTED_FEES_MAX_FAILURES: 3,   // 連續失敗上限，超過即中止本次掃描
     COLLECTED_FEES_CHUNK_DELAY_MS: 200,  // 500-block chunk 數量增加，delay 略拉長降低 rate-limit 風險
@@ -67,6 +69,35 @@ export const constants = {
     EWMA_BETA: 0.7,         // 長期平滑係數
     MIN_CANDLES_FOR_EWMA: 5,
     BANDWIDTH_WINDOW_MAX: 30 * 24 * 12, // 30D × 288 cycles/day (5-min interval) = 8640
+
+    // ── BB Pattern Detection ──────────────────────────────────────────────────
+    // 帶寬型態判斷閾值（相對於 avg30DBandwidth 的倍數）
+    BB_SQUEEZE_THRESHOLD: 0.7,          // bandwidth < avg30D × 0.7 → squeeze（盤整蓄勢）
+    BB_EXPANSION_THRESHOLD: 1.5,        // bandwidth > avg30D × 1.5 → expansion（波動放大）
+    // trending：expansion 且價格偏離 SMA > halfBand × 0.5（緊貼上/下軌）
+    BB_TRENDING_OFFSET_THRESHOLD: 0.5,
+    // SMA 斜率門檻：最後 5H vs 前 5H 均值變化 > ±0.3% 視為有方向性
+    SMA_SLOPE_TREND_THRESHOLD: 0.003,
+
+    // ── Monte Carlo Engine ────────────────────────────────────────────────────
+    HISTORICAL_RETURNS_HOURS: 720,                          // Bootstrap 抽樣用的歷史 1H K 線數（720H = 30 天）
+    HISTORICAL_RETURNS_CACHE_TTL_MS: 24 * 60 * 60 * 1000, // 歷史報酬率快取 TTL（24h）
+    MC_NUM_PATHS: 10_000,   // Bootstrap 模擬路徑數
+    MC_HORIZON_DAYS: 14,    // 模擬天數（內部轉換為小時數運算）
+    // CVaR 通過門檻：最壞 5% 損失不得超過 FACTOR × 預期 14 天費收（才允許建倉）
+    CVAR_SAFETY_FACTOR: 1.5,
+
+    // ── Kill Switch ────────────────────────────────────────────────────────────
+    KILL_SWITCH_BANDWIDTH_FACTOR: 2.5,              // bandwidth > avg30D × 此值 → 觸發 Kill Switch 告警
+    KILL_SWITCH_ALERT_COOLDOWN_MS: 4 * 60 * 60 * 1000, // 告警 cooldown（4h，避免震盪邊界反覆推播）
+    // 非對稱撤倉：價格穿入 buffer 區間此比例時推播告警（0.8 = 穿入 80%）
+    ASYMMETRIC_UNWIND_PENETRATION: 0.8,
+
+    // ── 70/30 Tranche Layout ──────────────────────────────────────────────────
+    TRANCHE_CORE_RATIO: 0.7,        // 主倉（Core）佔總資金比例
+    TRANCHE_CORE_SIGMA: 1.5,        // 主倉區間 σ 倍數（±1.5σ，緊貼現價、高 APR）
+    TRANCHE_BUFFER_SIGMA_NEAR: 3,   // Buffer 區間近端 σ（主倉穿倉後才被動進入 range）
+    TRANCHE_BUFFER_SIGMA_FAR: 5,    // Buffer 區間遠端 σ（極端行情防禦）
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
     DEFAULT_INTERVAL_MINUTES: 10,          // 預設掃描排程間隔（分鐘），可透過 /interval 修改
@@ -86,12 +117,12 @@ export const constants = {
     // ── Core Pools (Base Network) ─────────────────────────────────────────
     // 新增池子只需在此加一筆；PoolScanner 與 PositionScanner 均從這裡讀取。
     POOLS: [
-        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001  },
-        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005  },
-        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3'     as const, fee: 0.0005  },
-        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3'     as const, fee: 0.003   },
-        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome'     as const, fee: 0.000085 }, // tickSpacing=1
-        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003   },
+        { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001 },
+        { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005 },
+        { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3' as const, fee: 0.0005 },
+        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
+        { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome' as const, fee: 0.000085 }, // tickSpacing=1
+        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003 },
         { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
@@ -99,25 +130,25 @@ export const constants = {
     // Single source of truth for ERC-20 decimal places.
     // All normalization (raw BigInt → float) must read from here.
     TOKEN_DECIMALS: {
-        WETH:  18,
-        ETH:   18,
+        WETH: 18,
+        ETH: 18,
         cbBTC: 8,
-        CAKE:  18,
-        AERO:  18,
+        CAKE: 18,
+        AERO: 18,
     } as Record<string, number>,
 
     // ── Display Precision ─────────────────────────────────────────────────
     // Centralised toFixed() values — all display formatting must read from here.
     FMT: {
-        PRICE:         8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
-        TOKEN_AMOUNT:  6,   // normalised token qty in log lines (CAKE, AERO, etc.)
-        USD_WHOLE:     0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
-        USD_TENTH:     1,   // USD to $0.1         (PnL, unclaimed total, APR log)
-        USD_CENTS:     2,   // USD to $0.01        (fee detail per token, gas cost, investment)
-        USD_MILLI:     3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
-        PCT_TENTH:     1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
+        PRICE: 8,   // tick → price string (minPrice, maxPrice, BB bounds, rebalance ratios)
+        TOKEN_AMOUNT: 6,   // normalised token qty in log lines (CAKE, AERO, etc.)
+        USD_WHOLE: 0,   // large USD rounded   (position value, TVL, capital, ETH/BTC price)
+        USD_TENTH: 1,   // USD to $0.1         (PnL, unclaimed total, APR log)
+        USD_CENTS: 2,   // USD to $0.01        (fee detail per token, gas cost, investment)
+        USD_MILLI: 3,   // USD to $0.001       (small reward fees, CAKE/AERO price)
+        PCT_TENTH: 1,   // % to 0.1            (APR log, drift %, efficiency multiplier)
         PCT_HUNDREDTH: 2,   // % to 0.01           (Telegram APR ranking, ROI / profit rate)
-        FEE_TIER:      4,   // fee tier display    ("0.0085%")
+        FEE_TIER: 4,   // fee tier display    ("0.0085%")
     },
 
     // ── Math Config ───────────────────────────────────────────────────────
@@ -159,9 +190,9 @@ export const constants = {
     // Used by feeTierToTickSpacing() in utils/math.ts.
     FEE_TIER_TICK_SPACING: {
         0.000085: 1,
-        0.00009:  1,
-        0.0001:   1,
-        0.003:    60,
+        0.00009: 1,
+        0.0001: 1,
+        0.003: 60,
     } as Record<number, number>,
     FEE_TIER_TICK_SPACING_DEFAULT: 10,   // covers 0.05% and other pools
 
@@ -177,6 +208,8 @@ export const constants = {
     REBALANCE_GAS_THRESHOLD_MULTIPLE: 2, // Gas 降級門檻乘數（unclaimed × 此值 > gas 才執行）
 
     // ── Telegram Bot ──────────────────────────────────────────────────────
+    CRITICAL_ALERT_COOLDOWN_MS: 30 * 60 * 1000, // 每類告警至多每 30 分鐘一次
+
     SORT_LABELS: {
         size: '倉位大小',
         apr: '年化報酬',

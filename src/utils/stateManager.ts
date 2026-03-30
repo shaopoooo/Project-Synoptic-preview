@@ -7,7 +7,7 @@ import * as fs from 'fs-extra';
 import { rename } from 'fs/promises';
 import * as path from 'path';
 import { createServiceLogger } from './logger';
-import { bbVolCache, poolVolCache, snapshotCache, restoreCache } from './cache';
+import { volatilityCache, poolVolCache, historicalReturnsCache, snapshotCache, restoreCache } from './cache';
 import { Dex, UserConfig, WalletEntry, WalletPosition, SortBy, DiscoveredPosition, PersistedState } from '../types';
 import { ucUpsertPosition } from './AppState';
 import { config } from '../config';
@@ -94,7 +94,17 @@ function migrateToUserConfig(raw: PersistedState): UserConfig | undefined {
 export async function loadState(): Promise<PersistedState | null> {
     try {
         if (!(await fs.pathExists(STATE_FILE))) return null;
-        const raw = await fs.readJson(STATE_FILE) as PersistedState;
+        let raw: PersistedState;
+        try {
+            raw = await fs.readJson(STATE_FILE) as PersistedState;
+        } catch (parseErr: any) {
+            log.error(`state.json 解析失敗，略過載入: ${parseErr.message}`);
+            return null;
+        }
+        if (typeof raw !== 'object' || raw === null) {
+            log.error('state.json 格式錯誤（非物件），略過載入');
+            return null;
+        }
 
         const userConfig = migrateToUserConfig(raw);
         if (userConfig) {
@@ -103,10 +113,10 @@ export async function loadState(): Promise<PersistedState | null> {
                 userConfig.sortBy = raw.sortBy as SortBy;
             if (raw.intervalMinutes && userConfig.intervalMinutes === undefined)
                 userConfig.intervalMinutes = raw.intervalMinutes;
-            if (raw.bbKLowVol !== undefined && userConfig.bbKLowVol === undefined)
-                userConfig.bbKLowVol = raw.bbKLowVol;
-            if (raw.bbKHighVol !== undefined && userConfig.bbKHighVol === undefined)
-                userConfig.bbKHighVol = raw.bbKHighVol;
+            if (raw.marketKLowVol !== undefined && userConfig.marketKLowVol === undefined)
+                userConfig.marketKLowVol = raw.marketKLowVol;
+            if (raw.marketKHighVol !== undefined && userConfig.marketKHighVol === undefined)
+                userConfig.marketKHighVol = raw.marketKHighVol;
             // 舊版 closedTokenIds[] → 標記對應 WalletPosition.closed = true
             if (raw.closedTokenIds?.length) {
                 const closedSet = new Set(raw.closedTokenIds);
@@ -135,14 +145,17 @@ export async function saveState(
     priceBuffer: Record<string, Record<string, number>>,
     bandwidthWindows?: Record<string, number[]>,
     userConfig?: UserConfig,
+    stakeDiscoveryLastBlock?: Record<string, number>,
 ): Promise<void> {
     try {
         await fs.ensureDir(path.dirname(STATE_FILE));
         const state: PersistedState = {
-            volCacheBB:   snapshotCache(bbVolCache),
-            volCachePool: snapshotCache(poolVolCache),
-            priceBuffer,
-            bandwidthWindows,
+            volatilityCache:        snapshotCache(volatilityCache),
+            poolVolumeCache:        snapshotCache(poolVolCache),
+            historicalReturnsCache: snapshotCache(historicalReturnsCache),
+            priceHistory:           priceBuffer,
+            rpcBandwidthWindows: bandwidthWindows,
+            stakeDiscoveryLastBlock,
             userConfig,
         };
         // 原子寫入：先寫暫存檔，成功後 rename，避免 SIGINT 截斷導致 JSON 損毀
@@ -154,6 +167,7 @@ export async function saveState(
 }
 
 export function restoreState(state: PersistedState) {
-    restoreCache(bbVolCache,   state.volCacheBB   ?? {});
-    restoreCache(poolVolCache, state.volCachePool ?? {});
+    restoreCache(volatilityCache,        state.volatilityCache        ?? {});
+    restoreCache(poolVolCache,           state.poolVolumeCache        ?? {});
+    restoreCache(historicalReturnsCache, state.historicalReturnsCache ?? {});
 }

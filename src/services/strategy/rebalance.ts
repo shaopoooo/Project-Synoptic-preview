@@ -1,7 +1,7 @@
-import { BBResult } from '../types';
-import { createServiceLogger } from '../utils/logger';
-import { config } from '../config';
-import { RebalanceSuggestion } from '../types';
+import { MarketSnapshot } from '../../types';
+import { createServiceLogger } from '../../utils/logger';
+import { config } from '../../config';
+import { RebalanceSuggestion } from '../../types';
 
 const FMT = config.FMT;
 
@@ -55,7 +55,7 @@ export class RebalanceService {
     /**
      * 計算 rebalance 建議
      * @param currentPrice 池子即時價格 (from slot0)
-     * @param currentBB 當前 BBResult
+     * @param currentBB 當前 MarketSnapshot
      * @param poolAddress 池子地址
      * @param dex DEX 名
      * @param tickSpacing tick 間距
@@ -65,7 +65,7 @@ export class RebalanceService {
      */
     static getRebalanceSuggestion(
         currentPrice: number,
-        currentBB: BBResult,
+        currentBB: MarketSnapshot,
         unclaimedFeesUSD: number,
         breakevenDays: number,
         positionValueUSD: number,
@@ -80,7 +80,7 @@ export class RebalanceService {
 
             // 步驟 1: 計算超出百分比 (driftPercent)
             // 使用 decimal-adjusted 的 BB 邊界（與 currentPrice 同單位），
-            // 避免與 BBResult.upperPrice/lowerPrice（raw tick-ratio）或 minPriceRatio/maxPriceRatio（USD）混用。
+            // 避免與 MarketSnapshot.upperPrice/lowerPrice（raw tick-ratio）或 minPriceRatio/maxPriceRatio（USD）混用。
             const bbLower = bbLowerAdj ?? 0;
             const bbUpper = bbUpperAdj ?? 0;
             if (bbLower === 0 || bbUpper === 0) return null; // BB 尚未就緒
@@ -98,7 +98,7 @@ export class RebalanceService {
             }
             if (Math.abs(driftPercent) < config.REBALANCE_DRIFT_MIN_PCT) return null;
 
-            // 步驟 2: 產生新 BB 區間 (shallow copy 避免 mutate appState.bbs 裡的 BBResult)
+            // 步驟 2: 產生新 BB 區間 (shallow copy 避免 mutate appState.marketSnapshots 裡的 MarketSnapshot)
             const newBB = { ...currentBB };
 
             // 步驟 3: 決定推薦策略 (基於超出程度 + Breakeven + EOQ)
@@ -116,7 +116,7 @@ export class RebalanceService {
 
                 recommendedStrategy = 'dca';
                 strategyName = 'DCA 定投平衡';
-                // 為了完美補齊倉位，我們需要精算 BBEngine 建議的新區間 (newBB) 實際上需要多少的 Token0/Token1 比例
+                // 為了完美補齊倉位，我們需要精算 PoolMarketService 建議的新區間 (newBB) 實際上需要多少的 Token0/Token1 比例
                 // 使用 decimal-adjusted 的 bbLower/bbUpper，與 currentPrice 同單位
                 const targetRatio = calculateV3TokenValueRatio(currentPrice, bbLowerAdj!, bbUpperAdj!);
 

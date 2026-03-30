@@ -118,53 +118,105 @@ npm test
 
 ```
 src/
-├── index.ts                    # 主進入點：cron 排程、服務協調、狀態存取
+├── index.ts                    # 主進入點：cron 排程協調（薄層，業務邏輯下移至 runners/）
 ├── dryrun.ts                   # 乾跑測試用（不啟動 Telegram）
 ├── types/
-│   └── index.ts                # 共用型別定義（PositionRecord、BBResult、RiskAnalysis 等）
+│   └── index.ts                # 共用型別定義（PositionRecord、MarketSnapshot、RiskAnalysis、OpeningStrategy、CycleData 等）
 ├── config/
 │   ├── env.ts                  # 環境變數讀取（process.env）
-│   ├── constants.ts            # 常數（池地址、快取 TTL、BB 參數、EWMA、區塊掃描、Gas）
+│   ├── constants.ts            # 常數（池地址、快取 TTL、BB / EWMA / MC / Kill Switch 參數）
 │   ├── abis.ts                 # 合約 ABI（NPM、Pool、V4 PositionManager / StateView）
 │   └── index.ts                # 統一匯出入口
+├── runners/                    # Phase 0 / Phase 1 Pipeline 協調層
+│   ├── prefetch.ts             # Phase 0：所有 I/O 集中（TokenPrice → Pool → BB → Position → Fees → HistoricalReturns）
+│   ├── compute.ts              # Phase 1：純計算（aggregate → PnL → Risk → Rebalance），禁止任何 await
+│   ├── mcEngine.ts             # Bootstrap MC + CVaR score + 70/30 tranche；commit 後 fire-and-forget
+│   ├── reporting.ts            # 快訊 / 完整報告排程輸出 + Kill Switch A 告警
+│   └── backgroundTasks.ts      # 低優先背景任務（StakeDiscovery、TimestampFiller）
 ├── services/
-│   ├── PoolScanner.ts          # APR 掃描（DexScreener + GeckoTerminal）
-│   ├── BBEngine.ts             # 動態布林通道（20 SMA + EWMA stdDev + 30D 波動率）
-│   ├── ChainEventScanner.ts    # 通用鏈上事件掃描器（ScanHandler 介面 + OpenTimestampHandler）
-│   ├── PositionScanner.ts      # LP NFT 倉位監測（狀態管理、倉位發現、鏈上讀取）
-│   ├── FeeCalculator.ts        # 手續費計算（UniswapV3 / V4 / PancakeSwapV3 / Aerodrome 四路 + 第三幣獎勵）
-│   ├── PositionAggregator.ts   # 倉位組裝 Pipeline（RawChainPosition → PositionRecord）
-│   ├── RiskManager.ts          # 風險評估（Health Score、IL Breakeven、EOQ 複利訊號）
-│   ├── PnlCalculator.ts        # 絕對 PNL、開倉資訊、組合總覽計算
-│   └── rebalance.ts            # 再平衡建議（純計算，不執行交易）
+│   ├── dex/                    # DEX 手續費抓取層
+│   │   ├── FeeCalculator.ts    # 鏈上 fee growth 數學（V3 / V4 / Aerodrome / PancakeSwap）
+│   │   └── FeeFetcher.ts       # 批次抓取所有倉位的未領取費用
+│   ├── events/                 # 鏈上事件掃描
+│   │   ├── EventLogScanner.ts  # 通用 getLogs 掃描器（ScanHandler 介面）
+│   │   └── StakeDiscovery.ts   # ERC-721 Transfer 事件掃描，自動偵測質押倉位
+│   ├── market/                 # 市場資料服務
+│   │   ├── PoolMarketService.ts  # 動態 BB（SMA + EWMA stdDev）+ PriceBuffer + smaSlope
+│   │   ├── PoolScanner.ts        # APR 掃描（DexScreener + GeckoTerminal）
+│   │   └── TokenPriceService.ts  # 幣價抓取（WETH / cbBTC / CAKE / AERO）
+│   ├── position/               # 倉位讀取與組裝
+│   │   ├── NpmContractReader.ts  # 鏈上 NPM / V4 PositionManager 合約讀取
+│   │   ├── PositionAggregator.ts # RawChainPosition → PositionRecord（純計算）
+│   │   ├── PositionScanner.ts    # 倉位狀態管理（發現、更新、持久化）
+│   │   └── TimestampFiller.ts    # 補齊缺少 openTimestampMs 的倉位
+│   └── strategy/               # 策略與風險計算（Phase 1 純函式）
+│       ├── BollingerBands.ts     # BB 型態判斷（squeeze / expansion / trending / normal）
+│       ├── MarketRegimeAnalyzer.ts # CHOP + Hurst + ATR + Percentile 市場狀態分析
+│       ├── MonteCarloEngine.ts   # Bootstrap MC（720H × 10,000 paths）+ CVaR₉₅ + 70/30 tranche
+│       ├── PnlCalculator.ts      # 絕對 PNL、開倉資訊、組合總覽計算
+│       ├── PositionCalculator.ts # /calc 開倉試算（讀取 appState.strategies，依資金量縮放）
+│       ├── RiskManager.ts        # Health Score、IL Breakeven、EOQ 複利訊號、drift 警告
+│       └── rebalance.ts          # 再平衡建議（純計算，不執行交易）
 ├── bot/
-│   └── TelegramBot.ts          # Telegram 推播格式化
-├── backtest/
-│   └── BacktestEngine.ts       # 歷史回測引擎
-├── scripts/
-│   └── fetchHistoricalData.ts  # 抓取回測用歷史 OHLCV 資料
+│   ├── TelegramBot.ts          # Telegram 指令路由 + 推播觸發
+│   ├── reportService.ts        # 報告資料協調層（計算 → formatter → 字串輸出）
+│   ├── alertService.ts         # Kill Switch A / B + 趨勢告警 + 非對稱撤倉推播
+│   └── commands/               # 各 Telegram 指令模組
 └── utils/
     ├── logger.ts               # Winston 彩色 logger（console + 檔案輪轉）
-    ├── math.ts                 # BigInt 固定精度數學工具
-    ├── formatter.ts            # 文字格式化工具（compactAmount、buildTelegramPositionBlock 等）；只接收 raw 數值，不含運算邏輯
+    ├── math.ts                 # 基礎數學工具（normalizeAmount、tickToPrice、capitalEfficiency、sub256）
+    ├── formatter.ts            # 文字格式化（只接收 raw 數值，不含運算邏輯）
     ├── rpcProvider.ts          # FallbackProvider + rpcRetry + fetchGasCostUSD()
-    ├── cache.ts                # LRU 快取實例（bbVolCache、poolVolCache）+ snapshot/restore 工具
+    ├── cache.ts                # LRU 快取實例（historicalReturnsCache）+ snapshot/restore
     ├── stateManager.ts         # 跨重啟狀態持久化（讀寫 data/state.json）
-    ├── BandwidthTracker.ts     # 30D 帶寬滾動窗口（update / snapshot / restore）
-    ├── tokenPrices.ts          # 幣價快取（WETH / cbBTC / CAKE / AERO，2 分鐘 TTL）
-    ├── AppState.ts             # 全域共享狀態單例（pools / positions / bbs / lastUpdated / bbKLowVol / bbKHighVol）
-    └── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol）
+    ├── BandwidthTracker.ts     # 30D 帶寬滾動窗口（update / getAvg / snapshot / restore）
+    ├── AppState.ts             # 全域共享狀態單例（pools / positions / marketSnapshots / strategies）
+    ├── tokenInfo.ts            # Token 元資料（getTokenDecimals / getTokenSymbol）
+    └── validation.ts           # 地址格式驗證（WALLET_ADDRESS_RE / POOL_ADDRESS_RE / POOL_V4_ID_RE）
 
 data/
 ├── state.json                  # Bot 跨重啟快取（自動生成，首次 cron 週期後建立）
 └── historical_weth_cbbtc_1H.json  # 回測用歷史 OHLCV K 棒（手動放入）
 ```
 
-日誌輸出至 `logs/`（自動建立）：
+## 日誌分級與除錯指南 (Logging System)
 
-- `combined.log`：全量日誌（最大 5MB × 5 份）
-- `error.log`：僅錯誤（最大 5MB × 3 份）
-- `positions.log`：倉位快照文字格式歷史（最大 10MB × 10 份）
+DexBot 採用了高效且嚴謹的 **6 級日誌系統 (Winston)**，支援完整的物件參數展開 (`winston.format.splat()`) 與精準的 Error Stack Trace 擷取。
+
+日誌輸出至 `logs/`（啟動時自動建立）：
+- `combined.log`：全量日常日誌（最大 10MB × 7 份自動輪轉）
+- `error.log`：僅紀錄 `fatal` / `error` 級別（最大 5MB × 3 份），包含完整的 Call Stack。
+- `positions.log`：倉位快照歷史（唯讀 append-only，最大 10MB × 10 份）。
+
+### 終端機色彩與對齊
+每個模組（如 `[Main]`, `[PoolScanner]`, `[MCEngine]`）都有專屬 ANSI 識別色與對齊長度 (14 chars)，搭配專屬 Emoji 標籤，讓日誌流閱讀極度舒適。
+
+### 6 級制定義
+
+| 級別 | 方法 | 標籤 | 觸發情境與除錯價值 |
+| :--- | :--- | :--- | :--- |
+| **FATAL** | `log.fatal(msg, e)` | `🔥 FATAL` | **毀滅性崩潰**：系統當機、`state.json` 寫入失敗、API 完全斷線且無快取可依靠。若發生於週期內會立刻中斷該次循環。 |
+| **ERROR** | `log.error(msg, e)` | `✖  ERROR` | **局部失敗**：單一池子計算失敗、次要 RPC 節點掛調，但系統仍可容錯繼行。 |
+| **WARN** | `log.warn(msg, obj)`| `⚠  WARN` | **預期內異常 / 防護**：API Rate Limit (429) 指數退避、BB 趨勢市場跳過計算、Kill Switch 觸發。 |
+| **INFO** | `log.info(msg)` | `·  INFO` | **大局生命週期**：`10m cycle` 起訖宣告、池子過濾總結、目前 ETH/BTC 價格快照、Webhook 推播成功。 |
+| **DEBUG** | `log.debug(msg)` | `⚙  DEBUG` | **開發除錯 / 軌跡印證**：30D Vol 命中快取、增量歷史行情抓取詳情、MC 分析計算得出的 CHOP / Hurst / σ 數值、Fee 批次獲利明細。 |
+| **TRACE** | `log.trace(msg, obj)`| `🔍 TRACE` | **參數傾印**：巨量負載追蹤。例如打印出 `NonfungiblePositionManager` 回傳的完整數十個 BigInt 原始物件，或是 MC 產生的所有 `candidates` 陣列。 |
+
+> **💡 開發者除錯 Tip:** 永遠將 Error 物件作為「第二個參數」傳遞。例如 `log.error('Main loop failed', e)`。切勿使用 ``log.error(`failed: ${e}`)``，因為字串插值會銷毀錯位行號 (Stack Trace)！
+
+### 如何觸發 Debug 或 Trace 模式？
+
+透過設定環境變數 `LOG_LEVEL` 即可動態切換終端機的顯示級別（預設為 `info`，完全不印出雜訊）：
+
+```bash
+# 🐛 開啟開發除錯模式 (會印出 BB 推算、API命中快取等資訊)
+LOG_LEVEL=debug npm start
+
+# 🔍 開啟極度囉嗦模式 (會印出巨型 Payload、MC 矩陣等，抓蟲專用)
+LOG_LEVEL=trace npm start
+```
+
+> **註**：無論終端機怎麼設定，`logs/combined.log` 永遠預設至少寫入 `debug` 級別以供事後調閱。若未來在雲端想讓 Log 檔案連 `trace` 都存，啟動時可加上 `FILE_LOG_LEVEL=trace`。
 
 ---
 
@@ -181,17 +233,96 @@ data/
 
 ---
 
-## 核心資料流（每 5 分鐘）
+## 策略引擎架構
 
 ```
-PoolScanner → BBEngine → PositionScanner → RiskManager → TelegramBot
+╔═══════════════════════════════════════════════════════════════════════╗
+║              DexBot — 開倉策略引擎 + 倉位監測架構                        ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+【每輪 Cron 週期】  index.ts → runCycle()
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Phase 0 — prefetch.ts（所有 I/O 集中，Phase 1 禁止 await）         │
+  │                                                                  │
+  │  Phase 0a（並行）                                                 │
+  │    TokenPriceService → 取得 ETH / BTC / CAKE / AERO 幣價          │
+  │    PoolScanner       → DexScreener TVL + GeckoTerminal OHLCV    │
+  │                        計算 APR、farmApr、tvlUSD                  │
+  │    PoolMarketService → 動態 BB（SMA + EWMA σ）+ smaSlope          │
+  │                        → updateBandwidthAvg() → CycleData       │
+  │                                                                  │
+  │  Phase 0b（序列+jitter，避免 GeckoTerminal 429）                   │
+  │    PositionScanner.fetchAll() → RawChainPosition[]               │
+  │    FeeFetcher.fetchAll()      → 批次未領取費用                    │
+  │    fetchHistoricalReturns()   → HourlyReturn[] per pool          │
+  └──────────────────────────────────────────────────────────────────┘
+                              ↓ CycleData
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Phase 1 — compute.ts（純計算，無副作用）                           │
+  │                                                                  │
+  │  PositionAggregator.aggregateAll()  → PositionRecord[]           │
+  │    ↓ per position                                                │
+  │  PnlCalculator  → ilUSD、profitRate、openedDays                  │
+  │  RiskManager    → healthScore、EOQ compoundSignal、driftWarning  │
+  │  RebalanceService → wait / dca / withdrawSingleSide 建議         │
+  └──────────────────────────────────────────────────────────────────┘
+                              ↓ CycleResult
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  appState.commit()（唯一寫入點）                                   │
+  │    pools / marketSnapshots / positions / cycleWarnings            │
+  └──────────────────────────────────────────────────────────────────┘
+                              ↓ （commit 後 fire-and-forget）
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  mcEngine.ts → runMCEngine()（per pool）                          │
+  │                                                                  │
+  │  Track 0：BB 品質驗證                                             │
+  │    isFallback / isWarmup → 清除舊策略，跳過                        │
+  │                                                                  │
+  │  Track 1：市場狀態過濾（MarketRegimeAnalyzer）                     │
+  │    CHOP > 55 且 Hurst < 0.52 → 'range'（繼續計算）                │
+  │    CHOP < 45 或 Hurst > 0.58 → 'trend'（清除策略 + 趨勢告警）      │
+  │    volatility30D > 100%     → 極端波動，No-Go                    │
+  │                                                                  │
+  │  Track 2+3：ATR 護欄 + Percentile 天花板（computeRangeGuards）     │
+  │                                                                  │
+  │  Step 1：多 σ 候選評估（calcCandidateRanges）                      │
+  │    k × ATR → sigma；Bootstrap MC 10,000 paths                    │
+  │    go = CVaR₉₅ > safetyFloor（動態閾值）                          │
+  │                                                                  │
+  │  Step 2：最優 σ 選擇                                              │
+  │    Score = mean / |CVaR₉₅|；選最高分                              │
+  │    全部 No-Go → Kill Switch B 告警                                │
+  │                                                                  │
+  │  Step 3：70/30 分倉計畫（calcTranchePlan）                        │
+  │    Core（70%）：最優 σ 對稱區間                                    │
+  │    Buffer（30%）：依 smaSlope 決定方向（上升→上方 / 下降→下方）      │
+  │                                                                  │
+  │  → 寫入 appState.strategies[poolAddress]                         │
+  └──────────────────────────────────────────────────────────────────┘
+                              ↓
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  reporting.ts → runBotService()                                   │
+  │                                                                  │
+  │  Kill Switch A：bandwidth > avg30D × 2.5 → 帶寬告警（4h cooldown）│
+  │  快訊（預設 60min）/ 完整報告（預設 1440min）                        │
+  │  /calc：讀取 appState.strategies，依使用者資金縮放分倉金額           │
+  └──────────────────────────────────────────────────────────────────┘
+
+【背景任務】  backgroundTasks.ts（主週期完成後觸發）
+  StakeDiscovery.scan() → ERC-721 Transfer 事件，偵測新質押倉位
+  TimestampFiller.fill() → 補齊缺少 openTimestampMs 的倉位
 ```
 
-1. **PoolScanner**：從 DexScreener 取得 TVL；GeckoTerminal 取得成交量（The Graph subgraph 已停用）；計算各池 APR
-2. **BBEngine**：先行計算所有池的布林通道（避免 PositionScanner 重複呼叫 GeckoTerminal），維護 in-memory 小時價格緩衝區，計算 20 SMA + EWMA 平滑 stdDev（α=0.3, β=0.7）+ 動態 k 值，產出建議 Tick 區間
-3. **PositionScanner**：掃描多個錢包的 LP NFT（含 `userConfig` 中標記 `tracked=true` 的鎖倉倉位）；自動偵測 `isStaked`（ownerOf 回傳合約地址）；追蹤第三幣獎勵（CAKE via MasterChef `pendingCake`、AERO via gauge `earned`）；Aerodrome staked 手續費走 `gauge.pendingFees` → `collect.staticCall` → `tokensOwed` 三級策略；NFT 已 burn（`positions()` 拋出 `"ID"` 或 `"nonexistent token"`）時自動標記 `closed=true` 並停止掃描；首次發現倉位時透過 `ChainEventScanner` 批次查鏈取得建倉時間戳並寫回 `userConfig`
-4. **RiskManager**：取得即時 Gas 費用（`fetchGasCostUSD`）；計算 Health Score、IL Breakeven Days、動態 EOQ Compound Threshold、drift 警告
-5. **TelegramBot**：合併所有倉位為單一報告推播，支援 `/sort` 排序切換
+### 資料流說明
+
+1. **PoolScanner**：從 DexScreener 取得 TVL；GeckoTerminal 取得成交量；計算各池 APR（含 PancakeSwap Farm APR、Aerodrome 鏈上 TVL 修正）
+2. **PoolMarketService**：計算 20 SMA + EWMA stdDev（α=0.3, β=0.7）+ bbPattern（squeeze/expansion/trending/normal）；維護 in-memory PriceBuffer；Phase 0 計算 bandwidth 並更新 BandwidthTracker（Phase 1 只讀不寫）
+3. **MonteCarloEngine**：Bootstrap 歷史對數報酬（720H）× 10,000 條路徑；計算各 ATR-based sigma 候選的 CVaR₉₅ 與 mean PnL ratio；以 CVaR-adjusted Score（mean/|CVaR₉₅|）選出最佳 sigma；輸出 70/30 分倉計畫
+4. **MarketRegimeAnalyzer**：CHOP 指數（14根K線震盪強度）+ Hurst 指數（R/S 分析均值回歸）雙重過濾，趨勢市場直接跳過 MC 計算
+5. **PositionScanner**：掃描多錢包 LP NFT；StakeDiscovery 自動偵測質押倉位；追蹤第三幣獎勵（CAKE / AERO）；NFT 已 burn 時自動標記 `closed=true`
+6. **RiskManager**：Health Score、IL Breakeven Days、動態 EOQ Compound Threshold、drift 警告
+7. **TelegramBot**：合併推播；支援 `/sort` 排序、`/calc` 開倉試算
 
 ---
 
@@ -428,6 +559,306 @@ Bot 每次 5 分鐘 cron 週期結束後，將以下資料序列化至 `data/sta
 
 ---
 
+## 外部 API 評估紀錄
+
+### CoinMarketCap DEX API（2026-03 研究）
+
+評估是否能取代 GeckoTerminal + DexScreener，結論：**不建議替換，現況已是最優組合**。
+
+| 需求 | GeckoTerminal（現用） | DexScreener（現用） | CMC DEX API |
+|------|----------------------|---------------------|-------------|
+| Pool OHLCV（daily, 30d） | ✅ 免費，已驗證 | ❌ 無 | ⚠️ 有端點但 response schema 未驗證 |
+| Pool TVL | ✅ `reserve_in_usd` 明確 | ✅ `liquidity.usd` | ⚠️ 有 `liquidity` 欄位，是否等於 TVL 未確認 |
+| 24h Pool Volume | ✅ 主要來源 | ✅ fallback | ⚠️ 可能有，欄位名稱未確認 |
+| Token Price（WETH/cbBTC/CAKE/AERO） | ❌ 無 | ✅ `/tokens/{addr}` | ✅ `/v2/quotes/latest`，功能最成熟 |
+| Base network 支援 | ✅ | ✅ | ✅ DEXScan 已收錄 Base |
+| CL Pool 成交量準確性 | ✅ 主因選用 | ⚠️ 常漏算 | ❓ 未知 |
+| 免費額度 | 30 req/min，無上限 | 慷慨免費 | 10,000 credits/月（嚴格限制） |
+
+**關鍵問題：**
+- **TVL 不確定**：CMC 的 `liquidity` 欄位語意不明，可能是市場深度而非鎖倉 TVL，直接影響 APR 計算公式 `APR = vol × feeTier / TVL × 365`
+- **費用**：免費層 10,000 credits/月遠不足，以目前掃描頻率估計需 Startup 方案（$79/月）；GeckoTerminal 免費無上限
+- **CL Pool 成交量**：是否有 DexScreener 同樣的漏算問題未知，這正是選用 GeckoTerminal 為主要來源的原因
+
+**替代路線**：若未來 GeckoTerminal 開始限速或收費，優先考慮 CoinGecko 付費 API（同一家公司，端點格式相同，只是提高 rate limit），而非改用 CMC。
+
+---
+
+## 數學公式參考
+
+本節列出系統中所有核心公式，按計算層次排列。
+
+---
+
+### 基礎工具 (`utils/math.ts`)
+
+| 公式 | 計算式 | 使用時機 |
+|------|--------|---------|
+| 代幣金額標準化 | `amount = raw / 10^decimals` | 合約 BigInt → JS number |
+| Tick → 價格比率 | `ratio = 1.0001^tick` | 所有 tick-to-price 轉換 |
+| Tick → 顯示價格 | `price = 1.0001^tick × 10^(dec0−dec1)` | UI 顯示、跨代幣計算 |
+| 資本效率倍數 | `CE = 1 / (√(upper/sma) − √(lower/sma))` | 集中流動性槓桿效應 |
+| uint256 環繞減法 | `sub256(a,b) = ((a−b) % U256 + U256) % U256` | Solidity `feeGrowth` 環繞計算 |
+
+---
+
+### 鏈上費用計算 (`services/dex/FeeCalculator.ts`)
+
+**Uniswap V3 / Aerodrome 未領取費用（V3 fee growth 數學）：**
+
+```
+# 下邊界 (currentTick >= tickLower 時)
+below0 = ticks[tickLower].feeGrowthOutside0X128
+         else: sub256(fgglobal0, ticks[tickLower].feeGrowthOutside0X128)
+
+# 上邊界 (currentTick < tickUpper 時)
+above0 = ticks[tickUpper].feeGrowthOutside0X128
+         else: sub256(fgglobal0, ticks[tickUpper].feeGrowthOutside0X128)
+
+# 區間內累積費用
+inside0 = sub256(sub256(fgglobal0, below0), above0)
+
+# 未領取數量（含已到帳 tokensOwed）
+pending0 = liquidity × sub256(inside0, feeGrowthInside0LastX128) / Q128
+fees0    = pending0 + tokensOwed0
+```
+
+**Uniswap V4**（`feeGrowthInside` 由 StateView 直接提供，簡化版）：
+
+```
+fees0 = liquidity × sub256(curFg0, lastFg0) / Q128
+```
+
+**第三方獎勵：**
+- Aerodrome：`aeroUSD = gauge.earned(wallet, tokenId) × aeroPrice`
+- PancakeSwap：`cakeUSD = masterchef.pendingCake(tokenId) × cakePrice`
+
+---
+
+### 市場行情 (`services/market/PoolMarketService.ts`)
+
+| 公式 | 計算式 | 使用時機 |
+|------|--------|---------|
+| Log 報酬率 | `r[i] = ln(close[i] / close[i−1])` | OHLCV → MC 輸入 |
+| 30D 年化波動率 | `vol = √(Var(r)) × √365` | BB 初始化 |
+| 1H 標準差（暖機期） | `σ₁H = sma × vol30D / √8760` | PriceBuffer < MIN_CANDLES 時 |
+| 1H 標準差（EWMA） | `s[i] = α × p[i] + β × s[i−1]`，`σ₁H = √Var(s)` | 正常運行期（α=0.3, β=0.7） |
+| SMA 斜率 | `slope = (avg(last5) − avg(prev5)) / avg(prev5)` | 趨勢方向判斷、buffer 方向選擇 |
+| BB 邊界 | `upper = min(sma + maxOffset, sma + k×σ₁H)` | 建倉區間計算（maxOffset = sma×10%） |
+| Tick 反推 | `tick = round(ln(price) / ln(1.0001))` | BB 邊界 → tick |
+| 帶寬 | `bandwidth = (upper − lower) / sma` | Kill Switch A 判斷 |
+| 偏度 | `skew = E[(r−μ)³] / σ³` | 歷史報酬率統計摘要 |
+| 超額峰度 | `kurt = E[(r−μ)⁴] / σ⁴ − 3` | 歷史報酬率統計摘要 |
+
+**APR 公式：**
+```
+avgDailyVol = (gecko24h + gecko7dAvg) / 2
+APR = avgDailyVol × feeTier / TVL × 365
+```
+
+---
+
+### 布林帶型態 (`services/strategy/BollingerBands.ts`)
+
+```
+bandwidth = (upper − lower) / sma
+
+squeeze  : bandwidth < avg30D × BB_SQUEEZE_THRESHOLD    → 低波動壓縮
+expansion: bandwidth > avg30D × BB_EXPANSION_THRESHOLD  → 高波動擴張
+trending : expansion 且 |price−sma| > halfBand × threshold → 趨勢市場
+normal   : 其他
+```
+
+使用時機：`PoolMarketService.computeDynamicBB` 輸出 `bbPattern` 欄位。
+
+---
+
+### 市場狀態分析 (`services/strategy/MarketRegimeAnalyzer.ts`)
+
+**CHOP 指數（14根1H K線）：**
+```
+atrSum     = Σ(high_i − low_i)   # i ∈ 最近 n 根
+totalRange = max(high) − min(low)
+CHOP       = 100 × log10(atrSum / totalRange) / log10(n)
+
+> 55 = 偏震盪（LP 友善）
+< 45 = 偏趨勢（LP 風險高）
+```
+
+**Hurst 指數（R/S 分析，maxLag=20）：**
+```
+for lag = 4..20:
+  for each chunk (size=lag):
+    cumDev[i] = Σ(r[j] − mean)
+    R/S = (max(cumDev) − min(cumDev)) / std(chunk)
+  points.push({ x: ln(lag), y: ln(avg(R/S)) })
+H = OLS 線性回歸斜率（clamp [0,1]）
+
+H > 0.58 = 趨勢延續
+H < 0.52 = 均值回歸（LP 友善）
+```
+
+**市場狀態判斷：**
+```
+range  : CHOP > 55 且 Hurst < 0.52  → 雙重確認震盪，MC 繼續計算
+trend  : CHOP < 45 或 Hurst > 0.58  → 任一觸發，清除策略 + 趨勢告警
+neutral: 其他
+```
+
+**ATR 護欄（Track 2）：**
+```
+ATR(14) = Σ(high_i − low_i) / 14   # 作為開倉區間的最小半寬
+```
+
+**Percentile 天花板（Track 3）：**
+```
+p5  = sorted_closes[n × 5%]
+p95 = sorted_closes[n × 95%]        # 區間不得超出歷史 90% 分佈
+```
+
+---
+
+### Monte Carlo 引擎 (`services/strategy/MonteCarloEngine.ts`)
+
+**ATR → σ 換算（mcEngine.ts）：**
+```
+k_candidates = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0]
+sigma = k × atrHalfWidth / stdDev1H
+```
+
+**區間建構：**
+```
+maxOffset  = sma × BB_MAX_OFFSET_PCT
+lowerPrice = max(sma − maxOffset, sma − sigma × stdDev1H)
+upperPrice = min(sma + maxOffset, sma + sigma × stdDev1H)
+```
+
+**Bootstrap 單路徑（有放回抽樣）：**
+```
+P[t] = P[t−1] × exp(r_sampled)   # 每小時從歷史報酬率池抽樣
+if P[t] ∈ [lower, upper]: fees += hourlyFeesBase
+PnL_ratio = (fees + V_LP(P_T)) / capital − 1
+```
+
+**完整 MC 統計（10,000 條路徑）：**
+```
+mean   = Σ pnlRatio / n
+CVaR95 = avg(最差 5% 路徑)
+
+safetyFloor    = max(expectedFeesRatio, 1e−6)
+cvarThreshold  = −(safetyFloor × CVAR_SAFETY_FACTOR)
+go             = CVaR95 > cvarThreshold
+```
+
+**最優 σ 選擇：**
+```
+Score = mean / |CVaR₉₅|    # CVaR-adjusted 風險報酬比
+best  = argmax(Score)
+```
+
+**70/30 分倉計畫：**
+```
+Core（70%）：  [sma − σ_core × σ₁H,  sma + σ_core × σ₁H]
+Buffer（30%）：方向由 smaSlope 決定
+  smaSlope ≥ 0（上升/橫盤）→ buffer 在 core 上方
+    [sma + σ_near × σ₁H,  sma + σ_far × σ₁H]
+  smaSlope < 0（下降）→ buffer 在 core 下方
+    [sma − σ_far × σ₁H,   sma − σ_near × σ₁H]
+
+CVaR95_combined = cvar_core × 0.70 + cvar_buffer × 0.30
+```
+
+**資本效率加速 APR：**
+```
+CE              = 1 / (√(upper/sma) − √(lower/sma))
+dailyFeesToken0 = capital × (totalApr / 365) × CE
+```
+
+---
+
+### 風險管理 (`services/strategy/RiskManager.ts`)
+
+**倉位重疊度（Drift）：**
+```
+overlapLower = max(posLower, bbLower)
+overlapUpper = min(posUpper, bbUpper)
+overlapPct   = (overlapUpper − overlapLower) / (posUpper − posLower) × 100
+driftWarning = overlapPct < 80%
+```
+
+**EOQ 複利門檻：**
+```
+threshold     = √(2 × positionValueUSD × gasCostUSD)
+compoundSignal = unclaimedFees > threshold
+```
+
+**IL 回本天數：**
+```
+breakevenDays = |cumulativeIL| / dailyFeesUSD
+redAlert      = cumulativeIL < 0 且 breakevenDays > 30
+```
+
+**健康分數（0–100）：**
+```
+netReturn   = unclaimedFees + cumulativeIL
+roi         = netReturn / capital
+healthScore = clamp(50 + roi × 1000, 0, 100)
+# 50分 = 盈虧平衡；100分 = ROI ≥ +5%；0分 = ROI ≤ −5%
+```
+
+---
+
+### 再平衡 (`services/strategy/rebalance.ts`)
+
+**V3 代幣比例（決定 DCA 補入量）：**
+```
+sqrtP   = √currentPrice
+sqrtP_L = √lowerPrice
+sqrtP_U = √upperPrice
+
+Amount0_virtual = (sqrtP_U − sqrtP) / (sqrtP × sqrtP_U)
+Amount1_virtual = sqrtP − sqrtP_L
+token0Weight    = Amount0_virtual × currentPrice / totalValue
+token1Weight    = Amount1_virtual / totalValue
+```
+
+**漂移百分比：**
+```
+price > bbUpper: drift = (price − bbUpper) / bbUpper × 100
+price < bbLower: drift = (bbLower − price) / bbLower × 100 × (−1)
+|drift| < REBALANCE_DRIFT_MIN_PCT → return null（不建議操作）
+```
+
+**SD 動態偏移（withdrawSingleSide 區間中心調整）：**
+```
+sdAdj    = (bbUpper − bbMid) / k
+sdOffset = REBALANCE_SD_OFFSET_RATIO × sdAdj × sign(price − bbMid)
+```
+
+---
+
+### P&L 計算 (`services/strategy/PnlCalculator.ts`)
+
+| 公式 | 計算式 | 使用時機 |
+|------|--------|---------|
+| 絕對 PnL | `PnL = (positionValueUSD + totalFees) − initialCapital` | 倉位損益追蹤 |
+| 利潤率 | `profitRate = PnL / initialCapital × 100` | 個別倉位百分比 |
+| 組合 PnL% | `totalPnLPct = ΣPnL / ΣinitialCapital × 100` | 整體投資組合績效 |
+
+---
+
+### 快速索引：公式 → 使用場景
+
+| 場景 | 使用公式 |
+|------|---------|
+| **開倉決策** | CHOP + Hurst → 市場過濾；ATR × k → σ 候選；CVaR₉₅ 評分 → 最優 σ；`calcTranchePlan` → Core/Buffer 區間 |
+| **持倉監控** | IL 回本天數 → redAlert；EOQ 門檻 → compoundSignal；重疊度 → driftWarning；健康分數 → UI |
+| **市場告警** | bandwidth > avg30D × 2.5 → Kill Switch A；CVaR 全 No-Go → Kill Switch B；trend signal → 趨勢告警 |
+| **再平衡** | driftPercent → 策略選擇；V3 代幣比例 → DCA 補入量 |
+| **鏈上讀取** | feeGrowth 環繞減法 → 未領取費用；gauge.earned / pendingCake → 第三方獎勵 |
+
+---
+
 ## 動態布林通道（BBEngine）
 
 | 市場狀態 | 條件 | 預設 k 值 |
@@ -439,17 +870,26 @@ k 值可透過 Telegram `/bbk <low> <high>` 指令即時調整，重啟後從 `s
 
 價格區間上限為 SMA ±10%（`maxOffset = sma * 0.10`）。stdDev 在資料 ≥ 5 筆時使用 EWMA（α=0.3, β=0.7）平滑計算；不足時由 30D 年化波動率換算 1H stdDev（`sma × vol / √8760`）。
 
+BBEngine 同時輸出 `bandwidth`（`(upper-lower)/sma`）與 `bbPattern`（`squeeze` / `expansion` / `trending` / `normal`），供 MonteCarloEngine 的 Kill Switch 狀態機使用：bandwidth 突增超過 avg30D × 1.5 時，自動清除 MC 結果快取並強制重算。
+
 ---
 
 ## IL 計算設定
 
-本系統採用「絕對美元盈虧（Absolute PNL）」：
+本系統採用兩種計算模式：
 
+**倉位監測（絕對美元盈虧）**
 ```
-PNL = (LP 倉位現值 + 累計已領/未領手續費) - 初始投入本金
+PNL = (LP 倉位現值 + 累計已領/未領手續費) - 初始投入本金（USD）
 ```
 
-透過 Telegram `/invest` 指令設定各倉位建倉本金：
+**蒙地卡羅模擬（純 ETH 比率形式，Interpretation B）**
+```
+PnL_ratio = (fees_token0 + V_LP_token0(P_T)) / capital - 1
+```
+以「純持有 ETH」為基準線（HODL 比率 = 1），計算開倉是否能積累比單純持幣更多的 ETH。不受幣價漲跌影響，反映流動性供給的純粹 alpha。
+
+透過 Telegram `/invest` 指令設定各倉位建倉本金（用於 USD PNL 顯示）：
 
 ```
 /invest 0xYourWallet 123456 1000      # 設定 tokenId 123456 本金 $1000
@@ -482,9 +922,11 @@ PNL = (LP 倉位現值 + 累計已領/未領手續費) - 初始投入本金
 ## EOQ 複利訊號
 
 ```
-Threshold = sqrt(2 × 本金 × Gas費用 × 24h費率)
-當 Unclaimed Fees > Threshold 時，發送 COMPOUND_SIGNAL
+Threshold = √(2 × positionValueUSD × gasCostUSD)
+當 unclaimedFeesUSD > Threshold 時，發送 COMPOUND_SIGNAL
 ```
+
+公式來源：EOQ（Economic Order Quantity）模型，平衡「複利頻率增加的收益」與「每次複利的固定 Gas 成本」。
 
 Gas 費用由 `fetchGasCostUSD()` 即時取得（`maxFeePerGas × 300k gas × ETH_USD`），5 分鐘快取，失敗時 fallback `$1.5`。
 
