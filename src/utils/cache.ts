@@ -4,11 +4,14 @@
  * cache snapshot / restore (state persistence).
  */
 import { LRUCache } from 'lru-cache';
-import { BBVolEntry, PoolVolEntry } from '../types';
+import { VolatilityEntry, HistoricalReturnsEntry, PoolVolEntry } from '../types';
 
-// ── BBEngine ─────────────────────────────────────────────────────────────────
+// ── PoolMarketService ─────────────────────────────────────────────────────────────────
 // 30D annualized volatility per pool address (TTL tracked via expiresAt field)
-export const bbVolCache = new LRUCache<string, BBVolEntry>({ max: 100 });
+export const volatilityCache = new LRUCache<string, VolatilityEntry>({ max: 100 });
+
+// 180D historical log returns per pool address（Bootstrap MC 用，24h TTL）
+export const historicalReturnsCache = new LRUCache<string, HistoricalReturnsEntry>({ max: 50 });
 
 // ── PoolScanner ───────────────────────────────────────────────────────────────
 // 24h / 7d volume per pool address (TTL tracked via expiresAt field)

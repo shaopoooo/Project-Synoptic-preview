@@ -1,6 +1,6 @@
-import { appState, ucInitialInvestment } from '../utils/AppState';
-import { OpenInfo, PortfolioSummary, PositionRecord } from '../types';
-import { isValidWalletAddress } from '../utils/validation';
+import { appState, ucInitialInvestment } from '../../utils/AppState';
+import { OpenInfo, PortfolioSummary, PositionRecord } from '../../types';
+import { isValidWalletAddress } from '../../utils/validation';
 
 /**
  * Service for position-level financial metrics:

@@ -1,14 +1,15 @@
 import { Bot } from 'grammy';
 import { config } from '../config';
-import { PoolStats, BBResult, PositionRecord, RiskAnalysis, UserConfig } from '../types';
+import { PoolStats, MarketSnapshot, PositionRecord, RiskAnalysis, UserConfig } from '../types';
 import { createServiceLogger } from '../utils/logger';
-import type { PositionScanner } from '../services/PositionScanner';
+import type { PositionScanner } from '../services/position/PositionScanner';
 import { BotDeps } from './commands/context';
 import { registerInfoCommands } from './commands/infoCommands';
 import { registerConfigCommands } from './commands/configCommands';
 import { registerWalletCommands } from './commands/walletCommands';
 import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
+import { registerCalcCommands } from './commands/calcCommands';
 import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportService';
 
 const log = createServiceLogger('TelegramBot');
@@ -48,6 +49,7 @@ export class TelegramBotService {
         registerWalletCommands(this.bot, this.deps);
         registerPoolCommands(this.bot, this.deps);
         registerPositionCommands(this.bot, this.deps);
+        registerCalcCommands(this.bot);
     }
 
     public async startBot() {
@@ -97,9 +99,9 @@ export class TelegramBotService {
 
     /** 將所有倉位合併為單一 Telegram 報告 */
     public async sendConsolidatedReport(
-        entries: Array<{ position: PositionRecord; pool: PoolStats; bb: BBResult | null; risk: RiskAnalysis }>,
+        entries: Array<{ position: PositionRecord; pool: PoolStats; bb: MarketSnapshot | null; risk: RiskAnalysis }>,
         allPools: PoolStats[],
-        lastUpdates: { poolScanner: number; positionScanner: number; bbEngine: number; riskManager: number }
+        lastUpdates: { cycleAt: number }
     ) {
         await buildAndSendReport(this.sendAlert.bind(this), entries, allPools, lastUpdates);
     }

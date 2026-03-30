@@ -1,4 +1,4 @@
-import { PriceBuffer } from '../../src/services/BBEngine';
+import { PriceBuffer } from '../../src/services/market/PoolMarketService';
 
 describe('PriceBuffer', () => {
     let buffer: PriceBuffer;
