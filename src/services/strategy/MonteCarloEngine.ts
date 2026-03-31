@@ -202,7 +202,6 @@ export function calcCandidateRanges(
     const stdDev = rawStdDev ?? (sma * volatility30D / Math.sqrt(365 * 24));
     if (stdDev <= 0) return [];
 
-    const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
     const totalApr = pool.apr + (pool.farmApr ?? 0);
 
     const baseParams = {
@@ -214,20 +213,20 @@ export function calcCandidateRanges(
     };
 
     return sigmas.map(sigma => {
-        let lowerPrice = Math.max(sma - maxOffset, sma - sigma * stdDev);
-        let upperPrice = Math.min(sma + maxOffset, sma + sigma * stdDev);
+        // 使用幾何對稱 (Geometric Symmetry) 確保下界永不為負，且在 Tick 空間中對稱
+        const R = 1 + (sigma * stdDev / sma);
+        let lowerPrice = sma / R;
+        let upperPrice = sma * R;
 
         if (guards) {
-            // Track 2：ATR 下限 — 當 sigma 由 ATR 反推時 k>=1 不會觸發，
-            // 保留作為非 ATR 路徑的安全網
+            // Track 2：ATR 下限 (Geometric) — 當 sigma 由 ATR 反推時 k>=1 不會觸發，
+            // 僅保留作為非 ATR 路徑的安全網
             const halfWidth = (upperPrice - lowerPrice) / 2;
             if (halfWidth < guards.atrHalfWidth) {
-                lowerPrice = sma - guards.atrHalfWidth;
-                upperPrice = sma + guards.atrHalfWidth;
+                const R_atr = 1 + (guards.atrHalfWidth / sma);
+                lowerPrice = sma / R_atr;
+                upperPrice = sma * R_atr;
             }
-            // Track 3：Percentile 天花板 — 確保不超出歷史價格範圍
-            if (guards.p5 > 0)         lowerPrice = Math.max(lowerPrice, guards.p5);
-            if (guards.p95 < Infinity) upperPrice = Math.min(upperPrice, guards.p95);
         }
 
         if (upperPrice <= lowerPrice) return null;
@@ -278,13 +277,13 @@ export function calcTranchePlan(
         log.warn(`calcTranchePlan: 歷史報酬率不足（${historicalReturns.length} 筆），無法執行 MC`);
     }
 
-    const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
     const totalApr = pool.apr + (pool.farmApr ?? 0);
 
     // ── Core Tranche ──────────────────────────────────────────────────────────
     const coreCapital = totalCapital * config.TRANCHE_CORE_RATIO;
-    const coreLower = Math.max(sma - maxOffset, sma - config.TRANCHE_CORE_SIGMA * stdDev);
-    const coreUpper = Math.min(sma + maxOffset, sma + config.TRANCHE_CORE_SIGMA * stdDev);
+    const coreR = 1 + (config.TRANCHE_CORE_SIGMA * stdDev / sma);
+    const coreLower = sma / coreR;
+    const coreUpper = sma * coreR;
     const coreEff = calculateCapitalEfficiency(coreUpper, coreLower, sma) ?? 1;
     const coreDailyFees = coreCapital * (totalApr / 365) * coreEff;
 
@@ -296,16 +295,18 @@ export function calcTranchePlan(
         ? 'up'
         : 'down';
 
+    const R_near = 1 + (config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev / sma);
+    const R_far = 1 + (config.TRANCHE_BUFFER_SIGMA_FAR * stdDev / sma);
+
     let bufferLower: number;
     let bufferUpper: number;
     if (direction === 'down') {
-        bufferUpper = sma - config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev;
-        bufferLower = sma - config.TRANCHE_BUFFER_SIGMA_FAR * stdDev;
+        bufferUpper = sma / R_near;
+        bufferLower = sma / R_far;
     } else {
-        bufferLower = sma + config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev;
-        bufferUpper = sma + config.TRANCHE_BUFFER_SIGMA_FAR * stdDev;
+        bufferLower = sma * R_near;
+        bufferUpper = sma * R_far;
     }
-    if (bufferLower <= 0) bufferLower = sma * 0.001;
 
     const bufferMid = (bufferLower + bufferUpper) / 2;
     const bufferEff = calculateCapitalEfficiency(bufferUpper, bufferLower, bufferMid) ?? 0;
