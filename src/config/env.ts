@@ -16,6 +16,8 @@ export const env = {
     PANCAKE_MASTERCHEF_V3: process.env.PANCAKE_MASTERCHEF_V3 || '0xC6A2Db661D5a5690172d8eB0a7DEA2d3008665A3',
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
     FILE_LOG_LEVEL: process.env.FILE_LOG_LEVEL || 'debug',
+    COINGECKO_API_KEY: process.env.COINGECKO_API_KEY || '',
+    REGIME_DIAGNOSTIC: process.env.REGIME_DIAGNOSTIC === 'true',
 };
 
 /** 驗證必填環境變數，缺少時輸出錯誤並中止程式。

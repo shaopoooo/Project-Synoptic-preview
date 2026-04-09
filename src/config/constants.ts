@@ -87,6 +87,13 @@ export const constants = {
     // CVaR 通過門檻：最壞 5% 損失不得超過 FACTOR × 預期 14 天費收（才允許建倉）
     CVAR_SAFETY_FACTOR: 1.5,
 
+    // ── CoinGecko Pro ────────────────────────────────────────────────────
+    COINGECKO_PRO_BASE_URL: 'https://pro-api.coingecko.com/api/v3',
+    /** 回填目標天數 */
+    HISTORICAL_BACKFILL_DAYS: 150,
+    /** OHLCV 資料目錄 */
+    OHLCV_DATA_DIR: 'data/ohlcv',
+
     // ── Kill Switch ────────────────────────────────────────────────────────────
     KILL_SWITCH_BANDWIDTH_FACTOR: 2.5,              // bandwidth > avg30D × 此值 → 觸發 Kill Switch 告警
     KILL_SWITCH_ALERT_COOLDOWN_MS: 4 * 60 * 60 * 1000, // 告警 cooldown（4h，避免震盪邊界反覆推播）
