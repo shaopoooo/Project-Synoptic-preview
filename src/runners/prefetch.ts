@@ -6,7 +6,7 @@
 import { CycleData, HourlyReturn } from '../types';
 import { PoolScanner } from '../services/market/PoolScanner';
 import { fetchHistoricalReturns } from '../services/market/PoolMarketService';
-import { loadOhlcvStore, type RawCandle } from '../services/market/HistoricalDataService';
+import { syncHistoricalData, loadOhlcvStore, type RawCandle } from '../services/market/HistoricalDataService';
 import { appState, ucPoolList } from '../utils/AppState';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
@@ -64,9 +64,10 @@ async function fetchHistoricalReturnsForPools(
         let usedLocal = false;
 
         try {
-            const store = await loadOhlcvStore(poolKey);
-            if (store && store.candles.length > 2) {
-                const hrs = ohlcvToHourlyReturnsFromRaw(store.candles);
+            // 增量更新（有 API key 時自動追加最新蠟燭，無則跳過）
+            const candles = await syncHistoricalData(poolKey);
+            if (candles.length > 2) {
+                const hrs = ohlcvToHourlyReturnsFromRaw(candles);
                 if (hrs.length > 0) { returns.set(poolKey, hrs); usedLocal = true; }
             }
             if (!usedLocal) {
