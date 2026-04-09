@@ -29,7 +29,7 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
     const save = (daily: number, avg7d: number, src: string) => {
         const entry = { daily, avg7d, source: src, expiresAt: Date.now() + VOL_CACHE_TTL_MS };
         poolVolCache.set(key, entry);
-        log.info(`💾 vol  ${tag}  $${daily.toFixed(0)}/24h  [${src}]`);
+        log.debug(`💾 vol  ${tag}  $${daily.toFixed(0)}/24h  [${src}]`);
         return entry;
     };
 
@@ -257,14 +257,14 @@ export class PoolScanner {
             );
             const endTime = Number(info.endTime);
             if (endTime < Date.now() / 1000) {
-                log.info(`🍰 farmApr=0  ${poolAddress.slice(0, 10)}  period expired`);
+                log.debug(`🍰 farmApr=0  ${poolAddress.slice(0, 10)}  period expired`);
                 return 0;
             }
             // cakePerSecond is stored scaled by 1e30
             const cakePerSec = Number(info.cakePerSecond) / Number(config.MASTERCHEF_CAKE_PER_SEC_PRECISION);
             const { cakePrice } = await import('./TokenPriceService').then(m => m.getTokenPrices());
             const farmApr = (cakePerSec * 86400 * 365 * cakePrice) / tvlUSD;
-            log.info(`🍰 farmApr  ${poolAddress.slice(0, 10)}  cps=${cakePerSec.toFixed(6)} cake/s  apr=${(farmApr * 100).toFixed(2)}%`);
+            log.debug(`🍰 farmApr  ${poolAddress.slice(0, 10)}  cps=${cakePerSec.toFixed(6)} cake/s  apr=${(farmApr * 100).toFixed(2)}%`);
             return farmApr;
         } catch (e: any) {
             log.warn(`farmApr fetch failed  ${poolAddress.slice(0, 10)}: ${e.message}`);
@@ -321,7 +321,7 @@ export class PoolScanner {
             const amount0 = Number(BigInt(bal0)) / Math.pow(10, Number(dec0));
             const amount1 = Number(BigInt(bal1)) / Math.pow(10, Number(dec1));
             const tvl = amount0 * p0 + amount1 * p1;
-            log.info(`Aerodrome on-chain TVL  ${poolAddress.slice(0, 10)}  $${tvl.toFixed(0)}`);
+            log.debug(`Aerodrome on-chain TVL  ${poolAddress.slice(0, 10)}  $${tvl.toFixed(0)}`);
             return tvl;
         } catch (e: any) {
             log.warn(`Aerodrome on-chain TVL failed  ${poolAddress.slice(0, 10)}: ${e.message}`);
@@ -384,7 +384,7 @@ export class PoolScanner {
             const dailyFeesUSD = avgDailyVolume * feeTierVal;
             const apr = tvlUSD > 0 ? (dailyFeesUSD / tvlUSD) * 365 : 0;
 
-            log.info(`🌐 V4 pool  ${tag}  tick=${tick}  tvl=$${tvlUSD.toFixed(0)}  apr=${(apr * 100).toFixed(1)}%`);
+            log.debug(`🌐 V4 pool  ${tag}  tick=${tick}  tvl=$${tvlUSD.toFixed(0)}  apr=${(apr * 100).toFixed(1)}%`);
 
             return {
                 id: poolId.toLowerCase(),
