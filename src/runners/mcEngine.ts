@@ -4,7 +4,8 @@ import { calcCandidateRanges, calcTranchePlan } from '../services/strategy/Monte
 import { analyzeRegime, computeRangeGuards } from '../services/strategy/MarketRegimeAnalyzer';
 import { config } from '../config';
 import { logCalc } from '../utils/logger';
-import type { OpeningStrategy, HourlyReturn, RangeGuards } from '../types';
+import type { OpeningStrategy, HourlyReturn, RangeGuards, RegimeGenome, MCEngineDiagnostic, PoolDiagnostic } from '../types';
+import { currentConstantsToGenome } from '../services/strategy/ParameterGenome';
 
 const log = createServiceLogger('MCEngine');
 
@@ -53,13 +54,25 @@ const UNIT_CAPITAL = 1.0;
 export async function runMCEngine(
     historicalReturns: Map<string, HourlyReturn[]>,
     sendAlert?: (msg: string) => Promise<void>,
-): Promise<void> {
+    genome?: RegimeGenome,
+): Promise<MCEngineDiagnostic> {
     const pools = appState.pools;
     const marketSnapshots = appState.marketSnapshots;
 
+    const poolDiagnostics: PoolDiagnostic[] = [];
+    const activeGenome = genome ?? currentConstantsToGenome();
+
     if (pools.length === 0) {
         log.warn('runMCEngine: 無池子資料，跳過');
-        return;
+        return {
+            poolResults: poolDiagnostics,
+            summary: {
+                totalPools: 0,
+                goPools: 0,
+                oldVersionSkipCount: 0,
+                newVersionRecoveredCount: 0,
+            },
+        };
     }
 
     const noGoPools: string[] = [];
@@ -72,6 +85,19 @@ export async function runMCEngine(
             log.warn(`MCEngine: pool ${pool.dex} ${pool.id.slice(0, 8)}… BB 資料不可靠（${reason}），跳過`);
             // 清除舊策略，避免 /calc 提供過時建議
             delete appState.strategies[pool.id.toLowerCase()];
+            poolDiagnostics.push({
+                pool: pool.id.slice(0, 10),
+                dex: pool.dex,
+                regimeVector: null,
+                hardSignal: 'range',
+                wouldSkipInOldVersion: false,
+                sigmaOpt: null,
+                kBest: null,
+                score: null,
+                cvar95: null,
+                go: false,
+                goCandidateCount: 0,
+            });
             continue;
         }
 
@@ -79,6 +105,19 @@ export async function runMCEngine(
         const returns = rawReturns.map(hr => hr.r);
         if (returns.length < 2) {
             log.warn(`MCEngine: pool ${pool.dex} 歷史報酬率不足，跳過`);
+            poolDiagnostics.push({
+                pool: pool.id.slice(0, 10),
+                dex: pool.dex,
+                regimeVector: null,
+                hardSignal: 'range',
+                wouldSkipInOldVersion: false,
+                sigmaOpt: null,
+                kBest: null,
+                score: null,
+                cvar95: null,
+                go: false,
+                goCandidateCount: 0,
+            });
             continue;
         }
 
@@ -90,7 +129,7 @@ export async function runMCEngine(
         }
 
         // ── Track 1：市場狀態過濾 + 動態 sigma ───────────────────────────────
-        const regime = analyzeRegime(rawReturns);
+        const regime = analyzeRegime(rawReturns, activeGenome);
         log.debug(`MCEngine: pool ${pool.dex} CHOP=${regime.chop.toFixed(1)} H=${regime.hurst.toFixed(2)} signal=${regime.signal}`);
         logCalc({
             phase: 'P1',
@@ -106,10 +145,25 @@ export async function runMCEngine(
             volatility30D: bb.volatility30D,
         });
 
+        const diagEntry: PoolDiagnostic = {
+            pool: pool.id.slice(0, 10),
+            dex: pool.dex,
+            regimeVector: null,  // Phase 2 will fill this
+            hardSignal: regime.signal,
+            wouldSkipInOldVersion: regime.signal === 'trend',
+            sigmaOpt: null,
+            kBest: null,
+            score: null,
+            cvar95: null,
+            go: false,
+            goCandidateCount: 0,
+        };
+
         if (regime.signal === 'trend') {
             log.warn(`MCEngine: pool ${pool.dex} 趨勢市場，跳過`);
             delete appState.strategies[pool.id.toLowerCase()];
             trendSkippedPools.push(`${pool.dex} ${pool.id.slice(0, 8)}… (CHOP=${regime.chop.toFixed(1)} H=${regime.hurst.toFixed(2)})`);
+            poolDiagnostics.push(diagEntry);
             continue;
         }
 
@@ -118,11 +172,12 @@ export async function runMCEngine(
             log.warn(`MCEngine: pool ${pool.dex} 極端波動（vol=${(bb.volatility30D * 100).toFixed(0)}%），No-Go`);
             delete appState.strategies[pool.id.toLowerCase()];
             noGoPools.push(`${pool.dex} ${pool.id.slice(0, 8)}… (extreme vol)`);
+            poolDiagnostics.push(diagEntry);
             continue;
         }
 
         // ── Track 2+3：ATR 下限 + Percentile 天花板 ─────────────────────────
-        const guards = computeRangeGuards(rawReturns);
+        const guards = computeRangeGuards(rawReturns, activeGenome);
 
         // ── 單位對齊：guards 由 OHLCV USD 蠟燭計算，bb.sma / stdDev1H 為 tick-ratio ──
         // 轉換因子 = bb.sma（tick-ratio）/ lastCloseUSD，將 USD 數值映射至 tick-ratio 空間。
@@ -133,6 +188,7 @@ export async function runMCEngine(
 
         if (toTickRatio === null) {
             log.warn(`MCEngine: pool ${pool.dex} 無法取得 lastCloseUSD，跳過`);
+            poolDiagnostics.push(diagEntry);
             continue;
         }
 
@@ -147,6 +203,7 @@ export async function runMCEngine(
         const sigmas = getAtrSigmaCandidates(guardsTR.atrHalfWidth, stdDev1H);
         if (sigmas.length === 0) {
             log.warn(`MCEngine: pool ${pool.dex} ATR 或 stdDev1H 無效，跳過`);
+            poolDiagnostics.push(diagEntry);
             continue;
         }
         log.info(
@@ -191,6 +248,7 @@ export async function runMCEngine(
                 noGoPools.push(`${pool.dex} ${pool.id.slice(0, 8)}…`);
                 log.warn(`MCEngine: pool ${pool.dex} 全部 sigma No-Go`);
                 delete appState.strategies[pool.id.toLowerCase()];
+                poolDiagnostics.push(diagEntry);
                 continue;
             }
 
@@ -226,6 +284,7 @@ export async function runMCEngine(
 
             appState.strategies[pool.id.toLowerCase()] = strategy;
             const kBest = stdDev1H > 0 ? (best.sigma * stdDev1H / guards.atrHalfWidth).toFixed(2) : '?';
+            diagEntry.kBest = parseFloat(kBest) || null;
             log.debug(
                 `MCEngine: pool ${pool.dex} ` +
                 `k=${kBest}×ATR σ=${best.sigma.toFixed(2)} ` +
@@ -258,10 +317,22 @@ export async function runMCEngine(
                 stdDev1H,
             });
 
+            diagEntry.sigmaOpt = best.sigma;
+            diagEntry.score = bestScore;
+            diagEntry.cvar95 = best.mc.cvar95;
+            diagEntry.go = true;
+            diagEntry.goCandidateCount = goCandidates.length;
+            poolDiagnostics.push(diagEntry);
+
         } catch (err) {
             log.error(`MCEngine: pool ${pool.id.slice(0, 8)} 計算失敗`, { err });
+            poolDiagnostics.push(diagEntry);
         }
     }
+
+    const goPools = poolDiagnostics.filter(d => d.go).length;
+    const oldSkipCount = poolDiagnostics.filter(d => d.wouldSkipInOldVersion).length;
+    const recoveredCount = poolDiagnostics.filter(d => d.wouldSkipInOldVersion && d.go).length;
 
     // ── Kill Switch B：CVaR 全部 No-Go ───────────────────────────────────────
     if (noGoPools.length > 0 && sendAlert) {
@@ -284,4 +355,14 @@ export async function runMCEngine(
         ).catch(() => { });
         log.warn(`Trend skip triggered for ${trendSkippedPools.length} pool(s)`);
     }
+
+    return {
+        poolResults: poolDiagnostics,
+        summary: {
+            totalPools: poolDiagnostics.length,
+            goPools,
+            oldVersionSkipCount: oldSkipCount,
+            newVersionRecoveredCount: recoveredCount,
+        },
+    };
 }
