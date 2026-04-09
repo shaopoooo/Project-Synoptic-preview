@@ -210,11 +210,19 @@ export interface FetchedFees {
     gaugeAddress?: string;
 }
 
+/** 從歷史蠟燭推導的市場統計（取代 BB 的 MarketSnapshot） */
+export interface MarketStats {
+    /** 最近 N 根 close 均值（MC 模擬的 P0） */
+    sma: number;
+    /** 1 小時 log return 標準差 */
+    stdDev1H: number;
+    /** 年化波動率（stdDev1H × √8760） */
+    volatility30D: number;
+}
+
 /** Phase 0 輸出：MC 引擎需要的市場資料 */
 export interface CycleData {
     pools: PoolStats[];
-    marketSnapshots: Record<string, MarketSnapshot>;
-    tokenPrices: TokenPrices;
     historicalReturns: Map<string, HourlyReturn[]>;
     warnings: string[];
 }

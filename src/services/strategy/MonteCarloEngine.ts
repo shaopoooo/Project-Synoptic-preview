@@ -14,7 +14,7 @@
  *   calcTranchePlan(capital, ...)       — 雙倉佈局完整計畫（比例可配置）
  */
 
-import { MarketSnapshot, MCSimResult, PoolStats, TranchePlan, CoreTranche, BufferTranche, RangeGuards } from '../../types';
+import { MarketStats, MCSimResult, PoolStats, TranchePlan, CoreTranche, BufferTranche, RangeGuards } from '../../types';
 import type { RegimeSegment } from './MarketRegimeAnalyzer';
 import type { RegimeVector } from '../../types';
 import { config } from '../../config';
@@ -218,25 +218,22 @@ export interface RangeCandidateResult {
  *
  * @param capital            token0 單位資金
  * @param pool               池子資訊（APR、farmApr）
- * @param bb                 MarketSnapshot（含 sma、stdDev1H）
+ * @param stats              MarketStats（sma、stdDev1H，從歷史蠟燭推導）
  * @param historicalReturns  歷史 log 報酬率陣列（由 prefetch 階段注入）
  * @param sigmas             要評估的 σ 倍數陣列，預設 [1.0, 2.0, 3.0]
  */
 export function calcCandidateRanges(
     capital: number,
     pool: PoolStats,
-    bb: MarketSnapshot,
+    stats: MarketStats,
     historicalReturns: number[],
     sigmas = [1.0, 2.0, 3.0],
     guards?: RangeGuards,
     segments?: RegimeSegment[],
     regimeVector?: RegimeVector,
 ): RangeCandidateResult[] {
-    const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
-    if (!sma || sma <= 0) return [];
-
-    const stdDev = rawStdDev ?? (sma * volatility30D / Math.sqrt(365 * 24));
-    if (stdDev <= 0) return [];
+    const { sma, stdDev1H } = stats;
+    if (!sma || sma <= 0 || stdDev1H <= 0) return [];
 
     const totalApr = pool.apr + (pool.farmApr ?? 0);
 
@@ -249,8 +246,7 @@ export function calcCandidateRanges(
     };
 
     return sigmas.map(sigma => {
-        // 使用幾何對稱 (Geometric Symmetry) 確保下界永不為負，且在 Tick 空間中對稱
-        const R = 1 + (sigma * stdDev / sma);
+        const R = 1 + (sigma * stdDev1H / sma);
         let lowerPrice = sma / R;
         let upperPrice = sma * R;
 
@@ -296,22 +292,19 @@ export function calcCandidateRanges(
  *
  * @param totalCapital       總資金（token0 單位）
  * @param pool               池子資訊
- * @param bb                 MarketSnapshot（含 sma、stdDev1H、smaSlope）
+ * @param stats              MarketStats（sma、stdDev1H，從歷史蠟燭推導）
  * @param historicalReturns  歷史 log 報酬率陣列（由 prefetch 階段注入）
  */
 export function calcTranchePlan(
     totalCapital: number,
     pool: PoolStats,
-    bb: MarketSnapshot,
+    stats: MarketStats,
     historicalReturns: number[],
     segments?: RegimeSegment[],
     regimeVector?: RegimeVector,
 ): TranchePlan | null {
-    const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
-    if (!sma || sma <= 0) return null;
-
-    const stdDev = rawStdDev ?? (sma * volatility30D / Math.sqrt(365 * 24));
-    if (stdDev <= 0) return null;
+    const { sma, stdDev1H } = stats;
+    if (!sma || sma <= 0 || stdDev1H <= 0) return null;
 
     if (historicalReturns.length < 2) {
         log.warn(`calcTranchePlan: 歷史報酬率不足（${historicalReturns.length} 筆），無法執行 MC`);
@@ -321,7 +314,7 @@ export function calcTranchePlan(
 
     // ── Core Tranche ──────────────────────────────────────────────────────────
     const coreCapital = totalCapital * config.TRANCHE_CORE_RATIO;
-    const coreR = 1 + (config.TRANCHE_CORE_SIGMA * stdDev / sma);
+    const coreR = 1 + (config.TRANCHE_CORE_SIGMA * stdDev1H / sma);
     const coreLower = sma / coreR;
     const coreUpper = sma * coreR;
     const coreEff = calculateCapitalEfficiency(coreUpper, coreLower, sma) ?? 1;
@@ -330,13 +323,10 @@ export function calcTranchePlan(
     // ── Buffer Tranche ────────────────────────────────────────────────────────
     const bufferCapital = totalCapital * (1 - config.TRANCHE_CORE_RATIO);
 
-    // 方向判斷：SMA 上升趨勢 → 防守上方；其餘 → 防守下方（預設）
-    const direction: 'down' | 'up' = (bb.smaSlope ?? 0) >= config.SMA_SLOPE_TREND_THRESHOLD
-        ? 'up'
-        : 'down';
+    const direction: 'down' | 'up' = 'down';
 
-    const R_near = 1 + (config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev / sma);
-    const R_far = 1 + (config.TRANCHE_BUFFER_SIGMA_FAR * stdDev / sma);
+    const R_near = 1 + (config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev1H / sma);
+    const R_far = 1 + (config.TRANCHE_BUFFER_SIGMA_FAR * stdDev1H / sma);
 
     let bufferLower: number;
     let bufferUpper: number;

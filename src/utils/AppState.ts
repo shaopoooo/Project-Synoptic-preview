@@ -190,17 +190,8 @@ class AppState {
      */
     commit(data: CycleData): void {
         this.pools = data.pools;
-        this.marketSnapshots = data.marketSnapshots;
         this.cycleWarnings = [...data.warnings];
         this.lastUpdated.cycleAt = Date.now();
-        this._pruneStaleBBs();
-    }
-
-    private _pruneStaleBBs(): void {
-        const monitored = new Set(this.pools.map(p => p.id.toLowerCase()));
-        for (const k of Object.keys(this.marketSnapshots)) {
-            if (!monitored.has(k)) delete this.marketSnapshots[k];
-        }
     }
 }
 
