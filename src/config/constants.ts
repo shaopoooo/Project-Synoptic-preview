@@ -127,10 +127,10 @@ export const constants = {
         { address: '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', dex: 'PancakeSwapV3' as const, fee: 0.0001 },
         { address: '0xd974d59e30054cf1abeded0c9947b0d8baf90029', dex: 'PancakeSwapV3' as const, fee: 0.0005 },
         { address: '0x7aea2e8a3843516afa07293a10ac8e49906dabd1', dex: 'UniswapV3' as const, fee: 0.0005 },
-        { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
+        // { address: '0x8c7080564b5a792a33ef2fd473fba6364d5495e5', dex: 'UniswapV3' as const, fee: 0.003 },
         { address: '0x22aee3699b6a0fed71490c103bd4e5f3309891d5', dex: 'Aerodrome' as const, fee: 0.000085 }, // tickSpacing=1
-        { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003 },
-        { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
+        // { address: '0xe6195a1f1c8f5d0bcf0a880db26738a1df4f6863017700a8f6377a72d45366f2', dex: 'UniswapV4' as const, fee: 0.003 },
+        // { address: '0x8fe985a6a484e89af85189f7efc20de0183d0c3415bf2a9ceefa5a7d1af879e5', dex: 'UniswapV4' as const, fee: 0.00009 },
     ] as { address: string; dex: Dex; fee: number }[],
 
     // ── Token Decimals ────────────────────────────────────────────────────
