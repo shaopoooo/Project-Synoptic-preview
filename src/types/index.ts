@@ -210,25 +210,13 @@ export interface FetchedFees {
     gaugeAddress?: string;
 }
 
-/** Phase 0 完整輸出：所有鏈上 / API 資料，供 computeAll 純計算使用 */
+/** Phase 0 輸出：MC 引擎需要的市場資料 */
 export interface CycleData {
     pools: PoolStats[];
     marketSnapshots: Record<string, MarketSnapshot>;
     tokenPrices: TokenPrices;
-    rawPositions: RawChainPosition[];
-    feeMaps: Map<string, FetchedFees>;
-    gasCostUSD: number;
-    /** poolId.toLowerCase() → 歷史 log 報酬率（含時間戳），供 MC 引擎使用 */
     historicalReturns: Map<string, HourlyReturn[]>;
-    /** poolId.toLowerCase() → 30D 帶寬滾動均值，Phase 0 更新後傳入 Phase 1 使用（避免 compute 有副作用） */
-    bandwidthAvg30D: Map<string, number>;
-    /** Phase 0 期間收集的非致命警告，透過 commit() 寫入 appState.cycleWarnings */
     warnings: string[];
-}
-
-/** Phase 1 計算輸出 */
-export interface CycleResult {
-    positions: PositionRecord[];
 }
 
 /** MC 引擎計算出的最優開倉策略，寫入 appState.strategies */

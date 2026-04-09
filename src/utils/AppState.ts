@@ -5,7 +5,7 @@
  * vars in index.ts. All pipeline functions read and write through this object
  * so it's easy to reason about data ownership and to mock in tests.
  */
-import { PoolStats, PositionRecord, MarketSnapshot, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig, CycleData, CycleResult, OpeningStrategy } from '../types';
+import { PoolStats, PositionRecord, MarketSnapshot, Dex, WalletPosition, WalletEntry, UserConfig, PoolConfig, CycleData, OpeningStrategy } from '../types';
 import type { RegimeGenome } from '../types';
 import { config } from '../config';
 import { isValidWalletAddress } from './validation';
@@ -188,10 +188,9 @@ class AppState {
      * Phase 0 + Phase 1 完成後的唯一寫入點。
      * 更新 pools、bbs、positions，並清除過時的 BB 條目。
      */
-    commit(data: CycleData, result: CycleResult): void {
+    commit(data: CycleData): void {
         this.pools = data.pools;
         this.marketSnapshots = data.marketSnapshots;
-        this.positions = result.positions.filter(p => Number(p.liquidity) > 0);
         this.cycleWarnings = [...data.warnings];
         this.lastUpdated.cycleAt = Date.now();
         this._pruneStaleBBs();

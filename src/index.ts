@@ -1,19 +1,16 @@
 /**
- * index.ts — DexBot 主入口（精簡版）
+ * index.ts — DexBot 主入口
  *
- * 只做三件事：啟動 → 排程 cycle → 收集診斷
+ * 啟動 → 排程 cycle（prefetch → MC engine）→ 收集診斷
  */
 
 import cron from 'node-cron';
 import * as path from 'path';
 import { TelegramBotService, minutesToCron, VALID_INTERVALS } from './bot/TelegramBot';
-import { positionScanner } from './services/position/PositionScanner';
 import { createServiceLogger } from './utils/logger';
 import { appState } from './utils/AppState';
 import { config, validateEnv } from './config';
 import { prefetchAll } from './runners/prefetch';
-import { computeAll } from './runners/compute';
-import { runBotService } from './runners/reporting';
 import { runMCEngine } from './runners/mcEngine';
 import { DiagnosticStore } from './utils/diagnosticStore';
 import { runStartup } from './runners/startup';
@@ -25,9 +22,7 @@ const diagnosticStore = new DiagnosticStore(path.join(process.cwd(), 'data', 'di
 
 let scheduledTask: ReturnType<typeof cron.schedule> | null = null;
 let currentIntervalMinutes = config.DEFAULT_INTERVAL_MINUTES;
-let triggerStateSave: () => Promise<void>;
 let isCycleRunning = false;
-let isStartupComplete = false;
 let cycleCount = 0;
 
 // ── Cycle ────────────────────────────────────────────────────────────────────
@@ -40,12 +35,6 @@ async function runCycle(): Promise<CycleDiagnostic | null> {
     const prefetchMs = Date.now() - tP;
     if (!data) return null;
 
-    const tC = Date.now();
-    const result = computeAll(data);
-    positionScanner.updatePositions(result.positions);
-    appState.commit(data, { positions: positionScanner.getTrackedPositions() });
-    const computeMs = Date.now() - tC;
-
     const tMC = Date.now();
     let mc: MCEngineDiagnostic | null = null;
     try {
@@ -57,14 +46,11 @@ async function runCycle(): Promise<CycleDiagnostic | null> {
     } catch (e) { log.error('MCEngine', e); }
     const mcEngineMs = Date.now() - tMC;
 
-    await runBotService(botService, isStartupComplete).catch(e => log.error('BotService', e));
-    await triggerStateSave().catch(e => log.error('StateSave', e));
-
     return {
         cycleNumber: ++cycleCount,
         timestamp: t0,
         durationMs: Date.now() - t0,
-        phase: { prefetchMs, computeMs, mcEngineMs },
+        phase: { prefetchMs, computeMs: 0, mcEngineMs },
         pools: mc?.poolResults ?? [],
         activeGenomeId: appState.activeGenome?.id ?? null,
         summary: mc?.summary ?? { totalPools: 0, goPools: 0, oldVersionSkipCount: 0, newVersionRecoveredCount: 0 },
@@ -81,7 +67,7 @@ function buildCronJob() {
             const diag = await runCycle();
             if (diag) {
                 await diagnosticStore.append(diag);
-                log.info(`Cycle #${diag.cycleNumber} — ${diag.durationMs}ms (P0:${diag.phase.prefetchMs} C:${diag.phase.computeMs} MC:${diag.phase.mcEngineMs})`);
+                log.info(`Cycle #${diag.cycleNumber} — ${diag.durationMs}ms (P0:${diag.phase.prefetchMs} MC:${diag.phase.mcEngineMs})`);
             }
         } finally { isCycleRunning = false; }
     });
@@ -100,14 +86,10 @@ async function main() {
     validateEnv();
     log.section('Bot startup');
 
-    const startup = await runStartup(botService, diagnosticStore, async (_k, msg) => {
-        await botService.sendAlert(`🚨 <b>DexBot 告警</b>\n${msg}`).catch(() => {});
-    });
+    const startup = await runStartup(botService, diagnosticStore);
     currentIntervalMinutes = startup.currentIntervalMinutes;
-    triggerStateSave = startup.triggerStateSave;
     botService.setRescheduleCallback(reschedule);
 
-    isStartupComplete = true;
     log.section('ready');
     scheduledTask = buildCronJob();
 
@@ -131,8 +113,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 async function shutdown(sig: string) {
     if (stopping) return;
     stopping = true;
-    log.info(`${sig} — saving`);
-    await triggerStateSave?.().catch(() => {});
+    log.info(`${sig} — exit`);
     process.exit(0);
 }
 
