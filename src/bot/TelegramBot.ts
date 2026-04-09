@@ -11,6 +11,7 @@ import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
 import { registerCalcCommands } from './commands/calcCommands';
 import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportService';
+import { registerDiagnosticCommands } from './commands/diagnosticCommands';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -50,6 +51,10 @@ export class TelegramBotService {
         registerPoolCommands(this.bot, this.deps);
         registerPositionCommands(this.bot, this.deps);
         registerCalcCommands(this.bot);
+    }
+
+    registerDiagnostics(diagnosticStore: import('../utils/diagnosticStore').DiagnosticStore) {
+        registerDiagnosticCommands(this.bot, diagnosticStore);
     }
 
     public async startBot() {

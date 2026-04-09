@@ -205,6 +205,7 @@ async function main() {
                 .catch(e => log.error(`Auto sync (new tracked)`, e));
         }
     });
+    botService.registerDiagnostics(diagnosticStore);
     botService.startBot().catch((e) => log.fatal(`Bot start error`, e));
 
     // ── 2. State restore ─────────────────────────────────────────────────────
