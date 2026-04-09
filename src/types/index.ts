@@ -300,6 +300,52 @@ export interface BacktestResult {
     poolResults: Map<string, PoolBacktestResult>;
 }
 
+/** 單池 MC 引擎診斷 */
+export interface PoolDiagnostic {
+    pool: string;
+    dex: string;
+    regimeVector: RegimeVector | null;
+    hardSignal: 'range' | 'trend' | 'neutral';
+    wouldSkipInOldVersion: boolean;
+    sigmaOpt: number | null;
+    kBest: number | null;
+    score: number | null;
+    cvar95: number | null;
+    go: boolean;
+    goCandidateCount: number;
+}
+
+/** MC 引擎整體診斷輸出 */
+export interface MCEngineDiagnostic {
+    poolResults: PoolDiagnostic[];
+    summary: {
+        totalPools: number;
+        goPools: number;
+        oldVersionSkipCount: number;
+        newVersionRecoveredCount: number;
+    };
+}
+
+/** 單次 cycle 完整診斷 */
+export interface CycleDiagnostic {
+    cycleNumber: number;
+    timestamp: number;
+    durationMs: number;
+    phase: {
+        prefetchMs: number;
+        computeMs: number;
+        mcEngineMs: number;
+    };
+    pools: PoolDiagnostic[];
+    activeGenomeId: string | null;
+    summary: {
+        totalPools: number;
+        goPools: number;
+        oldVersionSkipCount: number;
+        newVersionRecoveredCount: number;
+    };
+}
+
 export interface OpeningStrategy {
     poolAddress: string;
     sigmaOpt: number;
