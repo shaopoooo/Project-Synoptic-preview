@@ -75,8 +75,7 @@ async function fetchFromCoinGeckoPro(
     before: number,
     limit: number,
 ): Promise<RawCandle[]> {
-    const poolId = `base_${poolAddress.toLowerCase()}`;
-    const url = `${config.COINGECKO_PRO_BASE_URL}/onchain/networks/base/pools/${poolId}/ohlcv/hour`;
+    const url = `${config.COINGECKO_PRO_BASE_URL}/onchain/networks/base/pools/${poolAddress.toLowerCase()}/ohlcv/hour`;
     const res = await axios.get(url, {
         params: { before_timestamp: before, limit },
         headers: {
