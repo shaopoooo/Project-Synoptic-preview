@@ -110,10 +110,16 @@ export async function runMCEngine(
         log.debug(`MCEngine: pool ${pool.dex} RegimeVector R=${regimeVector.range.toFixed(2)} T=${regimeVector.trend.toFixed(2)} N=${regimeVector.neutral.toFixed(2)}`);
 
         // ── ATR → sigma 候選 ─────────────────────────────────────────────────
-        const guards = computeRangeGuards(rawReturns, activeGenome);
+        // guards 的 ATR/percentile 是 USD 空間，需要除以 sma 轉成比率空間
+        const guardsUSD = computeRangeGuards(rawReturns, activeGenome);
+        const guards: RangeGuards = {
+            atrHalfWidth: guardsUSD.atrHalfWidth / stats.sma,
+            p5: guardsUSD.p5 / stats.sma,
+            p95: guardsUSD.p95 / stats.sma,
+        };
         const sigmas = getAtrSigmaCandidates(guards.atrHalfWidth, stats.stdDev1H);
         if (sigmas.length === 0) {
-            log.warn(`MCEngine: pool ${pool.dex} ATR 或 stdDev1H 無效，跳過`);
+            log.warn(`MCEngine: pool ${pool.dex} ATR=${guardsUSD.atrHalfWidth.toFixed(2)}USD atrRatio=${guards.atrHalfWidth.toExponential(3)} stdDev1H=${stats.stdDev1H.toExponential(3)} — sigma 候選為空`);
             poolDiagnostics.push(diagEntry);
             continue;
         }
