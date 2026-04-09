@@ -1,7 +1,22 @@
 import type { Bot } from 'grammy';
 import { appState } from '../../utils/AppState';
-import { currentConstantsToGenome } from '../../services/strategy/ParameterGenome';
+import { currentConstantsToGenome, randomGenome } from '../../services/strategy/ParameterGenome';
+import { runOneGeneration, type EvaluatedGenome } from '../../services/strategy/EvolutionEngine';
+import { walkForwardValidate } from '../../runners/WalkForwardValidator';
+import { loadOhlcvStore } from '../../services/market/HistoricalDataService';
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { rename } from 'fs/promises';
+import { config } from '../../config';
 import type { RegimeGenome } from '../../types';
+
+const GENOMES_DIR = path.join(process.cwd(), 'data', 'genomes');
+const MAX_GENERATIONS = 10;
+const POPULATION_SIZE = 20;
+const EVOLUTION_TIMEOUT_MS = 30 * 60 * 1000;
+
+let isEvolutionRunning = false;
+let evolutionStartedAt = 0;
 
 /** Population cache — set by evolution engine, read by commands */
 let populationCache: Array<{ genome: RegimeGenome; fitness: number }> = [];
@@ -94,7 +109,128 @@ export function registerRegimeCommands(bot: Bot): void {
         }
 
         if (sub === 'evolve') {
-            await ctx.reply('🧬 Evolution 功能將在完成接入後啟用。');
+            // 超時自動釋放
+            if (isEvolutionRunning && Date.now() - evolutionStartedAt > EVOLUTION_TIMEOUT_MS) {
+                isEvolutionRunning = false;
+            }
+            if (isEvolutionRunning) {
+                await ctx.reply('🧬 演化搜索已在執行中，請等待完成。');
+                return;
+            }
+
+            const pools = appState.pools;
+            if (pools.length === 0) {
+                await ctx.reply('⚠️ 無池子資料。');
+                return;
+            }
+            const store = await loadOhlcvStore(pools[0].id);
+            if (!store || store.candles.length < 3600) {
+                await ctx.reply(`⚠️ 歷史數據不足：${store?.candles.length ?? 0} 根（需要 3600+）`);
+                return;
+            }
+
+            await ctx.reply('🧬 開始演化搜索... (最多 30 分鐘)');
+
+            isEvolutionRunning = true;
+            evolutionStartedAt = Date.now();
+
+            // 非同步執行（不阻塞 Telegram 回應）
+            (async () => {
+                try {
+                    // 轉換為 HourlyReturn（需要 r 欄位）
+                    const rawCandles = store.candles;
+                    const candles = rawCandles.slice(1).map((c, i) => ({
+                        ts: c.ts,
+                        open: c.open,
+                        high: c.high,
+                        low: c.low,
+                        close: c.close,
+                        volume: c.volume,
+                        r: Math.log(c.close / rawCandles[i].close),
+                    }));
+
+                    // 初始 population
+                    let population: RegimeGenome[] = [
+                        currentConstantsToGenome(),
+                        ...Array.from({ length: POPULATION_SIZE - 1 }, () => randomGenome()),
+                    ];
+
+                    let immortal: EvaluatedGenome = {
+                        genome: currentConstantsToGenome(),
+                        fitness: 0,
+                    };
+
+                    for (let gen = 0; gen < MAX_GENERATIONS; gen++) {
+                        // Evaluate fitness
+                        const evaluated: EvaluatedGenome[] = [];
+                        for (let i = 0; i < population.length; i++) {
+                            const result = walkForwardValidate(population[i], candles);
+                            evaluated.push({ genome: population[i], fitness: result.fitness });
+
+                            // Yield to event loop every 5 genomes
+                            if (i % 5 === 4) {
+                                await new Promise(r => setTimeout(r, 100));
+                            }
+                        }
+
+                        // Update immortal
+                        const best = evaluated.reduce((a, b) => a.fitness > b.fitness ? a : b);
+                        if (best.fitness > immortal.fitness) {
+                            immortal = best;
+                        }
+
+                        // Checkpoint
+                        await fs.ensureDir(GENOMES_DIR);
+                        const checkpoint = { generation: gen, population: evaluated, immortal };
+                        const tmpPath = path.join(GENOMES_DIR, 'evolution-checkpoint.json.tmp');
+                        const finalPath = path.join(GENOMES_DIR, 'evolution-checkpoint.json');
+                        await fs.writeJson(tmpPath, checkpoint);
+                        await rename(tmpPath, finalPath);
+
+                        // Next generation
+                        population = runOneGeneration(evaluated, immortal);
+                    }
+
+                    // Save final population
+                    const finalEval: EvaluatedGenome[] = population.map(g => ({
+                        genome: g,
+                        fitness: walkForwardValidate(g, candles).fitness,
+                    }));
+                    setPopulationCache(finalEval);
+
+                    const tmpPop = path.join(GENOMES_DIR, 'population.json.tmp');
+                    const finalPop = path.join(GENOMES_DIR, 'population.json');
+                    await fs.writeJson(tmpPop, finalEval);
+                    await rename(tmpPop, finalPop);
+
+                    // Save active genome
+                    const tmpActive = path.join(GENOMES_DIR, 'active-genome.json.tmp');
+                    const finalActive = path.join(GENOMES_DIR, 'active-genome.json');
+                    await fs.writeJson(tmpActive, immortal.genome);
+                    await rename(tmpActive, finalActive);
+
+                    const elapsed = ((Date.now() - evolutionStartedAt) / 60000).toFixed(1);
+                    const viable = finalEval.filter(e => e.fitness > 0).length;
+
+                    await ctx.api.sendMessage(config.CHAT_ID,
+                        `🧬 <b>演化完成</b> — ${MAX_GENERATIONS} 代\n\n` +
+                        `最佳 fitness: ${immortal.fitness.toFixed(3)}\n` +
+                        `Genome: <code>${immortal.genome.id}</code>\n` +
+                        `Viable: ${viable}/${POPULATION_SIZE}\n` +
+                        `耗時: ${elapsed} 分鐘\n\n` +
+                        `使用 /regime apply 0 啟用最佳 genome。`,
+                        { parse_mode: 'HTML' },
+                    );
+                } catch (e: unknown) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    await ctx.api.sendMessage(config.CHAT_ID,
+                        `🚨 演化搜索失敗: ${msg}`,
+                    ).catch(() => {});
+                } finally {
+                    isEvolutionRunning = false;
+                }
+            })();
+
             return;
         }
 
