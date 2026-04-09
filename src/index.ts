@@ -35,6 +35,8 @@ async function runCycle(): Promise<CycleDiagnostic | null> {
     const prefetchMs = Date.now() - tP;
     if (!data) return null;
 
+    appState.commit(data);
+
     const tMC = Date.now();
     let mc: MCEngineDiagnostic | null = null;
     try {
