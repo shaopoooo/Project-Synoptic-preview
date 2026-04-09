@@ -9,7 +9,7 @@
  * 所有函式輸入為 HourlyReturn[]（已有 high/low/close/r 欄位），不需要額外 API。
  */
 
-import type { HourlyReturn, MarketRegime, RangeGuards } from '../../types';
+import type { HourlyReturn, MarketRegime, RangeGuards, RegimeGenome } from '../../types';
 
 // ─── Track 1：CHOP 指數 ────────────────────────────────────────────────────────
 
@@ -141,16 +141,24 @@ function calculatePercentileRange(
  *   'trend'  = CHOP < 45 或  Hurst > 0.65（任一觸發趨勢警告）
  *   'neutral'= 其餘
  */
-export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
+export function analyzeRegime(candles: HourlyReturn[], genome?: RegimeGenome): MarketRegime {
+    const chopWindow = genome?.chopWindow ?? 14;
+    const hurstMaxLag = genome?.hurstMaxLag ?? 20;
+    const atrWindow = genome?.atrWindow ?? 14;
+    const chopRangeThreshold = genome?.chopRangeThreshold ?? 55;
+    const chopTrendThreshold = genome?.chopTrendThreshold ?? 45;
+    const hurstRangeThreshold = genome?.hurstRangeThreshold ?? 0.52;
+    const hurstTrendThreshold = genome?.hurstTrendThreshold ?? 0.65;
+
     const returns = candles.map(c => c.r);
-    const chop  = calculateCHOP(candles);
-    const hurst = calculateHurst(returns);
-    const atr   = calculateATR(candles);
+    const chop  = calculateCHOP(candles, chopWindow);
+    const hurst = calculateHurst(returns, hurstMaxLag);
+    const atr   = calculateATR(candles, atrWindow);
 
     let signal: MarketRegime['signal'];
-    if (chop > 55 && hurst < 0.52) {
+    if (chop > chopRangeThreshold && hurst < hurstRangeThreshold) {
         signal = 'range';
-    } else if (chop < 45 || hurst > 0.65) {
+    } else if (chop < chopTrendThreshold || hurst > hurstTrendThreshold) {
         signal = 'trend';
     } else {
         signal = 'neutral';
@@ -163,8 +171,9 @@ export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
  * 產生三軌驗證的邊界參數（Track 2 + Track 3）。
  * 由 mcEngine 呼叫後傳入 calcCandidateRanges。
  */
-export function computeRangeGuards(candles: HourlyReturn[]): RangeGuards {
-    const atrHalfWidth = calculateATR(candles, 14);
+export function computeRangeGuards(candles: HourlyReturn[], genome?: RegimeGenome): RangeGuards {
+    const atrWindow = genome?.atrWindow ?? 14;
+    const atrHalfWidth = calculateATR(candles, atrWindow);
     const closes       = candles.map(c => c.close);
     const { p5, p95 }  = calculatePercentileRange(closes);
     return { atrHalfWidth, p5, p95 };
