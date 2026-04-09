@@ -9,7 +9,8 @@
     "dev:fast": "dotenvx run -f .env --env FAST_STARTUP=true -- ts-node src/index.ts",
     "dryrun": "dotenvx run -f .env -- ts-node src/dryrun.ts",
     "test": "jest",
-    "backtest": "dotenvx run -f .env -- ts-node src/backtest/BacktestEngine.ts"
+    "backtest": "dotenvx run -f .env -- ts-node src/backtest/BacktestEngine.ts",
+    "backfill": "dotenvx run -f .env -- ts-node src/scripts/backfillOhlcv.ts"
   },
   "keywords": [],
   "author": "",
