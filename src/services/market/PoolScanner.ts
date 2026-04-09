@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
-import { poolVolCache, historicalReturnsCache } from '../../utils/cache';
+import { poolVolCache } from '../../utils/cache';
+import { loadOhlcvStore } from './HistoricalDataService';
 import { config } from '../../config';
 import { createServiceLogger } from '../../utils/logger';
 import { rpcProvider, rpcRetry, delay, nextProvider, geckoRequest } from '../../utils/rpcProvider';
@@ -33,18 +34,15 @@ async function fetchPoolVolume(poolAddress: string, dex: Dex): Promise<VolResult
         return entry;
     };
 
-    // ── 優先從 historicalReturnsCache 推算（零額外 API 請求）─────────────────
-    // 每根 HourlyReturn 已含 volume（USD），加總即得日/週交易量。
-    // 冷啟動時 cache 為空，自動 fall-through 至下方 API fallback。
-    const hrEntry = historicalReturnsCache.get(key);
-    if (hrEntry && hrEntry.returns.length >= 24) {
-        const last24 = hrEntry.returns.slice(-24);
-        const last168 = hrEntry.returns.slice(-168);
-        const daily = last24.reduce((s, hr) => s + hr.volume, 0);
-        // avg7d：實際有幾天就除幾天，不足 7 天時為部分估算
+    // ── 優先從本地 OHLCV 推算（零 API 請求）─────────────────────────────────
+    const store = await loadOhlcvStore(key);
+    if (store && store.candles.length >= 24) {
+        const last24 = store.candles.slice(-24);
+        const last168 = store.candles.slice(-168);
+        const daily = last24.reduce((s, c) => s + c.volume, 0);
         const daysAvailable = last168.length / 24;
-        const avg7d = last168.reduce((s, hr) => s + hr.volume, 0) / Math.max(daysAvailable, 1);
-        return save(daily, avg7d, 'OHLCV cache');
+        const avg7d = last168.reduce((s, c) => s + c.volume, 0) / Math.max(daysAvailable, 1);
+        return save(daily, avg7d, 'local OHLCV');
     }
 
     // Aerodrome 等無 subgraph 端點的 DEX，直接跳至 GeckoTerminal
