@@ -15,6 +15,8 @@
  */
 
 import { MarketSnapshot, MCSimResult, PoolStats, TranchePlan, CoreTranche, BufferTranche, RangeGuards } from '../../types';
+import type { RegimeSegment } from './MarketRegimeAnalyzer';
+import type { RegimeVector } from '../../types';
 import { config } from '../../config';
 import { calculateCapitalEfficiency } from '../../utils/math';
 import { createServiceLogger } from '../../utils/logger';
@@ -36,6 +38,30 @@ interface MCSimParams {
     dailyFeesToken0: number;     // 在範圍內時的每日費收（token0 單位）；內部除以 24 = 小時費收
     horizon: number;             // 模擬天數（內部轉換為 × 24 小時步進）
     numPaths: number;            // 路徑數
+    /** Optional: regime-segmented return pools for blended bootstrap */
+    segments?: RegimeSegment[];
+    /** Optional: regime probability vector for weighted sampling */
+    regimeVector?: RegimeVector;
+}
+
+// ─── Blended bootstrap helper ────────────────────────────────────────────────
+
+/**
+ * 從 regime-segmented 池中加權抽樣一個 return。
+ * 每步先按 regimeVector 權重選 bucket，再從該 bucket 隨機取一個 return。
+ */
+function sampleBlended(segments: RegimeSegment[], regimeVector: RegimeVector): number {
+    const r = Math.random();
+    let cumulative = 0;
+    for (const seg of segments) {
+        cumulative += regimeVector[seg.regime];
+        if (r <= cumulative) {
+            return seg.returns[Math.floor(Math.random() * seg.returns.length)];
+        }
+    }
+    // Fallback（浮點精度）
+    const last = segments[segments.length - 1];
+    return last.returns[Math.floor(Math.random() * last.returns.length)];
 }
 
 // ─── Single-path simulation ───────────────────────────────────────────────────
@@ -56,15 +82,22 @@ function runOnePath(
     capital: number,
     hourlyFeesBase: number,
     horizonHours: number,
+    segments?: RegimeSegment[],
+    regimeVector?: RegimeVector,
 ): { pnlRatio: number; hoursInRange: number } {
     let P = P0;
     let fees = 0;
     let hoursInRange = 0;
     const n = returns.length;
 
+    const useBlended = segments && regimeVector && segments.length > 0;
+
     for (let h = 0; h < horizonHours; h++) {
-        // 有放回抽樣：隨機取一個歷史 1H 報酬率
-        P *= Math.exp(returns[Math.floor(Math.random() * n)]);
+        // 有放回抽樣：若提供 segments/regimeVector 則使用加權 blended bootstrap，否則均勻抽樣
+        const ret = useBlended
+            ? sampleBlended(segments!, regimeVector!)
+            : returns[Math.floor(Math.random() * n)];
+        P *= Math.exp(ret);
         if (P > Pa && P < Pb) {
             fees += hourlyFeesBase;
             hoursInRange++;
@@ -115,6 +148,7 @@ export function runMCSimulation(params: MCSimParams): MCSimResult {
     for (let i = 0; i < numPaths; i++) {
         const { pnlRatio, hoursInRange } = runOnePath(
             historicalReturns, P0, Pa, Pb, L, capital, hourlyFees, horizonHours,
+            params.segments, params.regimeVector,
         );
         pnlRatios.push(pnlRatio);
         totalHoursInRange += hoursInRange;
@@ -195,6 +229,8 @@ export function calcCandidateRanges(
     historicalReturns: number[],
     sigmas = [1.0, 2.0, 3.0],
     guards?: RangeGuards,
+    segments?: RegimeSegment[],
+    regimeVector?: RegimeVector,
 ): RangeCandidateResult[] {
     const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
     if (!sma || sma <= 0) return [];
@@ -239,6 +275,8 @@ export function calcCandidateRanges(
             Pa: lowerPrice,
             Pb: upperPrice,
             dailyFeesToken0,
+            segments,
+            regimeVector,
         });
 
         return { sigma, lowerPrice, upperPrice, capitalEfficiency, dailyFeesToken0, mc };
@@ -266,6 +304,8 @@ export function calcTranchePlan(
     pool: PoolStats,
     bb: MarketSnapshot,
     historicalReturns: number[],
+    segments?: RegimeSegment[],
+    regimeVector?: RegimeVector,
 ): TranchePlan | null {
     const { sma, stdDev1H: rawStdDev, volatility30D } = bb;
     if (!sma || sma <= 0) return null;
@@ -326,6 +366,7 @@ export function calcTranchePlan(
         P0: sma,
         Pa: coreLower, Pb: coreUpper,
         capital: coreCapital, dailyFeesToken0: coreDailyFees,
+        segments, regimeVector,
     });
 
     const bufferMC = runMCSimulation({
@@ -333,6 +374,7 @@ export function calcTranchePlan(
         P0: sma,
         Pa: bufferLower, Pb: bufferUpper,
         capital: bufferCapital, dailyFeesToken0: bufferDailyFees,
+        segments, regimeVector,
     });
 
     log.debug(`MC: Core go=${coreMC.go} CVaR=${(coreMC.cvar95 * 100).toFixed(2)}%  Buffer go=${bufferMC.go} CVaR=${(bufferMC.cvar95 * 100).toFixed(2)}%`);
