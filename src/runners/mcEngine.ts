@@ -21,7 +21,7 @@ const log = createServiceLogger('MCEngine');
  * 這樣 sma、stdDev1H、ATR 全部在同一個無單位空間，跨池可比較。
  * log return 不受正規化影響（ln(a/k / b/k) = ln(a/b)）。
  */
-function deriveMarketStats(rawReturns: HourlyReturn[]): (MarketStats & { normFactor: number }) | null {
+export function deriveMarketStats(rawReturns: HourlyReturn[]): (MarketStats & { normFactor: number }) | null {
     if (rawReturns.length < 20) return null;
 
     // 正規化因子：全部蠟燭的 close 均值
