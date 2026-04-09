@@ -3,11 +3,14 @@ import { nearestUsableTick } from '@uniswap/v3-sdk';
 import { tickToRatio } from '../../utils/math';
 import { volatilityCache, historicalReturnsCache } from '../../utils/cache';
 import { createServiceLogger } from '../../utils/logger';
-import { geckoRequest } from '../../utils/rpcProvider';
+import { geckoRequest, reportGecko429 } from '../../utils/rpcProvider';
 import { config } from '../../config';
 import { getTokenPrices } from './TokenPriceService';
 import { MarketPattern, MarketSnapshot, VolatilityEntry, Dex, HistoricalReturnsEntry, HourlyReturn } from '../../types';
 import { appState } from '../../utils/AppState';
+
+/** 快取資料老化超過此小時數時，推送 cycleWarning。 */
+const CACHE_STALE_WARN_HOURS = 3;
 import { detectBBPattern } from '../strategy/BollingerBands';
 
 
@@ -61,6 +64,7 @@ async function fetchDailyVol(poolAddress: string, dex: Dex): Promise<number> {
       break; // Valid response but no data, don't retry
     } catch (e: any) {
       const is429 = e.response?.status === 429;
+      if (is429) reportGecko429();
       if (attempt < 3) {
         // 指數退避 + jitter：429 → 15s/30s，其他錯誤 → 5s/10s
         const base = is429 ? 15000 : 5000;
@@ -118,6 +122,7 @@ async function fetchOHLCVWithTs(poolKey: string, hours: number): Promise<RawCand
             return null;
         } catch (e: any) {
             const is429 = e.response?.status === 429;
+            if (is429) reportGecko429();
             if (attempt < 3) {
                 const base = is429 ? 15000 : 5000;
                 const backoff = base * attempt + Math.random() * 5000;
@@ -145,6 +150,25 @@ function ohlcvToHourlyReturns(ohlcv: RawCandle[]): HourlyReturn[] {
         volume: c.volume,
         r:      Math.log(c.close / ohlcv[i].close),
     }));
+}
+
+/**
+ * 去重：同一 ts 保留 |r| 最大的那筆，清除 GeckoTerminal 補零蠟燭。
+ *
+ * GeckoTerminal 偶爾對時間缺口插入重複 ts、r=0 的佔位蠟燭，
+ * 這些零報酬率會低估波動率並使 CVaR 計算失準。
+ * 保留 |r| 最大者（實際真實波動），確保風險計算不被人為壓低。
+ * 最後依 ts 重新排序，維持「舊→新」順序。
+ */
+function deduplicateByTs(returns: HourlyReturn[]): HourlyReturn[] {
+    const best = new Map<number, HourlyReturn>();
+    for (const hr of returns) {
+        const prev = best.get(hr.ts);
+        if (!prev || Math.abs(hr.r) > Math.abs(prev.r)) {
+            best.set(hr.ts, hr);
+        }
+    }
+    return Array.from(best.values()).sort((a, b) => a.ts - b.ts);
 }
 
 /**
@@ -196,7 +220,7 @@ export async function fetchHistoricalReturns(poolAddress: string, _dex: Dex, hou
         const hoursNeeded = Math.ceil(ageMs / 3_600_000) + 1; // +1 確保至少 1 根重疊（修正未完結蠟燭）
         const ohlcv = await fetchOHLCVWithTs(key, hoursNeeded);
         if (ohlcv && ohlcv.length >= 2) {
-            const freshReturns = ohlcvToHourlyReturns(ohlcv);
+            const freshReturns = deduplicateByTs(ohlcvToHourlyReturns(ohlcv));
             // 以 ts 去重：新資料覆蓋舊快取中相同 ts（修正未完結蠟燭），保留其餘舊資料
             const freshTsSet = new Set(freshReturns.map(hr => hr.ts));
             const kept = cached.returns.filter(hr => !freshTsSet.has(hr.ts));
@@ -214,6 +238,14 @@ export async function fetchHistoricalReturns(poolAddress: string, _dex: Dex, hou
 
         // 增量失敗 → 沿用現有快取（不丟棄已有資料）
         log.warn(`增量更新失敗  ${key.slice(0, 10)}  使用現有快取（${cached.returns.length} 筆）`);
+        const cacheAgeHours = cached.returns.length > 0
+            ? (now / 1000 - cached.returns[cached.returns.length - 1].ts) / 3600
+            : Infinity;
+        if (cacheAgeHours > CACHE_STALE_WARN_HOURS) {
+            const msg = `歷史報酬率快取老化 ${key.slice(0, 10)}（${cacheAgeHours.toFixed(1)}H 舊），CVaR 計算可能失準`;
+            appState.cycleWarnings.push(msg);
+            log.warn(msg);
+        }
         return cached.returns;
     }
 
@@ -222,7 +254,7 @@ export async function fetchHistoricalReturns(poolAddress: string, _dex: Dex, hou
     log.debug(`🌐 歷史報酬率全量抓取  ${tag}  limit=${hours}H`);
     const ohlcv = await fetchOHLCVWithTs(key, hours);
     if (ohlcv && ohlcv.length >= 2) {
-        const returns = ohlcvToHourlyReturns(ohlcv);
+        const returns = deduplicateByTs(ohlcvToHourlyReturns(ohlcv));
         const stats = computeReturnStats(returns.map(hr => hr.r));
         const entry: HistoricalReturnsEntry = {
             returns, ...stats,
@@ -236,6 +268,14 @@ export async function fetchHistoricalReturns(poolAddress: string, _dex: Dex, hou
 
     if (cached) {
         log.warn(`全量抓取失敗  ${tag}  使用過期快取（${cached.returns.length} 筆）`);
+        const staleAgeHours = cached.returns.length > 0
+            ? (Date.now() / 1000 - cached.returns[cached.returns.length - 1].ts) / 3600
+            : Infinity;
+        if (staleAgeHours > CACHE_STALE_WARN_HOURS) {
+            const msg = `歷史報酬率過期快取 ${tag}（${staleAgeHours.toFixed(1)}H 舊），CVaR 計算可能失準`;
+            appState.cycleWarnings.push(msg);
+            log.warn(msg);
+        }
         return cached.returns;
     }
     return [];
@@ -396,12 +436,16 @@ export class PoolMarketService {
       let stdDev1H: number;
       let isWarmupFallback = false;
       if (prices1H.length >= config.MIN_CANDLES_FOR_EWMA) {
-        let smoothedPrices = [...prices1H];
-        for (let i = 1; i < smoothedPrices.length; i++) {
-          smoothedPrices[i] = config.EWMA_ALPHA * smoothedPrices[i] + config.EWMA_BETA * smoothedPrices[i - 1];
+        // 直接使用原始價格計算變異數，不再進行事前 EWMA 平滑（平滑會人為消除波動導致塌縮）
+        const variance1H = prices1H.reduce((sum: number, p: number) => sum + Math.pow(p - sma, 2), 0) / prices1H.length;
+        const rawStdDev = Math.sqrt(variance1H);
+        
+        // 以 30D 年化波動率換算的值作為下限，保護避開極端平靜的亞洲時段導致 BB 帶寬過窄
+        const volDerivedFloor = sma * annualizedVol / Math.sqrt(8760);
+        stdDev1H = Math.max(rawStdDev, volDerivedFloor);
+        if (rawStdDev < volDerivedFloor) {
+          log.debug(`stdDev1H 短期波動較低（${rawStdDev.toExponential(3)} < floor ${volDerivedFloor.toExponential(3)}），採用 vol-derived 下限保護  ${poolAddress.slice(0, 10)}`);
         }
-        const variance1H = smoothedPrices.reduce((sum: number, p: number) => sum + Math.pow(p - sma, 2), 0) / smoothedPrices.length;
-        stdDev1H = Math.sqrt(variance1H);
       } else {
         // 冷啟動：用 30D vol 換算 1H stdDev；標記 isFallback 讓 UI 顯示「資料累積中」
         stdDev1H = sma * annualizedVol / Math.sqrt(365 * 24); // √(365×24) = √8760 hourly annualization
@@ -409,12 +453,9 @@ export class PoolMarketService {
         log.debug(`📊 vol-derived stdDev  ${poolAddress.slice(0, 10)}  candles=${prices1H.length}/${config.MIN_CANDLES_FOR_EWMA}  stdDev=${stdDev1H.toExponential(3)} (warmup)`);
       }
 
-      const maxOffset = sma * config.BB_MAX_OFFSET_PCT;
-      const upperPrice = Math.min(sma + maxOffset, sma + (k * stdDev1H));
-      // 不使用絕對最小值（如 0.00000001），避免 tick-ratio 極小的幣對（如 WETH/cbBTC ≈ 2.9e-12）
-      // 被 clamp 到遠大於 SMA 的下界，導致 tickOffsetLower 為負、tick 範圍倒置。
-      // sma - maxOffset = 0.9 × sma 恆正，無需額外保護。
-      const lowerPrice = Math.max(sma - maxOffset, sma - (k * stdDev1H));
+      const R = 1 + (k * stdDev1H / sma);
+      const upperPrice = sma * R;
+      const lowerPrice = sma / R;
 
       // Convert BB price bounds directly to ticks: tick = log(price) / log(1.0001)
       // This anchors the band to the SMA, not currentTick, so all positions on the

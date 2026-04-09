@@ -210,25 +210,21 @@ export interface FetchedFees {
     gaugeAddress?: string;
 }
 
-/** Phase 0 完整輸出：所有鏈上 / API 資料，供 computeAll 純計算使用 */
-export interface CycleData {
-    pools: PoolStats[];
-    marketSnapshots: Record<string, MarketSnapshot>;
-    tokenPrices: TokenPrices;
-    rawPositions: RawChainPosition[];
-    feeMaps: Map<string, FetchedFees>;
-    gasCostUSD: number;
-    /** poolId.toLowerCase() → 歷史 log 報酬率（含時間戳），供 MC 引擎使用 */
-    historicalReturns: Map<string, HourlyReturn[]>;
-    /** poolId.toLowerCase() → 30D 帶寬滾動均值，Phase 0 更新後傳入 Phase 1 使用（避免 compute 有副作用） */
-    bandwidthAvg30D: Map<string, number>;
-    /** Phase 0 期間收集的非致命警告，透過 commit() 寫入 appState.cycleWarnings */
-    warnings: string[];
+/** 從歷史蠟燭推導的市場統計（取代 BB 的 MarketSnapshot） */
+export interface MarketStats {
+    /** 最近 N 根 close 均值（MC 模擬的 P0） */
+    sma: number;
+    /** 1 小時 log return 標準差 */
+    stdDev1H: number;
+    /** 年化波動率（stdDev1H × √8760） */
+    volatility30D: number;
 }
 
-/** Phase 1 計算輸出 */
-export interface CycleResult {
-    positions: PositionRecord[];
+/** Phase 0 輸出：MC 引擎需要的市場資料 */
+export interface CycleData {
+    pools: PoolStats[];
+    historicalReturns: Map<string, HourlyReturn[]>;
+    warnings: string[];
 }
 
 /** MC 引擎計算出的最優開倉策略，寫入 appState.strategies */
@@ -248,6 +244,102 @@ export interface RangeGuards {
     p5: number;
     /** Track 3：歷史 P95 上界，開倉不得高於此價 */
     p95: number;
+}
+
+/** Regime 判斷的可調參數（演化搜索目標，9 個基因） */
+export interface RegimeGenome {
+    id: string;                     // 唯一識別碼（如 'baseline', 'gen3-best')
+    /** CHOP 指數 > 此值 = 偏震盪 */
+    chopRangeThreshold: number;     // baseline: 55, search: [45, 70]
+    /** CHOP 指數 < 此值 = 偏趨勢 */
+    chopTrendThreshold: number;     // baseline: 45, search: [30, 55]
+    /** CHOP 計算窗口（根 K 線數） */
+    chopWindow: number;             // baseline: 14, search: [7, 28]
+    /** Hurst < 此值 = 均值回歸（LP 友善） */
+    hurstRangeThreshold: number;    // baseline: 0.52, search: [0.40, 0.60]
+    /** Hurst > 此值 = 趨勢延續 */
+    hurstTrendThreshold: number;    // baseline: 0.65, search: [0.55, 0.80]
+    /** Hurst R/S 分析最大 lag */
+    hurstMaxLag: number;            // baseline: 20, search: [10, 40]
+    /** Sigmoid 溫度：T→0 硬分類，T→∞ 均勻分佈 */
+    sigmoidTemp: number;            // baseline: 1.0, search: [0.1, 5.0]
+    /** ATR 計算窗口 */
+    atrWindow: number;              // baseline: 14, search: [7, 28]
+    /** CVaR 安全係數 */
+    cvarSafetyFactor: number;       // baseline: 1.5, search: [1.0, 5.0]
+}
+
+/** Continuous regime vector — softmax 正規化，三分量總和 = 1 */
+export interface RegimeVector {
+    range: number;      // [0, 1]
+    trend: number;      // [0, 1]
+    neutral: number;    // [0, 1]
+}
+
+/** 單池回測詳情 */
+export interface PoolBacktestResult {
+    poolAddress: string;
+    sigmaOpt: number;
+    score: number;
+    cvar95: number;
+    go: boolean;
+    inRangePct: number;
+    pnlRatio: number;
+}
+
+/** 回測引擎輸出（跨池彙總） */
+export interface BacktestResult {
+    sharpe: number;
+    maxDrawdown: number;
+    inRangePct: number;
+    totalReturn: number;
+    poolResults: Map<string, PoolBacktestResult>;
+}
+
+/** 單池 MC 引擎診斷 */
+export interface PoolDiagnostic {
+    pool: string;
+    dex: string;
+    regimeVector: RegimeVector | null;
+    hardSignal: 'range' | 'trend' | 'neutral';
+    wouldSkipInOldVersion: boolean;
+    sigmaOpt: number | null;
+    kBest: number | null;
+    score: number | null;
+    cvar95: number | null;
+    go: boolean;
+    goCandidateCount: number;
+}
+
+/** MC 引擎整體診斷輸出 */
+export interface MCEngineDiagnostic {
+    poolResults: PoolDiagnostic[];
+    summary: {
+        totalPools: number;
+        goPools: number;
+        oldVersionSkipCount: number;
+        newVersionRecoveredCount: number;
+    };
+}
+
+/** 單次 cycle 完整診斷 */
+export interface CycleDiagnostic {
+    cycleNumber: number;
+    timestamp: number;
+    durationMs: number;
+    phase: {
+        prefetchMs: number;
+        computeMs: number;
+        mcEngineMs: number;
+    };
+    pools: PoolDiagnostic[];
+    activeGenomeId: string | null;
+    summary: {
+        totalPools: number;
+        goPools: number;
+        oldVersionSkipCount: number;
+        newVersionRecoveredCount: number;
+    };
 }
 
 export interface OpeningStrategy {

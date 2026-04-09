@@ -11,6 +11,8 @@ import { registerPoolCommands } from './commands/poolCommands';
 import { registerPositionCommands } from './commands/positionCommands';
 import { registerCalcCommands } from './commands/calcCommands';
 import { sendConsolidatedReport as buildAndSendReport, sendFlashReport as buildAndSendFlash } from './reportService';
+import { registerDiagnosticCommands } from './commands/diagnosticCommands';
+import { registerRegimeCommands } from './commands/regimeCommands';
 
 const log = createServiceLogger('TelegramBot');
 
@@ -44,12 +46,23 @@ export class TelegramBotService {
         this.bot = new Bot(config.BOT_TOKEN);
         this.chatId = config.CHAT_ID;
 
+        // 授權中間件：只允許指定 CHAT_ID 的訊息通過
+        this.bot.use(async (ctx, next) => {
+            if (String(ctx.chat?.id) !== this.chatId) return;
+            await next();
+        });
+
         registerInfoCommands(this.bot);
         registerConfigCommands(this.bot, this.deps);
         registerWalletCommands(this.bot, this.deps);
         registerPoolCommands(this.bot, this.deps);
         registerPositionCommands(this.bot, this.deps);
         registerCalcCommands(this.bot);
+        registerRegimeCommands(this.bot);
+    }
+
+    registerDiagnostics(diagnosticStore: import('../utils/diagnosticStore').DiagnosticStore) {
+        registerDiagnosticCommands(this.bot, diagnosticStore);
     }
 
     public async startBot() {

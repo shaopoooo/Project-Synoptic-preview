@@ -6,6 +6,9 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 data/
+data/ohlcv/
+data/diagnostics*.jsonl
+data/genomes/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
@@ -71,8 +74,7 @@ typings/
 
 # dotenv environment variables file
 .env
-.env.test
-.env.keys
+.env.*
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -107,3 +109,4 @@ dist
 
 # Mac OS
 .DS_Store
+.gstack/

@@ -3,11 +3,9 @@ import { config } from '../../config';
 import { appState, ucWalletAddresses, ucGetOpenTimestamp, ucUpsertPosition, ucFindWallet } from '../../utils/AppState';
 import { buildLogPositionBlock, buildLogSnapshotHeader } from '../../utils/formatter';
 import { MarketSnapshot, RawChainPosition, Dex, PositionRecord } from '../../types';
-import { createServiceLogger } from '../../utils/logger';
+import { createServiceLogger, positionLogger } from '../../utils/logger';
 import { rpcRetry, nextProvider } from '../../utils/rpcProvider';
 import { TOKEN_DECIMALS } from '../../utils/tokenInfo';
-import path from 'path';
-import fs from 'fs-extra';
 import { NpmContractReader } from './NpmContractReader';
 import { StakeDiscovery } from '../events/StakeDiscovery';
 import { TimestampFiller } from './TimestampFiller';
@@ -269,9 +267,7 @@ export class PositionScanner {
         const header = buildLogSnapshotHeader(bb, kLow, kHigh);
         const logContent = header + '\n\n' + outputs.join('\n\n') + '\n\n';
 
-        const logDir = path.join(__dirname, '../../../logs');
-        await fs.ensureDir(logDir);
-        await fs.appendFile(path.join(logDir, 'positions.log'), logContent);
+        positionLogger.info(logContent);
         log.info(`✅ positions.log written  ${positions.length} position(s)`);
     }
 
