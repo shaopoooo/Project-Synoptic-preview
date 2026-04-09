@@ -1,7 +1,7 @@
 import { appState } from '../utils/AppState';
 import { createServiceLogger } from '../utils/logger';
 import { calcCandidateRanges, calcTranchePlan } from '../services/strategy/MonteCarloEngine';
-import { analyzeRegime, computeRangeGuards } from '../services/strategy/MarketRegimeAnalyzer';
+import { analyzeRegime, computeRangeGuards, computeRegimeVector, segmentByRegime } from '../services/strategy/MarketRegimeAnalyzer';
 import { config } from '../config';
 import { logCalc } from '../utils/logger';
 import type { OpeningStrategy, HourlyReturn, RangeGuards, RegimeGenome, MCEngineDiagnostic, PoolDiagnostic } from '../types';
@@ -76,7 +76,6 @@ export async function runMCEngine(
     }
 
     const noGoPools: string[] = [];
-    const trendSkippedPools: string[] = [];
 
     for (const pool of pools) {
         const bb = marketSnapshots[pool.id.toLowerCase()];
@@ -159,13 +158,12 @@ export async function runMCEngine(
             goCandidateCount: 0,
         };
 
-        if (regime.signal === 'trend') {
-            log.warn(`MCEngine: pool ${pool.dex} 趨勢市場，跳過`);
-            delete appState.strategies[pool.id.toLowerCase()];
-            trendSkippedPools.push(`${pool.dex} ${pool.id.slice(0, 8)}… (CHOP=${regime.chop.toFixed(1)} H=${regime.hurst.toFixed(2)})`);
-            poolDiagnostics.push(diagEntry);
-            continue;
-        }
+        // Continuous regime vector — 不再跳過任何池子
+        const regimeVector = computeRegimeVector(rawReturns, activeGenome);
+        const segments = segmentByRegime(rawReturns);
+        diagEntry.regimeVector = regimeVector;
+
+        log.debug(`MCEngine: pool ${pool.dex} RegimeVector R=${regimeVector.range.toFixed(2)} T=${regimeVector.trend.toFixed(2)} N=${regimeVector.neutral.toFixed(2)}`);
 
         // 極端波動直接 No-Go（ATR 系統無法定義有意義的區間）
         if (bb.volatility30D > 1.0) {
@@ -215,7 +213,7 @@ export async function runMCEngine(
 
         try {
             // ── Step 1：候選區間評估（同步）─────────────────────────────────
-            const candidates = calcCandidateRanges(UNIT_CAPITAL, pool, bb, returns, sigmas, guardsTR);
+            const candidates = calcCandidateRanges(UNIT_CAPITAL, pool, bb, returns, sigmas, guardsTR, segments, regimeVector);
             candidates.forEach((c, i) => {
                 logCalc({
                     phase: 'P1',
@@ -261,7 +259,7 @@ export async function runMCEngine(
             const { c: best, score: bestScore } = scored[0];
 
             // ── Step 3：分倉計畫（同步）──────────────────────────────────────
-            const tranche = calcTranchePlan(UNIT_CAPITAL, pool, bb, returns);
+            const tranche = calcTranchePlan(UNIT_CAPITAL, pool, bb, returns, segments, regimeVector);
 
             const coreRatio = appState.userConfig.trancheCore ?? config.TRANCHE_CORE_RATIO;
 
@@ -343,17 +341,6 @@ export async function runMCEngine(
             `建議暫停開新倉，等待市場波動回落。`
         ).catch(() => { });
         log.warn(`Kill Switch B (CVaR No-Go) triggered for ${noGoPools.length} pool(s)`);
-    }
-
-    // ── 趨勢告警：獨立推播，避免與 CVaR No-Go 混淆 ──────────────────────────
-    if (trendSkippedPools.length > 0 && sendAlert) {
-        await sendAlert(
-            `⚠️ <b>趨勢市場警告 — 策略暫停</b>\n\n` +
-            `以下池子偵測到趨勢行情，LP 有偏移風險：\n` +
-            trendSkippedPools.map(p => `  • ${p}`).join('\n') + '\n\n' +
-            `市場回歸震盪後（CHOP>55 且 Hurst<0.52）將自動恢復計算。`
-        ).catch(() => { });
-        log.warn(`Trend skip triggered for ${trendSkippedPools.length} pool(s)`);
     }
 
     return {
