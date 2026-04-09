@@ -1,4 +1,5 @@
 import cron from 'node-cron';
+import * as path from 'path';
 import { TelegramBotService, minutesToCron, VALID_INTERVALS, IntervalMinutes } from './bot/TelegramBot';
 import { positionScanner } from './services/position/PositionScanner';
 import { getPriceBufferSnapshot, restorePriceBuffer, refreshPriceBuffer } from './services/market/PoolMarketService';
@@ -13,6 +14,8 @@ import { computeAll } from './runners/compute';
 import { runBotService } from './runners/reporting';
 import { runBackgroundTasks } from './runners/backgroundTasks';
 import { runMCEngine } from './runners/mcEngine';
+import { DiagnosticStore } from './utils/diagnosticStore';
+import type { CycleDiagnostic } from './types';
 
 const log = createServiceLogger('Main');
 const botService = new TelegramBotService();
@@ -26,6 +29,12 @@ let isCycleRunning = false;
 let isBackgroundTaskRunning = false;
 let isMCEngineRunning = false;
 let isStartupComplete = false;
+
+let cycleCount = 0;
+const diagnosticStore = new DiagnosticStore(
+    path.join(process.cwd(), 'data', 'diagnostics.jsonl'),
+    48,
+);
 
 // ── 工具函式 ──────────────────────────────────────────────────────────────────
 
@@ -47,34 +56,65 @@ async function sendCriticalAlert(key: string, message: string) {
 // 注意：BB 在 Position 之前，因為穩態下 appState.positions 已有前一輪資料可決定要算哪些池。
 // 首次啟動（無倉位）由 main() 的初始掃描路徑處理，不走此函式。
 
-async function runCycle() {
-    const data = await prefetchAll(sendCriticalAlert);
-    if (!data) return;
+async function runCycle(): Promise<CycleDiagnostic | null> {
+    const t0 = Date.now();
 
+    // ── Phase 0: Prefetch ────────────────────────────────────────────
+    const tPrefetch = Date.now();
+    const data = await prefetchAll(sendCriticalAlert);
+    const prefetchMs = Date.now() - tPrefetch;
+    if (!data) return null;
+
+    // ── Phase 1: Compute ─────────────────────────────────────────────
+    const tCompute = Date.now();
     const result = computeAll(data);
     positionScanner.updatePositions(result.positions);
     appState.commit(data, { positions: positionScanner.getTrackedPositions() });
+    const computeMs = Date.now() - tCompute;
 
-    // MC 策略引擎：commit 後 pools/bbs 已更新，可安全計算
-    // guard 避免 Telegram 指令手動觸發時與主排程重疊
+    // ── MC Engine ────────────────────────────────────────────────────
+    const tMC = Date.now();
+    let mcDiagnostic: import('./types').MCEngineDiagnostic | null = null;
     if (!isMCEngineRunning) {
         isMCEngineRunning = true;
-        runMCEngine(data.historicalReturns, botService.sendAlert.bind(botService))
-            .catch((e) => log.error(`MCEngine`, e))
-            .finally(() => { isMCEngineRunning = false; });
+        try {
+            mcDiagnostic = await runMCEngine(
+                data.historicalReturns,
+                botService.sendAlert.bind(botService),
+                appState.activeGenome ?? undefined,
+            );
+        } catch (e) {
+            log.error('MCEngine', e);
+        } finally {
+            isMCEngineRunning = false;
+        }
     } else {
         log.info('MCEngine: 已在執行中，本輪跳過');
     }
+    const mcEngineMs = Date.now() - tMC;
 
-    await runBotService(botService, isStartupComplete).catch((e) => log.error(`BotService`, e));
-    await triggerStateSave().catch((e) => log.error(`State save`, e));
+    // ── Reporting + Save ─────────────────────────────────────────────
+    await runBotService(botService, isStartupComplete).catch((e) => log.error('BotService', e));
+    await triggerStateSave().catch((e) => log.error('State save', e));
 
-    // 記錄 snapshot 至 positions.log
     const bbForLog = appState.positions[0]
         ? (appState.marketSnapshots[appState.positions[0].poolAddress.toLowerCase()] ?? null)
         : null;
     await positionScanner.logSnapshots(appState.positions, bbForLog, appState.marketKLowVol, appState.marketKHighVol)
-        .catch((e) => log.error(`LogSnapshots`, e));
+        .catch((e) => log.error('LogSnapshots', e));
+
+    // ── 組裝 CycleDiagnostic ─────────────────────────────────────────
+    return {
+        cycleNumber: ++cycleCount,
+        timestamp: t0,
+        durationMs: Date.now() - t0,
+        phase: { prefetchMs, computeMs, mcEngineMs },
+        pools: mcDiagnostic?.poolResults ?? [],
+        activeGenomeId: appState.activeGenome?.id ?? null,
+        summary: mcDiagnostic?.summary ?? {
+            totalPools: 0, goPools: 0, oldVersionSkipCount: 0, newVersionRecoveredCount: 0,
+        },
+    };
 }
 
 // ── 低優先級背景任務（由呼叫方在主週期完成後觸發，runCycle 本身不觸發）──────
@@ -96,13 +136,17 @@ function scheduleBackgroundTasks(label: string) {
 function buildCronJob() {
     return cron.schedule(minutesToCron(currentIntervalMinutes), async () => {
         if (isCycleRunning) {
-            log.warn(`⚠️  上一個週期尚未完成，跳過本次觸發（排程重疊保護）`);
+            log.warn('⚠️  上一個週期尚未完成，跳過本次觸發（排程重疊保護）');
             return;
         }
         isCycleRunning = true;
         try {
             log.section(`${currentIntervalMinutes}m cycle`);
-            await runCycle();
+            const diag = await runCycle();
+            if (diag) {
+                await diagnosticStore.append(diag);
+                log.info(`Cycle #${diag.cycleNumber} 完成 — ${diag.durationMs}ms (P0:${diag.phase.prefetchMs} C:${diag.phase.computeMs} MC:${diag.phase.mcEngineMs})`);
+            }
             log.section('cycle end');
         } finally {
             isCycleRunning = false;
@@ -260,7 +304,10 @@ async function main() {
             isCycleRunning = true;
             Promise.resolve()
                 .then(runCycle)
-                .catch((e) => log.error(`FastStartup cycle`, e))
+                .then(async (diag) => {
+                    if (diag) await diagnosticStore.append(diag);
+                })
+                .catch((e) => log.error('FastStartup cycle', e))
                 .finally(() => {
                     isCycleRunning = false;
                     scheduleBackgroundTasks('fast');
@@ -290,5 +337,7 @@ async function gracefulShutdown(signal: string) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+export { diagnosticStore };
 
 main().catch((e) => log.fatal(`Main error`, e));
