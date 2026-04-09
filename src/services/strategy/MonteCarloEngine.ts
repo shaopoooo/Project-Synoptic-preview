@@ -246,7 +246,7 @@ export function calcCandidateRanges(
     };
 
     return sigmas.map(sigma => {
-        const R = 1 + (sigma * stdDev1H / sma);
+        const R = 1 + (sigma * stdDev1H);
         let lowerPrice = sma / R;
         let upperPrice = sma * R;
 
@@ -255,7 +255,7 @@ export function calcCandidateRanges(
             // 僅保留作為非 ATR 路徑的安全網
             const halfWidth = (upperPrice - lowerPrice) / 2;
             if (halfWidth < guards.atrHalfWidth) {
-                const R_atr = 1 + (guards.atrHalfWidth / sma);
+                const R_atr = 1 + guards.atrHalfWidth;
                 lowerPrice = sma / R_atr;
                 upperPrice = sma * R_atr;
             }
@@ -314,7 +314,7 @@ export function calcTranchePlan(
 
     // ── Core Tranche ──────────────────────────────────────────────────────────
     const coreCapital = totalCapital * config.TRANCHE_CORE_RATIO;
-    const coreR = 1 + (config.TRANCHE_CORE_SIGMA * stdDev1H / sma);
+    const coreR = 1 + (config.TRANCHE_CORE_SIGMA * stdDev1H);
     const coreLower = sma / coreR;
     const coreUpper = sma * coreR;
     const coreEff = calculateCapitalEfficiency(coreUpper, coreLower, sma) ?? 1;
@@ -325,8 +325,8 @@ export function calcTranchePlan(
 
     const direction: 'down' | 'up' = 'down';
 
-    const R_near = 1 + (config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev1H / sma);
-    const R_far = 1 + (config.TRANCHE_BUFFER_SIGMA_FAR * stdDev1H / sma);
+    const R_near = 1 + (config.TRANCHE_BUFFER_SIGMA_NEAR * stdDev1H);
+    const R_far = 1 + (config.TRANCHE_BUFFER_SIGMA_FAR * stdDev1H);
 
     let bufferLower: number;
     let bufferUpper: number;
