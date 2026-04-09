@@ -5,13 +5,26 @@ import { config } from '../config';
 import { createServiceLogger } from './logger';
 import { normalizeRawAmount } from './math';
 
-/** GeckoTerminal 速率控制（免費 API：並發 1，最小間隔 1500ms） */
+/** GeckoTerminal 速率控制（免費 API：並發 1，最小間隔 2500ms） */
 const _geckoQueue = pLimit(1);
 let _lastGeckoMs = 0;
-const GECKO_MIN_INTERVAL_MS = 1500;
+const GECKO_MIN_INTERVAL_MS = 2500;
+/** 收到 429 後的強制暫停到期時間（ms）。 */
+let _gecko429PenaltyUntil = 0;
+
+/**
+ * 通知 geckoRequest 剛收到 429，觸發全局暫停直到 penaltyMs 後。
+ * 由 PoolMarketService 在捕捉到 429 時呼叫。
+ */
+export function reportGecko429(penaltyMs = 60_000): void {
+    _gecko429PenaltyUntil = Math.max(_gecko429PenaltyUntil, Date.now() + penaltyMs);
+}
 
 export async function geckoRequest<T>(fn: () => Promise<T>): Promise<T> {
     return _geckoQueue(async () => {
+        // 若 429 penalty 尚未到期，先等到期後再發請求
+        const penaltyWait = _gecko429PenaltyUntil - Date.now();
+        if (penaltyWait > 0) await delay(penaltyWait);
         const wait = GECKO_MIN_INTERVAL_MS - (Date.now() - _lastGeckoMs);
         if (wait > 0) await delay(wait);
         _lastGeckoMs = Date.now();

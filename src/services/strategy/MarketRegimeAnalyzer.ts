@@ -138,7 +138,7 @@ function calculatePercentileRange(
  *
  * signal 判斷規則（保守版，優先保護資金）：
  *   'range'  = CHOP > 55 且 Hurst < 0.52（雙重確認震盪才開倉）
- *   'trend'  = CHOP < 45 或  Hurst > 0.58（任一觸發趨勢警告）
+ *   'trend'  = CHOP < 45 或  Hurst > 0.65（任一觸發趨勢警告）
  *   'neutral'= 其餘
  */
 export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
@@ -150,7 +150,7 @@ export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
     let signal: MarketRegime['signal'];
     if (chop > 55 && hurst < 0.52) {
         signal = 'range';
-    } else if (chop < 45 || hurst > 0.58) {
+    } else if (chop < 45 || hurst > 0.65) {
         signal = 'trend';
     } else {
         signal = 'neutral';

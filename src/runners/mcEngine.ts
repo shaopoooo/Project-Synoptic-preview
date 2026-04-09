@@ -4,7 +4,7 @@ import { calcCandidateRanges, calcTranchePlan } from '../services/strategy/Monte
 import { analyzeRegime, computeRangeGuards } from '../services/strategy/MarketRegimeAnalyzer';
 import { config } from '../config';
 import { logCalc } from '../utils/logger';
-import type { OpeningStrategy, HourlyReturn } from '../types';
+import type { OpeningStrategy, HourlyReturn, RangeGuards } from '../types';
 
 const log = createServiceLogger('MCEngine');
 
@@ -23,9 +23,14 @@ const ATR_K_CANDIDATES = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0];
  * 將 ATR 倍數候選轉換為 sigma 值，供 calcCandidateRanges 使用。
  * sigma = (k × atrHalfWidth) / stdDev1H
  */
+/** sigma 上限：超過此值代表 stdDev1H 塌縮至浮點精度極限，結果無意義。 */
+const MAX_SIGMA = 1000;
+
 function getAtrSigmaCandidates(atrHalfWidth: number, stdDev1H: number): number[] {
     if (atrHalfWidth <= 0 || stdDev1H <= 0) return [];
-    return ATR_K_CANDIDATES.map(k => (k * atrHalfWidth) / stdDev1H);
+    return ATR_K_CANDIDATES
+        .map(k => (k * atrHalfWidth) / stdDev1H)
+        .filter(sigma => sigma <= MAX_SIGMA);
 }
 
 /** 用單位資本（1 token0）計算比率分數，/calc 依使用者資本縮放 */
@@ -77,6 +82,13 @@ export async function runMCEngine(
             continue;
         }
 
+        // ── 資料新鮮度驗證：末筆 ts 距今超過 3H 表示快取老化，CVaR 可能失準 ──
+        const latestTs = rawReturns[rawReturns.length - 1]?.ts ?? 0;
+        const dataAgeHours = (Date.now() / 1000 - latestTs) / 3600;
+        if (dataAgeHours > 3) {
+            log.warn(`MCEngine: pool ${pool.dex} 歷史報酬率老化 ${dataAgeHours.toFixed(1)}H，CVaR 計算結果可能失準`);
+        }
+
         // ── Track 1：市場狀態過濾 + 動態 sigma ───────────────────────────────
         const regime = analyzeRegime(rawReturns);
         log.debug(`MCEngine: pool ${pool.dex} CHOP=${regime.chop.toFixed(1)} H=${regime.hurst.toFixed(2)} signal=${regime.signal}`);
@@ -112,22 +124,41 @@ export async function runMCEngine(
         // ── Track 2+3：ATR 下限 + Percentile 天花板 ─────────────────────────
         const guards = computeRangeGuards(rawReturns);
 
+        // ── 單位對齊：guards 由 OHLCV USD 蠟燭計算，bb.sma / stdDev1H 為 tick-ratio ──
+        // 轉換因子 = bb.sma（tick-ratio）/ lastCloseUSD，將 USD 數值映射至 tick-ratio 空間。
+        // 例如 WBTC/USDC 池：sma≈3e-12 tick-ratio，lastClose≈65000 USD，
+        //   factor≈4.6e-17；ATR_USD=333 → ATR_tickRatio≈1.5e-14，與 stdDev1H≈6.7e-15 同階。
+        const lastCloseUSD = rawReturns[rawReturns.length - 1]?.close ?? 0;
+        const toTickRatio = (lastCloseUSD > 0 && bb.sma > 0) ? bb.sma / lastCloseUSD : null;
+
+        if (toTickRatio === null) {
+            log.warn(`MCEngine: pool ${pool.dex} 無法取得 lastCloseUSD，跳過`);
+            continue;
+        }
+
+        const guardsTR: RangeGuards = {
+            atrHalfWidth: guards.atrHalfWidth * toTickRatio,
+            p5:           guards.p5           * toTickRatio,
+            p95:          guards.p95          * toTickRatio,
+        };
+
         // ── Track 1（ATR 倍數反推 sigma）────────────────────────────────────
         const stdDev1H = bb.stdDev1H ?? (bb.sma * bb.volatility30D / Math.sqrt(8760));
-        const sigmas = getAtrSigmaCandidates(guards.atrHalfWidth, stdDev1H);
+        const sigmas = getAtrSigmaCandidates(guardsTR.atrHalfWidth, stdDev1H);
         if (sigmas.length === 0) {
             log.warn(`MCEngine: pool ${pool.dex} ATR 或 stdDev1H 無效，跳過`);
             continue;
         }
         log.info(
-            `MCEngine: pool ${pool.dex} ATR=${guards.atrHalfWidth.toExponential(3)} ` +
-            `stdDev1H=${stdDev1H.toExponential(3)} ` +
+            `MCEngine: pool ${pool.dex} ATR=${guards.atrHalfWidth.toExponential(3)}USD` +
+            ` (${guardsTR.atrHalfWidth.toExponential(3)}TR)` +
+            ` stdDev1H=${stdDev1H.toExponential(3)} ` +
             `k=[${ATR_K_CANDIDATES.join(',')}] σ=[${sigmas.map(s => s.toFixed(2)).join(',')}]`
         );
 
         try {
             // ── Step 1：候選區間評估（同步）─────────────────────────────────
-            const candidates = calcCandidateRanges(UNIT_CAPITAL, pool, bb, returns, sigmas, guards);
+            const candidates = calcCandidateRanges(UNIT_CAPITAL, pool, bb, returns, sigmas, guardsTR);
             candidates.forEach((c, i) => {
                 logCalc({
                     phase: 'P1',
