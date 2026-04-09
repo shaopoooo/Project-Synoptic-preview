@@ -95,10 +95,11 @@ export async function runMCEngine(
             continue;
         }
 
-        // ── Regime ───────────────────────────────────────────────────────────
+        // ── Regime + Guards ──────────────────────────────────────────────────
         const regime = analyzeRegime(rawReturns, activeGenome);
         const regimeVector = computeRegimeVector(rawReturns, activeGenome);
         const segments = segmentByRegime(rawReturns);
+        const guardsUSD = computeRangeGuards(rawReturns, activeGenome);
 
         const diagEntry: PoolDiagnostic = {
             ...emptyDiag,
@@ -107,11 +108,14 @@ export async function runMCEngine(
             regimeVector,
         };
 
-        log.debug(`MCEngine: pool ${pool.dex} RegimeVector R=${regimeVector.range.toFixed(2)} T=${regimeVector.trend.toFixed(2)} N=${regimeVector.neutral.toFixed(2)}`);
+        log.info(
+            `MCEngine: ${pool.dex} ${pool.id.slice(0, 8)} | ` +
+            `sma=$${stats.sma.toFixed(2)} σ1H=${stats.stdDev1H.toExponential(3)} vol=${(stats.volatility30D * 100).toFixed(1)}% | ` +
+            `R=${regimeVector.range.toFixed(2)} T=${regimeVector.trend.toFixed(2)} N=${regimeVector.neutral.toFixed(2)} | ` +
+            `apr=${((pool.apr + (pool.farmApr ?? 0)) * 100).toFixed(1)}% ATR=$${guardsUSD.atrHalfWidth.toFixed(2)}`
+        );
 
-        // ── ATR → sigma 候選 ─────────────────────────────────────────────────
-        // guards 的 ATR/percentile 是 USD 空間，需要除以 sma 轉成比率空間
-        const guardsUSD = computeRangeGuards(rawReturns, activeGenome);
+        // ── ATR → sigma 候選（guards 從 USD 轉比率空間）────────────────────
         const guards: RangeGuards = {
             atrHalfWidth: guardsUSD.atrHalfWidth / stats.sma,
             p5: guardsUSD.p5 / stats.sma,
@@ -126,6 +130,15 @@ export async function runMCEngine(
 
         try {
             const candidates = calcCandidateRanges(UNIT_CAPITAL, pool, stats, returns, sigmas, guards, segments, regimeVector);
+            // 不論 go/no-go 都輸出每個候選的關鍵參數
+            for (const c of candidates) {
+                log.info(
+                    `  σ=${c.sigma.toFixed(2)} [${c.lowerPrice.toPrecision(5)}~${c.upperPrice.toPrecision(5)}] ` +
+                    `mean=${(c.mc.mean * 100).toFixed(2)}% CVaR=${(c.mc.cvar95 * 100).toFixed(2)}% ` +
+                    `inRange=${c.mc.inRangeDays.toFixed(1)}d ${c.mc.go ? '✅' : `🚫 ${c.mc.noGoReason ?? ''}`}`
+                );
+            }
+
             const goCandidates = candidates.filter(c => c.mc.go);
 
             if (goCandidates.length === 0) {
