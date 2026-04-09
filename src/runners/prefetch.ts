@@ -10,6 +10,7 @@
 import { CycleData, HourlyReturn } from '../types';
 import { PoolScanner } from '../services/market/PoolScanner';
 import { PoolMarketService, fetchHistoricalReturns, refreshPriceBuffer } from '../services/market/PoolMarketService';
+import { loadOhlcvStore, type RawCandle } from '../services/market/HistoricalDataService';
 import { FeeFetcher } from '../services/dex/FeeFetcher';
 import { positionScanner } from '../services/position/PositionScanner';
 import { fetchTokenPrices, getTokenPrices } from '../services/market/TokenPriceService';
@@ -101,6 +102,19 @@ export async function prefetchAll(sendCriticalAlert?: AlertFn): Promise<CycleDat
 
 // ── 內部輔助函式 ──────────────────────────────────────────────────────────────
 
+/** 將 HistoricalDataService 的 RawCandle[] 轉為 HourlyReturn[] */
+function ohlcvToHourlyReturnsFromRaw(candles: RawCandle[]): HourlyReturn[] {
+    return candles.slice(1).map((c, i) => ({
+        ts:     c.ts,
+        open:   c.open,
+        high:   c.high,
+        low:    c.low,
+        close:  c.close,
+        volume: c.volume,
+        r:      Math.log(c.close / candles[i].close),
+    }));
+}
+
 async function fetchPools(sendCriticalAlert?: AlertFn) {
     try {
         const pools = await PoolScanner.scanAllCorePools(ucPoolList(appState.userConfig));
@@ -125,19 +139,38 @@ async function fetchHistoricalReturnsForPools(
 ): Promise<{ returns: Map<string, HourlyReturn[]>; warnings: string[] }> {
     const returns = new Map<string, HourlyReturn[]>();
     const warnings: string[] = [];
+
     for (let i = 0; i < pools.length; i++) {
         const pool = pools[i];
+        const poolKey = pool.id.toLowerCase();
+        let usedLocalOhlcv = false;
+
         try {
-            const r = await fetchHistoricalReturns(pool.id, pool.dex);
-            if (r.length > 0) returns.set(pool.id.toLowerCase(), r);
-            else warnings.push(`HistoricalReturns: pool ${pool.dex} ${pool.id.slice(0, 8)} 回傳空陣列`);
+            // 優先讀取本地 OHLCV（Phase 0.5 回填的數據）
+            const store = await loadOhlcvStore(poolKey);
+            if (store && store.candles.length > 2) {
+                const hrs = ohlcvToHourlyReturnsFromRaw(store.candles);
+                if (hrs.length > 0) {
+                    returns.set(poolKey, hrs);
+                    log.debug(`HistoricalReturns: pool ${pool.dex} ${poolKey.slice(0, 8)} — 從本地 OHLCV 讀取 ${hrs.length} 筆`);
+                    usedLocalOhlcv = true;
+                }
+            }
+
+            if (!usedLocalOhlcv) {
+                // Fallback: GeckoTerminal API
+                const r = await fetchHistoricalReturns(pool.id, pool.dex);
+                if (r.length > 0) returns.set(poolKey, r);
+                else warnings.push(`HistoricalReturns: pool ${pool.dex} ${pool.id.slice(0, 8)} 回傳空陣列`);
+            }
         } catch (e) {
             const msg = `HistoricalReturns: pool ${pool.id.slice(0, 8)} 抓取失敗: ${e}`;
             log.warn(msg);
             warnings.push(msg);
         }
-        // 序列 + 隨機 jitter 避免 GeckoTerminal 429（最後一筆不等）
-        if (i < pools.length - 1) {
+
+        // GeckoTerminal fallback 才需要 jitter（本地讀取不需要延遲）
+        if (!usedLocalOhlcv && i < pools.length - 1) {
             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
         }
     }
