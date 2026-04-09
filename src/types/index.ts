@@ -250,6 +250,56 @@ export interface RangeGuards {
     p95: number;
 }
 
+/** Regime 判斷的可調參數（演化搜索目標，9 個基因） */
+export interface RegimeGenome {
+    id: string;                     // 唯一識別碼（如 'baseline', 'gen3-best')
+    /** CHOP 指數 > 此值 = 偏震盪 */
+    chopRangeThreshold: number;     // baseline: 55, search: [45, 70]
+    /** CHOP 指數 < 此值 = 偏趨勢 */
+    chopTrendThreshold: number;     // baseline: 45, search: [30, 55]
+    /** CHOP 計算窗口（根 K 線數） */
+    chopWindow: number;             // baseline: 14, search: [7, 28]
+    /** Hurst < 此值 = 均值回歸（LP 友善） */
+    hurstRangeThreshold: number;    // baseline: 0.52, search: [0.40, 0.60]
+    /** Hurst > 此值 = 趨勢延續 */
+    hurstTrendThreshold: number;    // baseline: 0.65, search: [0.55, 0.80]
+    /** Hurst R/S 分析最大 lag */
+    hurstMaxLag: number;            // baseline: 20, search: [10, 40]
+    /** Sigmoid 溫度：T→0 硬分類，T→∞ 均勻分佈 */
+    sigmoidTemp: number;            // baseline: 1.0, search: [0.1, 5.0]
+    /** ATR 計算窗口 */
+    atrWindow: number;              // baseline: 14, search: [7, 28]
+    /** CVaR 安全係數 */
+    cvarSafetyFactor: number;       // baseline: 1.5, search: [1.0, 5.0]
+}
+
+/** Continuous regime vector — softmax 正規化，三分量總和 = 1 */
+export interface RegimeVector {
+    range: number;      // [0, 1]
+    trend: number;      // [0, 1]
+    neutral: number;    // [0, 1]
+}
+
+/** 單池回測詳情 */
+export interface PoolBacktestResult {
+    poolAddress: string;
+    sigmaOpt: number;
+    score: number;
+    cvar95: number;
+    go: boolean;
+    inRangePct: number;
+    pnlRatio: number;
+}
+
+/** 回測引擎輸出（跨池彙總） */
+export interface BacktestResult {
+    sharpe: number;
+    maxDrawdown: number;
+    inRangePct: number;
+    totalReturn: number;
+    poolResults: Map<string, PoolBacktestResult>;
+}
+
 export interface OpeningStrategy {
     poolAddress: string;
     sigmaOpt: number;
