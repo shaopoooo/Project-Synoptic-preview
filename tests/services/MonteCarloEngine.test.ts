@@ -48,11 +48,11 @@ describe('MonteCarloEngine — Sharpe scoring', () => {
     });
 
     it('M1.3: 負 mean 應產生負 score（合法）', () => {
-        // 構造下跌偏向的 returns：mean < 0
+        // 構造強烈上漲偏向的 returns：price >> Pb → LP 困在 token1 → token0 基準 pnlRatio < 0
         const rng = seedrandom('m1.3-test');
-        const negDriftReturns = Array.from({ length: 200 }, (_, i) => -0.005 + Math.cos(i) * 0.005);
+        const posDriftReturns = Array.from({ length: 200 }, (_, i) => 0.005 + Math.cos(i) * 0.005);
         const result = runMCSimulation({
-            historicalReturns: negDriftReturns,
+            historicalReturns: posDriftReturns,
             P0: 1.0,
             Pa: 0.95,
             Pb: 1.05,
