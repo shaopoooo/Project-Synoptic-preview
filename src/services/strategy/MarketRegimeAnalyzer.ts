@@ -9,7 +9,7 @@
  * 所有函式輸入為 HourlyReturn[]（已有 high/low/close/r 欄位），不需要額外 API。
  */
 
-import type { HourlyReturn, MarketRegime, RangeGuards } from '../../types';
+import type { HourlyReturn, MarketRegime, RangeGuards, RegimeGenome, RegimeVector } from '../../types';
 
 // ─── Track 1：CHOP 指數 ────────────────────────────────────────────────────────
 
@@ -131,6 +131,99 @@ function calculatePercentileRange(
     };
 }
 
+// ─── Continuous Regime Vector ─────────────────────────────────────────────────
+
+function sigmoid(x: number): number {
+    return 1 / (1 + Math.exp(-x));
+}
+
+/**
+ * 計算 continuous regime vector（sigmoid + softmax）。
+ * 結果為三分量機率向量：range + trend + neutral = 1。
+ */
+export function computeRegimeVector(candles: HourlyReturn[], genome: RegimeGenome): RegimeVector {
+    const chop = calculateCHOP(candles, genome.chopWindow);
+    const hurst = calculateHurst(candles.map(c => c.r), genome.hurstMaxLag);
+    const T = genome.sigmoidTemp;
+
+    // 計算各維度的原始分數（以閾值為基準的有符號距離之和）
+    //   range  = CHOP 高於 chopRangeThreshold + Hurst 低於 hurstRangeThreshold
+    //   trend  = CHOP 低於 chopTrendThreshold + Hurst 高於 hurstTrendThreshold
+    //   neutral = 固定基準 0（中立狀態）
+    //
+    // 使用整體 CHOP 範圍 [0,100] 和 Hurst 範圍 [0,1] 正規化，
+    // 確保分數在 [-2, 2] 之間，與閾值參數的隨機搜索空間無關。
+    const rangeScore = (chop - genome.chopRangeThreshold) / 100
+                     + (genome.hurstRangeThreshold - hurst) / 1;
+
+    const trendScore = (genome.chopTrendThreshold - chop) / 100
+                     + (hurst - genome.hurstTrendThreshold) / 1;
+
+    const neutralScore = 0.0;
+
+    // Softmax with temperature（T→0 one-hot，T→∞ 均勻分佈），減 max 防溢位
+    const maxScore = Math.max(rangeScore, trendScore, neutralScore);
+    const er = Math.exp((rangeScore   - maxScore) / T);
+    const et = Math.exp((trendScore   - maxScore) / T);
+    const en = Math.exp((neutralScore - maxScore) / T);
+    const sum = er + et + en;
+
+    return {
+        range:   er / sum,
+        trend:   et / sum,
+        neutral: en / sum,
+    };
+}
+
+/** 歷史數據分段標記結構 */
+export interface RegimeSegment {
+    regime: 'range' | 'trend' | 'neutral';
+    returns: number[];
+}
+
+/**
+ * 用硬分類器對歷史數據打標，產生 regime-segmented 抽樣池。
+ * < 50 samples 的 segment 併入 neutral。
+ */
+export function segmentByRegime(candles: HourlyReturn[], windowSize = 168): RegimeSegment[] {
+    if (candles.length < windowSize) {
+        return [{ regime: 'neutral', returns: candles.map(c => c.r) }];
+    }
+
+    const buckets: Record<'range' | 'trend' | 'neutral', number[]> = {
+        range: [],
+        trend: [],
+        neutral: [],
+    };
+
+    for (let i = 0; i < candles.length; i++) {
+        const start = Math.max(0, i - windowSize + 1);
+        const window = candles.slice(start, i + 1);
+        if (window.length < 14) {
+            buckets.neutral.push(candles[i].r);
+        } else {
+            const regime = analyzeRegime(window);
+            buckets[regime.signal].push(candles[i].r);
+        }
+    }
+
+    // < 50 samples 的併入 neutral
+    const segments: RegimeSegment[] = [];
+    for (const regime of ['range', 'trend'] as const) {
+        if (buckets[regime].length >= 50) {
+            segments.push({ regime, returns: buckets[regime] });
+        } else if (buckets[regime].length > 0) {
+            buckets.neutral.push(...buckets[regime]);
+        }
+    }
+
+    if (buckets.neutral.length > 0) {
+        segments.push({ regime: 'neutral', returns: buckets.neutral });
+    }
+
+    return segments.length > 0 ? segments : [{ regime: 'neutral', returns: candles.map(c => c.r) }];
+}
+
 // ─── Public exports ───────────────────────────────────────────────────────────
 
 /**
@@ -138,19 +231,27 @@ function calculatePercentileRange(
  *
  * signal 判斷規則（保守版，優先保護資金）：
  *   'range'  = CHOP > 55 且 Hurst < 0.52（雙重確認震盪才開倉）
- *   'trend'  = CHOP < 45 或  Hurst > 0.58（任一觸發趨勢警告）
+ *   'trend'  = CHOP < 45 或  Hurst > 0.65（任一觸發趨勢警告）
  *   'neutral'= 其餘
  */
-export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
+export function analyzeRegime(candles: HourlyReturn[], genome?: RegimeGenome): MarketRegime {
+    const chopWindow = genome?.chopWindow ?? 14;
+    const hurstMaxLag = genome?.hurstMaxLag ?? 20;
+    const atrWindow = genome?.atrWindow ?? 14;
+    const chopRangeThreshold = genome?.chopRangeThreshold ?? 55;
+    const chopTrendThreshold = genome?.chopTrendThreshold ?? 45;
+    const hurstRangeThreshold = genome?.hurstRangeThreshold ?? 0.52;
+    const hurstTrendThreshold = genome?.hurstTrendThreshold ?? 0.65;
+
     const returns = candles.map(c => c.r);
-    const chop  = calculateCHOP(candles);
-    const hurst = calculateHurst(returns);
-    const atr   = calculateATR(candles);
+    const chop  = calculateCHOP(candles, chopWindow);
+    const hurst = calculateHurst(returns, hurstMaxLag);
+    const atr   = calculateATR(candles, atrWindow);
 
     let signal: MarketRegime['signal'];
-    if (chop > 55 && hurst < 0.52) {
+    if (chop > chopRangeThreshold && hurst < hurstRangeThreshold) {
         signal = 'range';
-    } else if (chop < 45 || hurst > 0.58) {
+    } else if (chop < chopTrendThreshold || hurst > hurstTrendThreshold) {
         signal = 'trend';
     } else {
         signal = 'neutral';
@@ -163,8 +264,9 @@ export function analyzeRegime(candles: HourlyReturn[]): MarketRegime {
  * 產生三軌驗證的邊界參數（Track 2 + Track 3）。
  * 由 mcEngine 呼叫後傳入 calcCandidateRanges。
  */
-export function computeRangeGuards(candles: HourlyReturn[]): RangeGuards {
-    const atrHalfWidth = calculateATR(candles, 14);
+export function computeRangeGuards(candles: HourlyReturn[], genome?: RegimeGenome): RangeGuards {
+    const atrWindow = genome?.atrWindow ?? 14;
+    const atrHalfWidth = calculateATR(candles, atrWindow);
     const closes       = candles.map(c => c.close);
     const { p5, p95 }  = calculatePercentileRange(closes);
     return { atrHalfWidth, p5, p95 };

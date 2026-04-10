@@ -1,0 +1,17 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`MonteCarloEngine — Sharpe scoring M2.1: canary snapshot — 鎖住 11 個 MCSimResult 欄位 1`] = `
+{
+  "cvar95": -0.2887256783921813,
+  "inRangeDays": 3.033958333333333,
+  "mean": -0.08030466641117645,
+  "median": -0.0623162964818918,
+  "numPaths": 1000,
+  "p25": -0.14616193314135784,
+  "p5": -0.24362411321279753,
+  "p50": -0.06206031059218031,
+  "p75": 0.008048147151437979,
+  "p95": 0.017518329487484108,
+  "var95": -0.24794357696767955,
+}
+`;
