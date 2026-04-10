@@ -1,116 +1,173 @@
 # DexBot 任務清單與路線圖 (Tasks & Roadmap)
 
-> P0 最緊急 → P4 待討論；完成後刪除條目，該優先級全空則標注 ✅
+> **本檔案定位：索引 + 輕量待辦**
+> - 正式 feature（需決策、架構、TDD）→ 開 `.claude/plans/<name>.md`，此處只留一行索引指向 plan
+> - 雜項修繕（typo、log level、bump 版本）→ 直接寫在 `## 🧹 雜項` 區塊，無需 plan
+> - 完成後條目可保留打勾或刪除；該優先級全空則標注 ✅
 >
-> 設計文件：`~/.gstack/projects/shaopoooo-dexbot/shao-dev-design-20260409-unified.md`
-> CEO plans：`~/.gstack/projects/shaopoooo-dexbot/ceo-plans/2026-04-09-regime-evolution.md`
+> P0 最緊急 → P4 待討論
+>
+> **設計文件：**
+> - 開倉建議系統：`~/.gstack/projects/shaopoooo-dexbot/shao-feature/p0-regime-engine-design-20260409-201538.md`
+> - CEO Plan：`~/.gstack/projects/shaopoooo-dexbot/ceo-plans/2026-04-10-universal-strategy-engine.md`
+> - Test Plan：`~/.gstack/projects/shaopoooo-dexbot/shao-dev-eng-review-test-plan-20260410-151815.md`
 
 ---
 
-## 🔴 P0 Self-Learning Regime Engine（優先級最高）
+## ✅ 已完成
 
-**核心痛點**：regime 門檻太嚴格，Bot 頻繁 skip 池子，MC 引擎跑不到，策略建議無法產出。
-
-**架構決定（from CEO + Eng review）：**
-- Fully soft CVaR gate — 移除 `mcEngine.ts:109-114` 硬 skip，不再有 trend-based pool skipping
-- Continuous Regime Vector (sigmoid + softmax) 取代硬分類 `'range' | 'trend' | 'neutral'`
-- 降維：MVP 只演化 RegimeGenome (9 params)，LPStrategyGenome 暫時手動
-- Fitness: MVP 用 backtest Sharpe + maxDD gate，累積 mirror 數據後切換真實 P&L
-- 付費 API (CoinGecko Pro / Kaiko) 取得 150+ 天歷史數據
-- 檔案結構融入現有 runners/services，不建 `evolution/` 目錄
-
-### Phase 0.5 — 歷史數據擴展（前置條件）
-
-- [ ] 選定並接入付費 API，驗證 150+ 天 1H OHLCV 可用性
-- [ ] 建立漸進式累積機制（每次 fetch 追加到本地 JSON，不覆蓋）
-- [ ] 將 `HISTORICAL_RETURNS_HOURS` 從 720 擴展為動態值
-- [ ] Compute benchmark：在 Railway 跑一次 20-genome × 4-window 的 mock evolution，記錄實際耗時
-
-### Phase 1 — Backtest Harness + Regime Commands (1-2 週)
-
-- [ ] 從 `MarketRegimeAnalyzer` 抽出共用 `extractFeatures(candles): { chop, hurst, atr }` 純函數（DRY）
-- [ ] `src/types/index.ts`：新增 `RegimeGenome`、`RegimeVector`、`LPStrategyGenome`、`CombinedGenome` 型別
-- [ ] `src/services/strategy/ParameterGenome.ts`：Genome 定義、序列化、搜索範圍 `[min, max]`
-- [ ] `src/runners/BacktestHarness.ts`：接受 RegimeGenome，跑 regime → MC pipeline，輸出 `{ sharpe, maxDrawdown, inRangePct, totalReturn }`
-- [ ] **Baseline equivalence test**（Phase 1 gate）：現有常數轉 genome → harness 結果 = live pipeline
-- [ ] Grid search 驗證 harness 正確性
-- [ ] `src/bot/commands/regimeCommands.ts`：`/regime status` | `/regime candidates` | `/regime apply <id>` hot-swap
-- [ ] Hot-swap 語義：僅影響下一次 `runMCEngine` cycle，不觸發鏈上操作
-
-### Phase 2 — Continuous Regime Vector (1 週)
-
-- [ ] `src/services/strategy/RegimeEngine.ts`：sigmoid + softmax continuous vector (`computeRegimeVector`)
-- [ ] **Softmax property test**（Phase 2 gate）：100 random combos → all valid probability, no NaN
-- [ ] `segmentByRegime()`：用現有硬分類器打標歷史數據，fallback < 50 samples 合併 neutral
-- [ ] 修改 `MonteCarloEngine.ts`：`runMCSimulation` 新增 optional `segments` + `RegimeVector` 參數（向後相容）
-- [ ] 同時修改 `calcCandidateRanges` + `calcTranchePlan` call chain（blendedBootstrap 波及 4 個檔案）
-- [ ] 移除 `mcEngine.ts:109-114` 硬 skip（`if (regime.signal === 'trend') continue`）
-- [ ] 驗證：continuous vector backtest Sharpe ≥ 硬分類
-
-### Phase 3 — Evolutionary Search (1-2 週)
-
-- [x] `src/services/strategy/EvolutionEngine.ts`：selection (top 50%) → crossover (5) → mutation (3 clones with gaussian noise) → seed (2 random) → immortal (上一代最佳)
-- [ ] Population size: 20 genomes, 10 + 5 + 3 + 2 = 20
-- [ ] `src/runners/WalkForwardValidator.ts`：4 窗口滾動驗證，時序單調，訓練/驗證不重疊（需 150 天數據）
-- [ ] Fitness = mean(4 windows Sharpe)，hard gate: maxDD > 30% → fitness = 0
-- [ ] `isEvolutionRunning` guard（同 `isMCEngineRunning` pattern）+ 30 分鐘超時自動釋放
-- [ ] Population wipeout protection：immortal genome 永遠存活
-- [ ] NaN guard：post-fitness NaN check → fitness = 0，selection 只從 fitness > 0 的 genomes 取 top 50%
-- [ ] **Evolution convergence test**（Phase 3 gate）：已知最佳簡化問題 → 10 代內收斂
-- [ ] `/regime evolve` 手動觸發 + Telegram 通知結果
-- [ ] Genome Explainability Report（`/regime candidates` 顯示參數差異與影響解釋）
-- [ ] Genome 持久化：`data/genomes/` 單一 JSON + atomic write（stateManager pattern）
+- **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
 
 ---
 
-## 🟠 P1 Token-Denominated Mirror（幣本位鏡子）
+## 🧹 雜項（無需開 plan 檔案）
 
-**核心痛點**：LP 玩家看不到 rebalance 的真實幣本位成本。
-
-**架構決定（from CEO review）：**
-- 數據來源：RPC Event Logs（EventLogScanner chunked pattern），NOT Basescan tx API
-- 儲存：JSON atomic write（stateManager pattern），NOT SQLite
-- 單用戶架構，多用戶留到需求驗證後
-- 可與 Phase 0.5-3 並行開發（Lane B）
-
-### Phase 4 — Mirror P0 (1-2 週)
-
-- [ ] `src/mirror/MirrorService.ts`：RPC getLogs 索引 90 天歷史 V3/V4 倉位交易（IncreaseLiquidity, DecreaseLiquidity, Collect, Transfer）
-- [ ] `src/mirror/TokenAccountant.ts`：幣本位 P&L 計算 + triple comparison（LP vs HODL vs ETH staking）
-- [ ] `src/mirror/RegimeDecisionLog.ts`：每次 regime 判斷記錄 `{ poolId, regimeVector, genomeId, timestamp }`
-- [ ] `/track <wallet>` 觸發 90 天 backfill + 24h cron incremental
-- [ ] `/summary` 跨倉位匯總 + ASCII 損耗圖表
-- [ ] Triple comparison：需要 TokenPriceService（非穩定幣對的價格轉換）
-- [ ] Out-of-range 警報（可設間隔，預設 30 分鐘）
-- [ ] Error handling：AuthError → Telegram admin alert、ParseError → log + skip、MissingDecimalError → on-chain decimals() fallback
-- [ ] TDD：用真實鏈上交易數據作為 test fixtures，先寫 test oracles
+- _(目前無)_
 
 ---
 
-## 🟡 P2 整合 + 監控
+## 🔴 P0 開倉建議系統 (Position Advice System)
 
-### Phase 5 — Regime-Mirror Integration + 自動化 (1 週)
+> **Plan 檔案：** `.claude/plans/p0-position-advice-system.md`（決策脈絡 + Decisions + Rejected + Test Plan + Tasks 完整契約）
 
-- [ ] Regime-Mirror integration：mirror P&L → evolution fitness pipeline（cherry-pick #1）
-- [ ] A/B Genome Dashboard：per-pool genome 分配 + `/regime ab <pool> <id>`（cherry-pick #2）
-- [ ] Regime Drift Alert：regime vector 週變化 > 0.3 → Telegram 推送（cherry-pick #3）
+**核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
+
+**架構決定（from CEO + Eng review，2026-04-10）：**
+- **三個獨立排程**（不阻擋主邏輯）：
+  - 主 cycle (10min)：prefetch + mcEngine + recommendOpen
+  - 倉位狀態監控 (10min, 錯開)：fetchAll + classifyExit + shouldClose
+  - 新倉位探索 (1h)：syncFromChain
+- **全部正規化空間計算**（避免 ATR 單位混淆）
+- **PositionAdvisor = pure functions in module**（不是 service class）
+- **Score 公式改用 Sharpe-like** (`mean / std`)，取代 `mean / |cvar95|`（後者在 cvar→0 時爆炸）
+- **3-gate hysteresis**（持久化）：連續 2 cycle + 1h LRU cooldown + 灰色帶 0.3-0.5
+- **Cooldown key = positionId**（不是 pool，避免 multi-position 互相壓制）
+- **Snapshot consistency**：position monitor 讀 `strategies.computedAt`，> 15min 視為 stale
+- **Open + Close 雙向 hysteresis**（避免 score 邊界抖動）
+- **TDD 先行**：25 個測試在實作前完成
+
+### Phase 1 — Pre-refactor: Sharpe scoring (前置, 半天)
+
+- [ ] `MonteCarloEngine.ts`：score 公式從 `mean/|cvar95|` 改為 Sharpe-like `mean/std`
+- [ ] 更新 `OpeningStrategy.score` 文件說明 + 影響 callers (mcEngine.ts, calcCommands.ts)
+- [ ] Canary regression test：固定 seed → 確認新舊公式輸出可預測
+
+### Phase 2 — PositionAdvisor pure functions (2 天, TDD)
+
+- [ ] `tests/services/PositionAdvisor.test.ts`：先寫 19 個測試（spec）
+  - recommendOpen: 6 cases (hysteresis、灰色帶、null guard)
+  - classifyExit: 6 cases (in-range、hold/rebalance branches、ATR=0)
+  - shouldClose: 7 cases (4 個觸發、優先序、null IL)
+- [ ] `src/types/positionAdvice.ts`：`OpenAdvice`、`ExitAdvice`、`CloseAdvice`、`CloseReason` 型別
+- [ ] `src/services/strategy/positionAdvisor.ts`：3 個 pure functions
+- [ ] 確認所有測試 GREEN
+
+### Phase 3 — State persistence (1 天, TDD)
+
+- [ ] `tests/utils/positionStateTracker.test.ts`：3 個測試（save/load round-trip、清理、null）
+- [ ] `src/utils/positionStateTracker.ts`：管理 outOfRangeSince map + hysteresis counter + cooldown timestamps
+- [ ] 整合到現有 `stateManager`（不新建獨立檔案）
+- [ ] Restart 測試：寫狀態 → kill process → restart → 狀態還在
+
+### Phase 4 — Cycle integration (2 天)
+
+- [ ] `src/index.ts`：新增獨立 cron jobs
+  - Position state monitor (10min, 與主 cycle 錯開 5min)
+  - New position discovery (1h)
+  - 並發 guard（個別 isRunning flag）
+- [ ] `src/runners/mcEngine.ts`：計算後呼叫 `recommendOpen`，hysteresis 過後推送通知
+- [ ] Snapshot staleness guard：position monitor 讀取 `strategies.computedAt`，> 15min 跳過判斷
+- [ ] `tests/integration/positionMonitorCycle.test.ts`：3 個整合測試
+
+### Phase 5 — Telegram + cleanup (1 天)
+
+- [ ] `src/bot/alertService.ts`：新增 advice alert types + per-positionId LRU cooldown
+- [ ] Telegram 訊息格式：含 ratio 含義解釋、區間 ±X%、期望值（標註相對 HODL）
+- [ ] 刪除 `RebalanceService` class（保留 `calculateV3TokenValueRatio` 純函數）
+- [ ] 移動 `calculateV3TokenValueRatio` → `src/utils/math.ts`
+- [ ] 確認所有 RebalanceService callers 已更新
+
+### Backtest 驗證（P0 ship 前最後門檻）
+
+- [ ] 用 24h+ live data 驗證 2×ATR 穿出深度閾值
+- [ ] 用 24h+ live data 驗證 Sharpe 0.5 訊號門檻
+- [ ] 兩個閾值若需調整，更新 config + 重跑 regression
+
+---
+
+## 🟠 P1 通用策略框架 (Universal Strategy Engine)
+
+**架構決定（from prior eng review）：** 混合架構 — 共享 PricePathGenerator + RiskMetrics 工具，但每個策略擁有自己的 pipeline（編排 + payoff + go/noGo），輸出標準化 StrategyResult 給 StrategyAllocator。
+
+開倉建議系統穩定後再啟動。
+
+### Phase 1 — MC 三層拆分 (5 天, TDD)
+
+- [ ] 前置測試：14 個 MonteCarloEngine 測試 + canary regression（固定 seed）
+- [ ] `src/services/strategy/PricePathGenerator.ts`：抽出價格路徑生成 + blended bootstrap
+- [ ] `src/services/strategy/RiskMetrics.ts`：抽出 CVaR / VaR / percentiles 計算
+- [ ] `src/types/strategy.ts`：`MarketDataSeries`、`PayoffResult`、`SimulationContext`、`StrategyResult`、`IStrategy` interface（無 index signature）
+- [ ] `src/services/strategy/V3LPStrategy.ts`：包現有 V3 LP 邏輯為第一個 plugin
+- [ ] `MonteCarloEngine.ts` 重構：runMCSimulation 接收 IStrategy
+- [ ] `appState.strategies` 型別遷移到 `StrategyResult`
+- [ ] Canary 驗證：重構前後 MC 輸出位元相等
+
+### Phase 2a — FundingRateStrategy (2 天)
+
+- [ ] FundingRate 數據源（preferred: 真實 perp DEX API；fallback: synthetic 基於歷史 vol）
+- [ ] `src/services/strategy/FundingRateStrategy.ts`：實作 IStrategy
+- [ ] 跑演化驗證：trend regime 是否自動偏好 perp 策略
+
+### Phase 2b — StrategyAllocator + 視覺化 (2 天)
+
+- [ ] `src/services/strategy/StrategyAllocator.ts`：regime vector → 策略權重向量（softmax）
+- [ ] Regime Transition Alert：regime vector 24h 變化 > 20% → Telegram 通知 + 策略切換建議
+- [ ] Historical regime-strategy backtest 視覺化：Telegram 文字圖表（非 Web）
+
+### Phase 2c — LLM Strategy Advisor (2 天)
+
+- [ ] `src/services/strategy/LLMStrategyAdvisor.ts`：Phase 0 模組
+- [ ] 輸入：regime vector + 市場數據摘要（限 ~500 tokens）+ 現有策略 score
+- [ ] 輸出：自然語言策略建議 + pseudocode
+- [ ] LLM 選擇：Claude API（claude-api skill），成本 ~$0.01/次
+- [ ] Fallback：API 失敗 → log + Telegram 錯誤訊息（不重試）
+- [ ] `/strategy suggest` Telegram 指令觸發
+- [ ] One-click Paper Trading 按鈕（inline keyboard）
+
+### Phase 2d — Paper Trading + 績效歸因 (3 天)
+
+- [ ] `src/services/paper/PaperTradingService.ts`：用真實市場數據追蹤模擬倉位 PnL（取代舊的 Mirror 概念）
+- [ ] Strategy Performance Attribution：每個策略對總 PnL 的貢獻
+- [ ] Telegram 報告：「這週 V3 LP +X%，FundingRate +Y%，總計 +Z%」
+- [ ] One-click adoption：LLM 建議 → 按鈕 → 自動啟動 paper trading
+
+### Phase 3 — GP 表達式樹 ⚠️ 探索性研究（暫不交付）
+
+- [ ] **前置 TODO**：先做 GP 計算量 benchmark（200 pop × 50 gen × 10k MC paths ≈ 100M simulations）
+- [ ] Phase 3a：表達式樹節點系統 + GP crossover/mutation/hoist
+- [ ] Phase 3b：Fitness 整合 walk-forward + LLM 解讀器
+
+---
+
+## 🟡 P2 進階策略 + 監控
+
+- [ ] A/B Genome Dashboard：per-pool genome 分配 + `/regime ab <pool> <id>`
 - [ ] 自動 evolution cycle（weekly cron on Railway）
-- [ ] Safety guardrails：fitness 下降 > 20% → 自動回退到上一代最佳 genome
-- [ ] `data/evolution-log.jsonl` structured log（fitness 趨勢分析用）
+- [ ] Safety guardrails：fitness 下降 > 20% → 自動回退上一代
+- [ ] LPStrategyGenome 加入演化搜索（regime 穩定後）
+- [ ] **Advice tracking + feedback loop**：發出 advice 後 log advice_id + 後續 N cycle 的 score 軌跡 → `data/advice-tracking.jsonl`
+- [ ] **Close reason counter**：trend_shift / opportunity_lost / timeout / il_threshold 各自的觸發 counter，整合 diagnosticStore
 
 ---
 
 ## 🔵 P3 延伸功能
 
-### Phase 6 — 開倉建議 + Rebalance 智能
+### Phase 6 — 開倉建議強化
 
-- [ ] `/calc` 強化版：regime-aware EV 估算，3 個範圍 × regime vector 影響
-- [ ] Rebalance EV 警報：out-of-range 觸發 MC 計算 rebalance EV，推送結果
+- [ ] `/calc` 強化版：regime-aware EV 估算
 - [ ] 每日/每週幣本位 PnL 報告
-- [ ] 切換到真實 P&L fitness（替代 backtest Sharpe）
-- [ ] LPStrategyGenome 加入演化搜索（降維決定後的下一步）
 - [ ] Unsupervised regime labeling：HMM/clustering 替代硬分類器打標
-- [ ] Per-step regime blending：每個時間步根據 transition probability 切換 regime bucket
+- [ ] Per-step regime blending：每個時間步切換 regime bucket
 
 ### 其他 P3
 
@@ -122,19 +179,19 @@
 
 ## ⚪ P4 待討論後動工
 
-### 原 P0 遺留（Stage 4 + Wave 3）
+### 架構債
 
-- [ ] **DEX Adapter 模式**：統一介面 `IDexAdapter`，Adapter 類別（V3/V4/Aerodrome/PancakeSwap），工廠 `DexFactory`，消除 if-else 分支。痛點仍在但不阻塞 regime engine。
-- [ ] **Strategy 模組重新評估**：`PnlCalculator`、`RiskManager`、`rebalance` 與 MC 引擎的職責重疊（`highVolatilityAvoid` vs Kill Switch vs fully soft CVaR gate）。需在 regime engine 穩定後重新審視。
+- [ ] **DEX Adapter 模式**：統一介面 `IDexAdapter`，消除 if-else 分支
+- [ ] **Strategy 模組重新評估**：`PnlCalculator`、`RiskManager`、`rebalance` 與 MC 引擎職責重疊
 
 ### 原 P1 遺留
 
 - [ ] 質押倉位自動偵測：掃描 ERC-721 Transfer 事件
-- [ ] 穿倉即時告警 (Out-of-Range Alert)：`ChainEventScanner` 監聽 Swap event
+- [ ] 穿倉即時告警 (Out-of-Range Alert)：`ChainEventScanner` 監聽 Swap event（注意：與 P0 Position Advice 場景 B 重疊，需評估）
 - [ ] Aerodrome Gauge Emissions APR
 - [ ] Aerodrome 質押 unclaimed fees 顯示修正
 - [ ] PnlCalculator 參數注入（消除對 `appState.userConfig` 的直接依賴）
-- [ ] GeckoTerminal 請求節流（`Promise.all` → 序列 + Jitter）
+- [ ] GeckoTerminal 請求節流
 - [ ] `_fetchAerodromeTVL` RPC 失敗降級
 
 ### 原 P2 遺留
@@ -151,15 +208,16 @@
 - rebalance.ts 數學升級
 - IL 精算與財務模型重構
 - 回測策略模擬 (BacktestEngine)
-- 其他優化：拆分 `PositionRecord`、統一 RPC Provider、強化枚舉型別
+- 拆分 `PositionRecord`、統一 RPC Provider、強化枚舉型別
 
 ---
 
-## 🟢 Mirror 功能延伸（依賴 Phase 4 完成）
+## 🟢 Mirror / Token-Denominated 功能（已併入 P1 Phase 2d）
+
+> Paper Trading (Phase 2d) 取代了原本的 Mirror 概念。下列項目延續 mirror 願景，依賴 Phase 2d 完成。
 
 - [ ] `/share` 分享卡片（獲客工具）
 - [ ] Gas 成本追蹤（gas 費納入幣本位成本）
-- [ ] MC 引擎回測校準（用 mirror 歷史 rebalance 數據）
 - [ ] 歷史決策回測（「如果你上次聽了建議不動，你會多 X ETH」）
 - [ ] 開倉建議歷史準確度追蹤
 - [ ] 多鏈支持（Base → Arbitrum → Ethereum）
@@ -169,11 +227,11 @@
 
 ## 未來展望 (Ideas & Roadmap)
 
-1. **透明 Vault + Telegram 控制台**：智能合約 vault，MC 引擎驅動自動 rebalance（路徑 B → C → A）
+1. **透明 Vault + Telegram 控制台**：智能合約 vault，MC 引擎驅動自動 rebalance
 2. **委託執行 Bot**：用戶授權錢包，一鍵確認執行
-3. **Auto Feature Discovery**：在 Genome 中加入 feature weights，weight=0 等同不用該特徵
+3. **Auto Feature Discovery**：在 Genome 中加入 feature weights
 4. **Online Learning**：從離線回測遷移到 production 中持續學習
-5. **多策略消費者**：regime engine 餵養套利、對沖、定向交易策略
+5. **多策略消費者**：regime engine 餵養套利、對沖、定向交易策略（→ 已在 P1 路線上）
 6. **Delta-Neutral 整合對沖**：接入永續 DEX (GMX/Hyperliquid)
 7. **跨池流動性遷移**：不同 DEX 費率層搬磚機會
 8. **Smart Money 追蹤**：鏈上頂級 LP 地址分析
