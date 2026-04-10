@@ -22,7 +22,7 @@
 
 ## 🧹 雜項（無需開 plan 檔案）
 
-- _(目前無)_
+- [ ] `runOnePath` 11 個 positional args 改成單一 `RunOnePathParams` object（code review S1, P0 Phase 1 follow-up）
 
 ---
 
@@ -46,11 +46,11 @@
 - **Open + Close 雙向 hysteresis**（避免 score 邊界抖動）
 - **TDD 先行**：25 個測試在實作前完成
 
-### Phase 1 — Pre-refactor: Sharpe scoring (前置, 半天)
+### Phase 1 — Pre-refactor: Sharpe scoring (前置, 半天) ✅
 
-- [ ] `MonteCarloEngine.ts`：score 公式從 `mean/|cvar95|` 改為 Sharpe-like `mean/std`
-- [ ] 更新 `OpeningStrategy.score` 文件說明 + 影響 callers (mcEngine.ts, calcCommands.ts)
-- [ ] Canary regression test：固定 seed → 確認新舊公式輸出可預測
+- [x] `MonteCarloEngine.ts`：score 公式從 `mean/|cvar95|` 改為 Sharpe-like `mean/std`
+- [x] 更新影響 callers（`mcEngine.ts:165` 改讀 `c.mc.score`；`calcCommands.ts` 經 grep 確認無 caller）
+- [x] Canary regression test：seedrandom 注入固定 seed → snapshot 鎖住 11 個 MCSimResult 欄位
 
 ### Phase 2 — PositionAdvisor pure functions (2 天, TDD)
 
