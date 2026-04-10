@@ -2,7 +2,7 @@
 
 All notable changes to DexBot will be documented in this file.
 
-## [0.1.1.0] - 2026-04-10
+## [0.1.1] - 2026-04-10
 
 ### Changed
 - **MC score 公式改為 Sharpe-like (`mean / std`)**：取代舊的 `mean / |cvar95|`，避免 cvar95 → 0 時 score 爆炸成天文數字。退化分佈（`std < 1e-6`）回傳 `score = 0`。為 P0 開倉建議系統的 `score > 0.5` 門檻判斷舖路。
@@ -14,7 +14,7 @@ All notable changes to DexBot will be documented in this file.
 - `tests/services/MonteCarloEngine.test.ts`：5 個新測試（M1.1 Sharpe 正常 / M1.2 退化 / M1.3 負 mean / M1.4 rng 決定論 / M2.1 canary snapshot 鎖住 11 個欄位）
 - `seedrandom@3.0.5` (devDependency) — 測試專用的決定論 RNG
 
-## [0.1.0.0] - 2026-04-10
+## [0.1.0] - 2026-04-10
 
 ### Added
 - Self-Learning Regime Engine：continuous sigmoid+softmax regime vector 取代硬分類，fully soft CVaR gate

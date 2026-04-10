@@ -113,7 +113,7 @@ git commit -m "chore(plan): 移除已完成的 <feature-name> plan"
 `main` ← PR ← `dev` ← PR ← `feature/*` / `fix/*`
 
 - feature 分支壽命 ≤ 5 天，完成即刪
-- 版本用 `v<M>.<m>.<p>.<b>` tag 標記，對應 CHANGELOG
+- 版本用 semver `v<major>.<minor>.<patch>` tag 標記，**唯一 source of truth = `package.json` 的 `version` 欄位**（不再維護獨立 VERSION 檔案），對應 CHANGELOG
 - **禁止** force push `main` / `dev`
 - commit message 用繁體中文，不加 `Co-Authored-By` trailer
 - 完整規則見 `.claude/docs/git-workflow.md`
