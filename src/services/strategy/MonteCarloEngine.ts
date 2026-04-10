@@ -42,6 +42,8 @@ interface MCSimParams {
     segments?: RegimeSegment[];
     /** Optional: regime probability vector for weighted sampling */
     regimeVector?: RegimeVector;
+    /** Optional RNG for deterministic testing; defaults to Math.random */
+    rng?: () => number;
 }
 
 // ─── Blended bootstrap helper ────────────────────────────────────────────────
@@ -50,18 +52,22 @@ interface MCSimParams {
  * 從 regime-segmented 池中加權抽樣一個 return。
  * 每步先按 regimeVector 權重選 bucket，再從該 bucket 隨機取一個 return。
  */
-function sampleBlended(segments: RegimeSegment[], regimeVector: RegimeVector): number {
-    const r = Math.random();
+function sampleBlended(
+    segments: RegimeSegment[],
+    regimeVector: RegimeVector,
+    rng: () => number,
+): number {
+    const r = rng();
     let cumulative = 0;
     for (const seg of segments) {
         cumulative += regimeVector[seg.regime];
         if (r <= cumulative) {
-            return seg.returns[Math.floor(Math.random() * seg.returns.length)];
+            return seg.returns[Math.floor(rng() * seg.returns.length)];
         }
     }
     // Fallback（浮點精度）
     const last = segments[segments.length - 1];
-    return last.returns[Math.floor(Math.random() * last.returns.length)];
+    return last.returns[Math.floor(rng() * last.returns.length)];
 }
 
 // ─── Single-path simulation ───────────────────────────────────────────────────
@@ -82,6 +88,7 @@ function runOnePath(
     capital: number,
     hourlyFeesBase: number,
     horizonHours: number,
+    rng: () => number,
     segments?: RegimeSegment[],
     regimeVector?: RegimeVector,
 ): { pnlRatio: number; hoursInRange: number } {
@@ -95,8 +102,8 @@ function runOnePath(
     for (let h = 0; h < horizonHours; h++) {
         // 有放回抽樣：若提供 segments/regimeVector 則使用加權 blended bootstrap，否則均勻抽樣
         const ret = useBlended
-            ? sampleBlended(segments!, regimeVector!)
-            : returns[Math.floor(Math.random() * n)];
+            ? sampleBlended(segments!, regimeVector!, rng)
+            : returns[Math.floor(rng() * n)];
         P *= Math.exp(ret);
         if (P > Pa && P < Pb) {
             fees += hourlyFeesBase;
@@ -121,11 +128,14 @@ function runOnePath(
  */
 export function runMCSimulation(params: MCSimParams): MCSimResult {
     const { historicalReturns, P0, Pa, Pb, capital, dailyFeesToken0, horizon, numPaths } = params;
+    const rng = params.rng ?? Math.random;
 
     if (historicalReturns.length < 2 || Pa <= 0 || Pb <= Pa || P0 <= 0 || capital <= 0) {
         return {
             numPaths: 0, horizon,
-            mean: 0, median: 0, inRangeDays: 0,
+            mean: 0, median: 0,
+            std: 0, score: 0,
+            inRangeDays: 0,
             p5: 0, p25: 0, p50: 0, p75: 0, p95: 0,
             cvar95: 0, var95: 0,
             go: false,
@@ -148,7 +158,7 @@ export function runMCSimulation(params: MCSimParams): MCSimResult {
     for (let i = 0; i < numPaths; i++) {
         const { pnlRatio, hoursInRange } = runOnePath(
             historicalReturns, P0, Pa, Pb, L, capital, hourlyFees, horizonHours,
-            params.segments, params.regimeVector,
+            rng, params.segments, params.regimeVector,
         );
         pnlRatios.push(pnlRatio);
         totalHoursInRange += hoursInRange;
@@ -163,6 +173,10 @@ export function runMCSimulation(params: MCSimParams): MCSimResult {
     const var95 = pnlRatios[worst5 - 1];
 
     const mean = pnlRatios.reduce((s, v) => s + v, 0) / n;
+    // std + Sharpe-like score
+    const variance = pnlRatios.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+    const std = Math.sqrt(variance);
+    const score = std < 1e-6 ? 0 : mean / std;
     const median = n % 2 === 0
         ? (pnlRatios[n / 2 - 1] + pnlRatios[n / 2]) / 2
         : pnlRatios[Math.floor(n / 2)];
@@ -187,6 +201,8 @@ export function runMCSimulation(params: MCSimParams): MCSimResult {
         horizon,
         mean,
         median,
+        std,
+        score,
         inRangeDays,
         p5: pnlRatios[Math.floor(n * 0.05)],
         p25: pnlRatios[Math.floor(n * 0.25)],

@@ -162,7 +162,7 @@ export async function runMCEngine(
                 continue;
             }
 
-            const scored = goCandidates.map(c => ({ c, score: c.mc.mean / Math.abs(c.mc.cvar95) }));
+            const scored = goCandidates.map(c => ({ c, score: c.mc.score }));
             scored.sort((a, b) => b.score - a.score);
             const { c: best, score: bestScore } = scored[0];
 

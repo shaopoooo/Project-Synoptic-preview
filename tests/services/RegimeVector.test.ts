@@ -1,3 +1,8 @@
+import seedrandom from 'seedrandom';
+// 鎖死 Math.random，讓 syntheticCandles + randomGenome 完全決定論
+// （在 import 其他模組「之前」seed，避免模組層 random 還是用真實 Math.random）
+seedrandom('regime-vector-test', { global: true });
+
 import { computeRegimeVector, segmentByRegime } from '../../src/services/strategy/MarketRegimeAnalyzer';
 import { randomGenome } from '../../src/services/strategy/ParameterGenome';
 import type { HourlyReturn } from '../../src/types';
