@@ -6,29 +6,46 @@
 > - 完成後條目可保留打勾或刪除；該優先級全空則標注 ✅
 >
 > P0 最緊急 → P4 待討論
->
-> **設計文件：**
-> - 開倉建議系統：`~/.gstack/projects/shaopoooo-dexbot/shao-feature/p0-regime-engine-design-20260409-201538.md`
-> - CEO Plan：`~/.gstack/projects/shaopoooo-dexbot/ceo-plans/2026-04-10-universal-strategy-engine.md`
-> - Test Plan：`~/.gstack/projects/shaopoooo-dexbot/shao-dev-eng-review-test-plan-20260410-151815.md`
 
 ---
 
 ## ✅ 已完成
 
 - **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
+- **P0 Stage 1 — Sharpe scoring 重構** (PR #20, 2026-04-11): MC score 從 `mean/|cvar95|` 改為 `mean/std`（Sharpe-like），含 seedrandom 固定 seed canary regression test
+- **Phase 1 Planning Brainstorm（本對話 2026-04-10/11）**: 三份 plan 完整就緒
+  - `.claude/plans/p0-position-advice-system.md`（修改 5 處）
+  - `.claude/plans/i-r2-backup.md`（新建）
+  - `.claude/plans/p0-backtest-verification.md`（新建，B2 brainstorm 產出）
 
 ---
 
 ## 🧹 雜項（無需開 plan 檔案）
 
-- [ ] `runOnePath` 11 個 positional args 改成單一 `RunOnePathParams` object（code review S1, P0 Phase 1 follow-up）
+- [ ] `runOnePath` 11 個 positional args 改成單一 `RunOnePathParams` object（code review S1, P0 Stage 1 follow-up）
+
+---
+
+## 🛠️ Infrastructure
+
+- [ ] **Cloudflare R2 Backup** → `.claude/plans/i-r2-backup.md`（DR + Dev Access；mirror 每日 + weekly archive + 手動 CLI restore；與 P0 Stage 2 並行）
 
 ---
 
 ## 🔴 P0 開倉建議系統 (Position Advice System)
 
-> **Plan 檔案：** `.claude/plans/p0-position-advice-system.md`（決策脈絡 + Decisions + Rejected + Test Plan + Tasks 完整契約）
+> **Plan（主）：** `.claude/plans/p0-position-advice-system.md`
+> **Plan（獨立 feature，依寬鬆隔離原則並存）：** `.claude/plans/p0-backtest-verification.md`
+
+### 📦 PR 切分對照表（執行時查閱）
+
+| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 |
+|---------|------|------------------|------|
+| PR 1 | Cloudflare R2 Backup | `i-r2-backup.md`（Stage 1-5） | 📋 待啟動（可與 PR 3 並行） |
+| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 |
+| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 |
+| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 依賴 PR 3 |
+| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 依賴 PR 3、PR 4 |
 
 **核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
 
@@ -46,52 +63,40 @@
 - **Open + Close 雙向 hysteresis**（避免 score 邊界抖動）
 - **TDD 先行**：25 個測試在實作前完成
 
-### Phase 1 — Pre-refactor: Sharpe scoring (前置, 半天) ✅
+### Stage 1 — Sharpe scoring 重構 ✅ PR #20 (2026-04-11)
 
-- [x] `MonteCarloEngine.ts`：score 公式從 `mean/|cvar95|` 改為 Sharpe-like `mean/std`
-- [x] 更新影響 callers（`mcEngine.ts:165` 改讀 `c.mc.score`；`calcCommands.ts` 經 grep 確認無 caller）
-- [x] Canary regression test：seedrandom 注入固定 seed → snapshot 鎖住 11 個 MCSimResult 欄位
+- [x] MC score 從 `mean/|cvar95|` 改為 Sharpe-like `mean/std`
+- [x] 含 seedrandom 固定 seed canary regression test
 
-### Phase 2 — PositionAdvisor pure functions (2 天, TDD)
+### Stage 2 — PositionAdvisor pure functions (TDD)
 
-- [ ] `tests/services/PositionAdvisor.test.ts`：先寫 19 個測試（spec）
-  - recommendOpen: 6 cases (hysteresis、灰色帶、null guard)
-  - classifyExit: 6 cases (in-range、hold/rebalance branches、ATR=0)
-  - shouldClose: 7 cases (4 個觸發、優先序、null IL)
-- [ ] `src/types/positionAdvice.ts`：`OpenAdvice`、`ExitAdvice`、`CloseAdvice`、`CloseReason` 型別
-- [ ] `src/services/strategy/positionAdvisor.ts`：3 個 pure functions
-- [ ] 確認所有測試 GREEN
+- [ ] 19 個 RED 測試 → 純函數實作 → REFACTOR
+- 詳見 plan 檔案
 
-### Phase 3 — State persistence (1 天, TDD)
+### Stage 3 — State persistence (TDD)
 
-- [ ] `tests/utils/positionStateTracker.test.ts`：3 個測試（save/load round-trip、清理、null）
-- [ ] `src/utils/positionStateTracker.ts`：管理 outOfRangeSince map + hysteresis counter + cooldown timestamps
-- [ ] 整合到現有 `stateManager`（不新建獨立檔案）
-- [ ] Restart 測試：寫狀態 → kill process → restart → 狀態還在
+- [ ] 整合 `positionStateTracker` 到現有 `stateManager`
+- 詳見 plan 檔案
 
-### Phase 4 — Cycle integration (2 天)
+### Stage 4 — Cycle integration
 
-- [ ] `src/index.ts`：新增獨立 cron jobs
-  - Position state monitor (10min, 與主 cycle 錯開 5min)
-  - New position discovery (1h)
-  - 並發 guard（個別 isRunning flag）
-- [ ] `src/runners/mcEngine.ts`：計算後呼叫 `recommendOpen`，hysteresis 過後推送通知
-- [ ] Snapshot staleness guard：position monitor 讀取 `strategies.computedAt`，> 15min 跳過判斷
-- [ ] `tests/integration/positionMonitorCycle.test.ts`：3 個整合測試
+- [ ] 新增 2 個獨立 cron jobs（位置監控、新倉位探索）
+- [ ] mcEngine cycle 結尾整合 advisor + ShadowSnapshot 寫入
+- 詳見 plan 檔案
 
-### Phase 5 — Telegram + cleanup (1 天)
+### Stage 5 — Telegram + cleanup
 
-- [ ] `src/bot/alertService.ts`：新增 advice alert types + per-positionId LRU cooldown
-- [ ] Telegram 訊息格式：含 ratio 含義解釋、區間 ±X%、期望值（標註相對 HODL）
-- [ ] 刪除 `RebalanceService` class（保留 `calculateV3TokenValueRatio` 純函數）
-- [ ] 移動 `calculateV3TokenValueRatio` → `src/utils/math.ts`
-- [ ] 確認所有 RebalanceService callers 已更新
+- [ ] alertService 新增 advice alert types
+- [ ] 刪除 RebalanceService class
+- 詳見 plan 檔案
 
-### Backtest 驗證（P0 ship 前最後門檻）
+### Stage 6 — Backtest Verification（獨立 plan）
 
-- [ ] 用 24h+ live data 驗證 2×ATR 穿出深度閾值
-- [ ] 用 24h+ live data 驗證 Sharpe 0.5 訊號門檻
-- [ ] 兩個閾值若需調整，更新 config + 重跑 regression
+> **完整設計：** `.claude/plans/p0-backtest-verification.md`
+>
+> Stage 1 (offline replay) + Stage 2 (shadow mode) + Stage 3 (manual tune trigger)
+> 60 個 RED 測試、framework/v3lp 兩層架構、連續 2 週同方向紅標 trigger
+> 通過絕對底線（A>0, D>0, C≥50%）才允許 P0 ship
 
 ---
 

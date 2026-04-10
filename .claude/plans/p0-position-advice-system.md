@@ -343,7 +343,11 @@ export function checkCooldown(
 
 ## Tasks（subagent 執行順序）
 
-### Phase 1 — Sharpe scoring 重構（半天，先 refactor 不改邏輯）
+> Stage 內若未明確分 Group，預設整個 Stage 為單一 Group（sequential）。Group 拆分可在進入 Phase 2 執行時依需要補上。
+
+### Stage 1 — Sharpe scoring 重構 ✅ PR #20
+
+**已完成**（2026-04-11 合併到 dev）。任務記錄保留供歷史追溯：
 
 1. **RED**：寫 Sharpe score 計算測試 + canary regression test（固定 seed）
 2. **GREEN**：在 `MonteCarloEngine.ts` 新增 Sharpe 計算，**保留**舊 score 為 backup 欄位
@@ -351,21 +355,21 @@ export function checkCooldown(
 4. **VERIFY**：跑所有現有測試 + canary，確認沒有 regression
 5. **REFACTOR**：移除舊的 cvar-based score 公式
 
-### Phase 2 — PositionAdvisor pure functions（2 天 TDD）
+### Stage 2 — PositionAdvisor pure functions（TDD）
 
 6. **RED**：寫 `tests/services/PositionAdvisor.test.ts` 19 個 cases（全部失敗）
 7. **GREEN**：建立 `src/types/positionAdvice.ts`（型別定義）
 8. **GREEN**：實作 `src/services/strategy/positionAdvisor.ts` 的 3 個函數，逐一讓測試 GREEN
 9. **REFACTOR**：抽出共用 helper（例如「穿出方向偵測」），保持純函數
 
-### Phase 3 — State persistence（1 天 TDD）
+### Stage 3 — State persistence（TDD）
 
 10. **RED**：寫 `tests/utils/positionStateTracker.test.ts` 8 個 cases
 11. **GREEN**：實作 `src/utils/positionStateTracker.ts`，整合到 `stateManager.ts`
 12. **VERIFY**：手動 restart 測試（寫狀態 → kill process → restart → 狀態還在）
 13. **REFACTOR**：確認 schema 清晰，欄位命名一致
 
-### Phase 4 — Cycle integration（2 天）
+### Stage 4 — Cycle integration
 
 14. **RED**：寫 `tests/integration/positionMonitorCycle.test.ts` 4 個 cases
 15. **GREEN**：在 `src/index.ts` 新增 2 個獨立 cron job
@@ -373,22 +377,48 @@ export function checkCooldown(
     - 新倉位探索 (1h)，含 isRunning guard
 16. **GREEN**：在 `src/runners/mcEngine.ts` 加 advisor call + hysteresis check + sendAlert
 17. **GREEN**：實作 snapshot staleness guard（讀取 strategies.computedAt > 15min 跳過）
+17.5 **GREEN**：cycle 結尾組裝 ShadowSnapshot 並 fire-and-forget 呼叫 shadowLogger
+    - 從 advisor 內部狀態取出當下的 hysteresis counters
+    - 從 config 讀取 currentThresholds
+    - 組裝完整 ShadowSnapshot（含 mcEngine 輸出、regime、範圍、currentPriceNorm、triggered flags、positionState）
+    - shadowLogger 介面與 ShadowSnapshot 型別由 `.claude/plans/p0-backtest-verification.md` 定義，本 task 僅呼叫（read-only reference）
 18. **VERIFY**：跑整合測試 + 跨 cron 錯開模擬
 
-### Phase 5 — Telegram + cleanup（1 天）
+### Stage 5 — Telegram + cleanup
 
 19. **GREEN**：在 `src/bot/alertService.ts` 新增 advice alert 類型 + per-positionId LRU cooldown
+    - 注意：alertService 的其他新方法（`sendShadowWeeklyReport`、`sendBackupFailure`、`sendPhase5cTrigger`）由各自的 plan 定義，本 task 不負責，但需保證 alertService 介面設計具備擴展性
 20. **GREEN**：Telegram 訊息格式（中文，註記「相對 HODL 基準」）
 21. **DELETE**：移除 `src/services/strategy/rebalance.ts` 的 `RebalanceService` class
 22. **MOVE**：把 `calculateV3TokenValueRatio` 移到 `src/utils/math.ts`（保留為純函數）
 23. **VERIFY**：grep 確認沒有 RebalanceService callers 殘留
 24. **REFACTOR**：所有 advice 訊息共用同一個 Telegram formatter
 
-### Backtest 驗證（P0 ship 前最後門檻）
+### Stage 6 — Backtest Verification
 
-25. 用 24h+ live data 驗證 2×ATR 穿出深度閾值
-26. 用 24h+ live data 驗證 Sharpe 0.5 訊號門檻
-27. 兩個閾值若需調整，更新 config + 重跑 regression
+> **詳細設計：** `.claude/plans/p0-backtest-verification.md`（獨立 plan）
+>
+> 此 Stage 不在 P0 plan 內展開，僅列出 P0 對 backtest 的依賴。
+
+**P0 對 backtest 的核心依賴**（read-only reference）：
+- 此 Stage 必須在 PR 3（PositionAdvisor 純函數）合併之後執行
+- backtest grid search 的最佳 thresholds 將寫入 PR 5 的 PositionAdvisor config
+- backtest 必須通過「絕對底線（A>0, D>0, C≥50%）」才允許 P0 進入生產
+- 若 backtest 不通過 → P0 退回 Decisions 段落 review
+
+**獨立執行單元**：本 Stage 由獨立 PR 4 處理，不在 P0 主線 PR（PR 5）內合併
+
+### PR 切分
+
+| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 |
+|---------|------|------------------|------|
+| PR 1 | Cloudflare R2 Backup（完整） | `.claude/plans/i-r2-backup.md`（Stage 1-5） | 📋 待啟動 |
+| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 |
+| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 |
+| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 依賴 PR 3 |
+| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 依賴 PR 3、PR 4 |
+
+PR 4 的 grid search 結果（chosen thresholds）寫入 PR 5 的 PositionAdvisor config。
 
 ### 完成標準
 

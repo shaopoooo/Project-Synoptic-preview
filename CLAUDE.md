@@ -41,51 +41,92 @@
 
 ## 🔁 三階段工作流（必須嚴格遵守）
 
-### Phase 1 — 規劃與架構（gstack 主導）
+### Phase 1 — 規劃與架構
 
-1. 需求釐清 → `/office-hours`
-2. 技術審查 → `/plan-eng-review`
-3. **禁止在此階段撰寫任何產品程式碼**
-4. 討論結束必須更新 `.claude/tasks.md`（輕量索引）
-5. **強制產出 Plan 檔案**：gstack 直接將結論寫成 `.claude/plans/<feature-name>.md`，格式依 `.claude/plans/TEMPLATE.md`。此檔案是交接給 Phase 2 的**正式契約**，superpowers 只讀不寫。
+新 feature 從以下三條 intake path 擇一進入。所有工具（gstack 與 Claude）都**直接修改** `.claude/plans/<priority>-<feature-slug>.md`，這是唯一 source of truth（不在 `~/.gstack/` 留中間檔）。
+
+#### Path A — Big Feature（需求模糊，需要先 discover）
+1. `/office-hours` → 直接寫到 `.claude/plans/<priority>-<slug>.md`
+2. `/plan-ceo-review`（optional，可多輪）→ 修改同檔案
+3. `/plan-eng-review`（必要）→ 修改同檔案
+4. `brainstorming`（必要，最後一步定稿）→ 修改同檔案
+5. → Phase 2 執行
+
+#### Path B — Medium Feature（idea 清楚）
+1. `brainstorming`（必要，第一步）→ 寫到 `.claude/plans/<priority>-<slug>.md`
+2. `/plan-eng-review`（必要）→ 對抗式 review，修改同檔案
+3. → Phase 2 執行
+
+#### Path C — Small Feature
+1. `cp .claude/plans/TEMPLATE.md` → `<priority>-<slug>.md` 並填寫
+2. → Phase 2 執行
+
+#### 路徑選擇決策樹
+- 不知道要建什麼 → **Path A**
+- 知道方向但要 refine 設計 → **Path B**
+- 簡單 refactor / 無爭議 → **Path C**
+
+#### Plan 命名規則
+- 檔名：`.claude/plans/<priority>-<feature-slug>.md`
+- 優先級前綴：`p0`~`p4`（產品）、`i`（infra）、`t`（tech debt）、`b`（bug）
+- Slug：kebab-case
+- 範例：`p0-position-advice-system.md`、`i-r2-backup.md`
+
+#### Plan 獨立性原則（寬鬆隔離）
+- ✅ Plan 之間可 read-only reference 對方的 Interfaces / Decisions
+- ❌ 一個 plan 的 brainstorm **不可**修改另一個 plan
+- 若需要修改 → 對受影響 plan 另開 Path B brainstorm
+- **規則生效時間點：2026-04-11**，之前的既存 cross-reference grandfathered
 
 #### tasks.md 與 plans/ 分工
-
-- **正式 feature**（需決策、架構討論、TDD）→ **必須**開 `.claude/plans/<name>.md`，tasks.md 只留一行索引：
-  `- [ ] Regime Engine → .claude/plans/regime-engine.md`
-- **雜項修繕**（typo、log level、bump 套件、調常數）→ **禁止**開 plan，直接寫在 `tasks.md` 的 `## 🧹 雜項`。
-- 判斷準則：「subagent 需要決策脈絡才能執行嗎？」
+- 正式 feature（需決策、TDD）→ 開 `.claude/plans/<priority>-<slug>.md`，tasks.md 只留一行索引
+- 雜項修繕（typo、log level、bump 套件）→ 直接寫 `tasks.md` 的 `## 🧹 雜項`
 
 #### TODO 唯一來源
+- **嚴禁**建立 `TODOS.md` / `TODO.md` 等根目錄待辦
+- 所有 follow-up 一律寫進 `.claude/tasks.md`
+- gstack 若提到「加入 TODOS.md」**一律改為**「加入 `.claude/tasks.md`」
 
-- **嚴禁**建立 `TODOS.md`、`TODO.md`、`todos.md` 或任何根目錄待辦檔案。
-- 所有 follow-up、deferred items 一律寫進 `.claude/tasks.md` 的對應優先級區塊。
-- gstack skill outputs 若提到「加入 TODOS.md」**一律改為**「加入 `.claude/tasks.md`」。
-- 若發現根目錄出現 `TODOS.md`，必須**立即合併進 tasks.md 並刪除**。
+> **完整工作流細節見** `.claude/docs/plan-lifecycle.md`（含三 path 流程圖、命名規則、獨立性原則細則、刪除時機 α）
 
 ---
 
 ### Phase 2 — 嚴格執行 + TDD（superpowers 主導）
 
-1. **先讀 plan（只讀不寫）**：subagent 啟動前必須先讀 `.claude/plans/<feature-name>.md`，每個 subagent prompt 必須明確引用 plan 段落（例如「依據 plan 的 Decisions 第 2 點實作 X」）。
-2. 觸發 `superpowers:brainstorming` 拆解微任務（基於 plan 的 Tasks 段落）。
-3. 使用 `superpowers:using-git-worktrees` 建立隔離分支。
-4. **強制**觸發 `subagent-driven-development` + `test-driven-development`。
-5. 嚴守 **RED-GREEN-REFACTOR** 循環：先寫會失敗的測試 → 最少量邏輯讓測試通過 → 重構。**沒有測試保護的程式碼一律退回**。
-6. **禁止偏離 plan**：若發現 plan 有誤，必須停下來回 Phase 1 請 gstack 更新，不得擅自改動 Decisions。
+#### 任務階層
+- **Stage**：可上線里程碑，1 PR ≥ 1 Stage（上限暫不限制）
+- **Group**：subagent 並行邊界（同 Stage 內不同 Group 可由多 subagent 並行）
+- **Task**：TDD 最小步驟（RED / GREEN / REFACTOR / VERIFY），同 Group 內 sequential
+- 命名：`Stage 1`、`Group 1.A`、`Task 1.A.1`
 
-#### Plan 刪除時機（α：PR 開出前）
+#### 執行觸發
+直接 invoke superpowers 既有 skill：`subagent-driven-development` 或 `executing-plans`，傳對應 plan 路徑。
 
-feature 完成後、開 PR **之前**，在 feature 分支上加**一個獨立 commit** 刪除對應 plan 檔案：
+#### 執行原則
+1. **先讀 plan（只讀不寫）**：subagent 啟動前必須先讀對應 plan，prompt 必須明確引用 plan 段落
+2. 在主目錄直接 `git checkout -b feature/<slug>` 開新分支（**不**使用 worktree，本專案約定）
+3. **強制**觸發 `test-driven-development`
+4. 同 Stage 內不同 Group 派多 subagent 並行；同 Group 內 Task sequential
+5. 嚴守 **RED-GREEN-REFACTOR** 循環。**沒有測試保護的程式碼一律退回**
+6. **禁止偏離 plan**：plan 有誤要回 Phase 1 重做，不得擅自改 Decisions
+7. **跨 plan 並行策略 = P2**：sequential plans，但同一 plan 內 Group 可並行；不跨 plan 並行
 
-```bash
-git rm .claude/plans/<feature-name>.md
-git commit -m "chore(plan): 移除已完成的 <feature-name> plan"
+#### Phase 2 → Phase 3 後續流程
+
+```
+1. [Auto] npm test                   ← 失敗即停
+2. [Auto] /cso 資安掃描（warn-only） ← 失敗 → warn 但繼續
+3. [SKIP] /qa（DexBot 無 web UI）
+4. [Auto] /ship                       ← 內含：刪 plan、改 tasks.md、**更新 README**、bump version、CHANGELOG、push
+                                         ⚠ /ship 不執行 gh pr create
+5. [User] 手動 gh pr create
+6. [User] Self-review + merge to dev
+7. [User] 想部署時手動 merge dev → main
 ```
 
-`.claude/hooks/pre-push` 會互動式檢查未刪除的 plan。完整生命週期與 hook 安裝說明見 `.claude/docs/plan-lifecycle.md`。
+`.claude/hooks/pre-push` 是 plan 刪除的雙重保險。
 
-**禁止** `.claude/plans/archive/` 等歷史資料夾，歷史一律由 git 負責。
+> **完整 Phase 2 / Phase 3 細節見** `.claude/docs/plan-lifecycle.md`
 
 ---
 

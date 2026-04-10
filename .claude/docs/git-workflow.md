@@ -31,9 +31,10 @@ feature/<name>   fix/<name>   (短命分支，壽命 ≤ 5 天)
    - 對應 `CHANGELOG.md`
    - 出事時可快速 `git checkout <tag>` 回滾
 
-5. **優先用 worktree 取代 stash**
-   - 配合 `superpowers:using-git-worktrees`
-   - 主線 bot 可持續運行，新功能在另一個 worktree 開發，互不干擾
+5. **直接在主目錄切分支（不使用 worktree）**
+   - 切分支前若有未完成工作：`git stash` → `git checkout -b feature/<name>` → 完成後 `git stash pop`
+   - 偶爾需要「兩個分支同時跑」的情境（極少出現）：用第二個 `git clone` 到另一個目錄處理
+   - **禁止**使用 `git worktree` 與 `superpowers:using-git-worktrees`（本專案約定，避免目錄混亂）
 
 6. **失敗分支直接刪除**
    - 實驗失敗不要留著：`git branch -D <name>`
