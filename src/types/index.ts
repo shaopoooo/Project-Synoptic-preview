@@ -508,6 +508,10 @@ export interface MCSimResult {
     mean: number;
     /** 中位數 PnL 比率 */
     median: number;
+    /** pnlRatios 的標準差，用於 Sharpe-like score 計算 */
+    std: number;
+    /** Sharpe-like score = mean / std；退化分佈 (std < 1e-6) 時為 0 */
+    score: number;
     /** 平均在範圍內的天數（衡量資金效率的利用率） */
     inRangeDays: number;
     /** 分位數（比率形式） */
