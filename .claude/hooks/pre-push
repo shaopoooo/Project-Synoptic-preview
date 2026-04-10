@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# DexBot pre-push hook: plan 檔案清理提醒
+#
+# 規則（對應 CLAUDE.md Phase 1 的刪除時機 α）：
+# 推送 feature/* 或 fix/* 分支時，若對應的 .claude/plans/<name>.md
+# 仍存在於 HEAD，互動式詢問是否繼續推送。
+#
+# 安裝方式（單人開發一次性）：
+#   ln -s ../../.claude/hooks/pre-push .git/hooks/pre-push
+#   chmod +x .claude/hooks/pre-push
+#
+set -e
+
+# 從 /dev/tty 讀取互動輸入（hook 預設無 stdin）
+exec < /dev/tty || exit 0
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+
+# 只對 feature/* 與 fix/* 分支生效
+case "$branch" in
+    feature/*|fix/*)
+        feature_name="${branch#*/}"
+        plan_file=".claude/plans/${feature_name}.md"
+
+        if [ -f "$plan_file" ]; then
+            echo ""
+            echo "⚠️  Plan 檔案仍存在：$plan_file"
+            echo ""
+            echo "   依據 CLAUDE.md Phase 1 規則（刪除時機 α）："
+            echo "   feature 完成後，應在 PR 開出前於最後一個 commit 刪除對應 plan 檔案。"
+            echo ""
+            echo "   若此 feature 已完成："
+            echo "     git rm \"$plan_file\""
+            echo "     git commit -m \"chore(plan): 移除已完成的 ${feature_name} plan\""
+            echo ""
+            echo "   若 feature 尚未完成（WIP push），可繼續推送。"
+            echo ""
+            printf "   是否仍要繼續推送？[y/N] "
+            read -r answer
+
+            case "$answer" in
+                y|Y|yes|YES)
+                    echo "   繼續推送..."
+                    exit 0
+                    ;;
+                *)
+                    echo "   取消推送。"
+                    exit 1
+                    ;;
+            esac
+        fi
+        ;;
+esac
+
+exit 0
