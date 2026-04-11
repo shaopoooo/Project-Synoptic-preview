@@ -104,20 +104,33 @@ async function bodyToFile(body: unknown, targetPath: string): Promise<void> {
     throw new Error('Unknown S3 Body type');
 }
 
+/** Safety backup 子目錄前綴（hidden，避免被一般 glob 掃到） */
+const SAFETY_BACKUP_PREFIX = '.backup-';
+
+/** 是否為 safety backup 子目錄（用於排除掃描 / 搬移時 skip self） */
+function isSafetyBackupDir(name: string): boolean {
+    return name.startsWith(SAFETY_BACKUP_PREFIX);
+}
+
 /**
  * Decision #11: Safety backup 機制
  *
- * 對現有目錄（data/ 與 logs/）做「就地重命名」成
- * `data.backup-<timestamp>/` 與 `logs.backup-<timestamp>/`。
+ * **Railway volume 相容性**：`/app/data` 是掛載點（bind mount），核心層級禁止
+ * `rename` 掛載點本身（EBUSY），跨掛載邊界 rename 子檔也會拿 EXDEV。因此 safety
+ * backup 必須建在 **掛載內部** 的 hidden 子目錄（`data/.backup-<ts>/`），把原本
+ * 的子項 rename 進去；這樣所有操作都在同一個 filesystem。
  *
- * 回傳 safety backup 的「父路徑」——一個包含 data.backup-<ts> 與 logs.backup-<ts>
- * 的虛擬位置（實際上兩個目錄都在 baseDir 下，共享同一個 timestamp）。
- * 外部只取 safetyBackupPath 中的 timestamp 即可找到對應檔案。
+ * 對每個 RESTORE_PATHS 目錄：
+ *   1. 若目錄不存在或為空 → skip（不建立空 safety backup）
+ *   2. 建立 `<baseDir>/<name>/.backup-<ts>/`
+ *   3. 把 `<name>/` 下除了 `.backup-*` 以外的所有子項 rename 進 safety 目錄
+ *
+ * 回傳 moved：restore 流程若失敗，rollbackSafetyBackup 會據此還原。
  */
 async function createSafetyBackup(baseDir: string): Promise<{
-    /** 虛擬父目錄：`<baseDir>/__safety-<timestamp>` 的概念，實際回傳對應的 data.backup-<ts> 目錄 */
+    /** 代表路徑：第一個有 safety backup 的目錄（供測試與外部檢查 exists） */
     safetyBackupPath: string;
-    /** 被搬走的目錄清單：原始路徑 → safety 路徑 */
+    /** 被搬走的目錄清單：原始目錄 → 其內部的 safety 子目錄 */
     moved: Array<{ original: string; safety: string }>;
 }> {
     const ts = Date.now();
@@ -125,36 +138,74 @@ async function createSafetyBackup(baseDir: string): Promise<{
 
     for (const name of RESTORE_PATHS) {
         const original = path.join(baseDir, name);
-        const safety = path.join(baseDir, `${name}.backup-${ts}`);
+
+        let children: string[];
         try {
-            await fs.rename(original, safety);
-            moved.push({ original, safety });
+            children = await fs.readdir(original);
         } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-            // 原目錄不存在 → skip，不算 moved
+            if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            throw err;
         }
+
+        // 過濾掉既有的 safety backup 目錄（避免巢狀備份）
+        const payload = children.filter((c) => !isSafetyBackupDir(c));
+        if (payload.length === 0) continue;
+
+        const safety = path.join(original, `${SAFETY_BACKUP_PREFIX}${ts}`);
+        await fs.mkdir(safety, { recursive: true });
+
+        for (const child of payload) {
+            await fs.rename(
+                path.join(original, child),
+                path.join(safety, child),
+            );
+        }
+        moved.push({ original, safety });
     }
 
-    // 回傳 data.backup-<ts> 作為代表路徑（測試用來檢查 safety backup 存在）
-    // 若 data/ 原本不存在，回退到 logs.backup-<ts>
-    const safetyBackupPath = moved[0]?.safety ?? path.join(baseDir, `__no-safety-${ts}`);
+    const safetyBackupPath =
+        moved[0]?.safety ?? path.join(baseDir, `__no-safety-${ts}`);
     return { safetyBackupPath, moved };
 }
 
-/** Rollback：把 safety backup 重命名回原位置，同時清除已下載到新位置的檔案 */
+/**
+ * Rollback：把 safety backup 內的子項 rename 回原目錄，同時清除 restore 過程中
+ * 已經寫入原目錄的新檔案。注意：**不能** 動原目錄（mount point）本身。
+ */
 async function rollbackSafetyBackup(
     baseDir: string,
     moved: Array<{ original: string; safety: string }>,
 ): Promise<void> {
+    void baseDir;
     for (const { original, safety } of moved) {
-        // 先刪掉可能半路下載到新位置的東西
-        await fs.rm(original, { recursive: true, force: true });
-        // safety → original
+        // 1. 刪除 restore 過程中寫入 original/ 的新檔（保留 safety 目錄本身）
         try {
-            await fs.rename(safety, original);
+            const currentChildren = await fs.readdir(original);
+            for (const child of currentChildren) {
+                const childPath = path.join(original, child);
+                if (childPath === safety) continue; // 保留 safety dir
+                await fs.rm(childPath, { recursive: true, force: true });
+            }
         } catch (err) {
             log.warn(
-                `Rollback failed for ${original}: ${err instanceof Error ? err.message : String(err)}`,
+                `Rollback cleanup failed for ${original}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+        }
+
+        // 2. 把 safety 內容搬回 original/
+        try {
+            const safetyChildren = await fs.readdir(safety);
+            for (const child of safetyChildren) {
+                await fs.rename(
+                    path.join(safety, child),
+                    path.join(original, child),
+                );
+            }
+            // 3. 移除空的 safety 目錄
+            await fs.rmdir(safety);
+        } catch (err) {
+            log.warn(
+                `Rollback restore failed for ${original}: ${err instanceof Error ? err.message : String(err)}`,
             );
         }
     }
@@ -303,12 +354,15 @@ export async function restoreArchive(
                 })) as import('fs').Dirent[];
                 for (const e of entries) {
                     if (e.isFile()) {
-                        restoredCount++;
                         // parentPath compat
                         const parent =
                             (e as unknown as { parentPath?: string }).parentPath ??
                             (e as unknown as { path?: string }).path ??
                             dir;
+                        // 排除 safety backup 子目錄下的檔案（舊資料，不算 restored）
+                        const rel = path.relative(dir, path.join(parent, e.name));
+                        if (rel.split(path.sep).some(isSafetyBackupDir)) continue;
+                        restoredCount++;
                         const stat = await fs.stat(path.join(parent, e.name));
                         restoredBytes += stat.size;
                     }

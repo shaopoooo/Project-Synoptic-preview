@@ -14,7 +14,10 @@
     "backup:restore-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreMirror.ts",
     "backup:restore-archive": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreArchive.ts",
     "backup:list-archives": "dotenvx run -f .env -- ts-node src/scripts/backupListArchives.ts",
-    "backup:smoke-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupSmokeMirror.ts"
+    "backup:smoke-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupSmokeMirror.ts",
+    "backup:restore-mirror:prod": "node dist/scripts/backupRestoreMirror.js",
+    "backup:restore-archive:prod": "node dist/scripts/backupRestoreArchive.js",
+    "backup:list-archives:prod": "node dist/scripts/backupListArchives.js"
   },
   "keywords": [],
   "author": "",
