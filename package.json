@@ -13,7 +13,8 @@
     "backfill": "dotenvx run -f .env -- ts-node src/scripts/backfillOhlcv.ts",
     "backup:restore-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreMirror.ts",
     "backup:restore-archive": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreArchive.ts",
-    "backup:list-archives": "dotenvx run -f .env -- ts-node src/scripts/backupListArchives.ts"
+    "backup:list-archives": "dotenvx run -f .env -- ts-node src/scripts/backupListArchives.ts",
+    "backup:smoke-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupSmokeMirror.ts"
   },
   "keywords": [],
   "author": "",
