@@ -58,7 +58,12 @@
 11. **Restore 安全機制**：開始前先把現有 `data/` + `logs/` 重命名為 `<dir>.backup-<ts>/`，失敗自動 rollback，成功後 admin 手動清理
 
 ### Bucket 與排程
-12. **R2 bucket 名稱**：`tradingbot-backup`
+12. **R2 bucket 名稱**：從 env `R2_BUCKET` 讀取，default fallback `tradingbot-backup`
+    - Prod bucket：`tradingbot-backup`（Railway env 留空或設為此名）
+    - Dev bucket：`tradingbot-backup-dev`（本地 `.env` 設此名，避免開發時污染 prod）
+    - 兩個 bucket 各自一組 R2 API token，token value 存在 `.env` 的 `R2_API_TOKEN` 僅作 rotate 時 reference，程式碼不讀
+    - `r2Client.ts` 的 `R2_BUCKET` 改為 `process.env.R2_BUCKET ?? 'tradingbot-backup'`（const，非 runtime function，因 dotenvx 已在 import 前載入 env）
+    - **Ratification 2026-04-11（Stage 4 admin setup 時對話內修訂）**：原決策為單一 hardcoded bucket，因 prod/dev 環境分離需求臨時升級為 env-driven；僅影響 `r2Client.ts` 一行，未改變其他 Decision
 13. **Cron 排程時間**（Asia/Taipei）：
     - Daily mirror：`0 3 * * *`（每日 03:00）
     - Weekly archive：`0 4 * * 0`（每週日 04:00）

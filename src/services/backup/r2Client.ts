@@ -3,8 +3,17 @@
 
 import { S3Client } from '@aws-sdk/client-s3';
 
-/** R2 bucket 名稱（Decision #12） */
-export const R2_BUCKET = 'tradingbot-backup';
+/**
+ * R2 bucket 名稱（Decision #12，2026-04-11 updated）
+ *
+ * 從 env `R2_BUCKET` 讀取，default fallback 到 `tradingbot-backup`（prod 名稱）。
+ * 本地 `.env` 可設 `R2_BUCKET=tradingbot-backup-dev` 讓 dev 環境推/拉 dev bucket；
+ * Railway 留空或設為 prod 名稱則走 prod bucket。
+ *
+ * 因為所有 callsite 都透過 `dotenvx run` 啟動（`package.json` 的 scripts），
+ * env 在 ts-node 載入本模組前已就緒 → 用 const 即可，不需要 runtime function。
+ */
+export const R2_BUCKET: string = process.env.R2_BUCKET ?? 'tradingbot-backup';
 
 /**
  * 建立 R2 S3 client。
