@@ -74,8 +74,9 @@ describe('restoreMirror', () => {
         }
     });
 
-    it('既有 data/ 被重命名為 data.backup-<ts>/', async () => {
+    it('既有 data/ 內容被搬入 data/.backup-<ts>/（in-mount safety backup）', async () => {
         // Arrange: 本地已有 data/ 與 logs/
+        // 重要：Railway volume 是 mount point，safety backup 必須在 mount 內部
         await writeFixture(tmpBase, 'data/existing.json', 'old');
         await writeFixture(tmpBase, 'logs/old.log', 'old log');
 
@@ -93,10 +94,13 @@ describe('restoreMirror', () => {
 
         // Assert
         expect(result.ok).toBe(true);
-        // safetyBackupPath 是絕對路徑，data.backup-<ts> 目錄應存在並含舊檔
-        expect(result.safetyBackupPath).toContain('data.backup-');
+        // safetyBackupPath 形如 <baseDir>/data/.backup-<ts>，位於原 data/ 內部
+        expect(result.safetyBackupPath).toMatch(/[/\\]data[/\\]\.backup-\d+$/);
+        expect(result.safetyBackupPath.startsWith(path.join(tmpBase, 'data'))).toBe(true);
         const safetyContents = await listDir(result.safetyBackupPath);
         expect(safetyContents).toContain('existing.json');
+        // 原 data/ 目錄仍存在（mount point 未被 rename），並含新下載的檔案
+        expect(await exists(path.join(tmpBase, 'data', 'new.json'))).toBe(true);
     });
 
     it('R2 上 5 檔被下載到本地 data/', async () => {
