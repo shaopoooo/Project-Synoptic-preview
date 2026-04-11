@@ -13,6 +13,13 @@
 >
 > **⚠ `ANALYSIS_FLATTEN_RULES` 將被廢除**：本 plan 下文提到的 `analysis/backtest-<date>-summary.md` / `analysis/shadow-<weekIso>.md` 扁平索引層會被 `i-unify-storage` Stage 3 的 D6 決策**完全廢除**。未來 R2 裡只有原生 `storage/...` 樹，沒有 top-level `analysis/` prefix。本 plan 保留該段落作為歷史設計 context，但執行階段**不要**實作 flatten 規則。
 
+> **📐 Rule override notice (2026-04-12)**：本 plan 內文的 shadow 路徑與命名以 `.claude/rules/position-tracking.md` 為**實際執行依據**：
+> - `v3lpShadowDriver` → 實際 `lpShadowDriver`（rule doc D5 Q6d — 處理所有 LP venues，不限 v3）
+> - `storage/shadow/<YYYY-MM>.jsonl` → 實際 `storage/shadow/lp/<YYYY-MM>.jsonl`
+> - `storage/shadow/analysis/<weekIso>.md` → 實際 `storage/shadow/lp/analysis/<weekIso>.md`
+> - shadow log 的 `STORAGE_PATHS` entry 名稱 = `shadowLp` / `shadowLpAnalysis`（不是 `shadow` / `shadowAnalysis`，後者已在 `i-position-tracking-alignment` Stage 3 刪除）
+> 執行階段 subagent 遇到衝突一律以 rule 為準。
+
 ## Context（為何要做）
 
 - **來源**：

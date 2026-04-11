@@ -11,6 +11,13 @@
 > - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 3 起即可 import
 > - Rejected 段落中保留的 `data/...` legacy 字串屬**歷史否決紀錄**，不需改動
 
+> **📐 Rule override notice (2026-04-12)**：本 plan 內文的路徑字串與命名以 `.claude/rules/position-tracking.md` 為**實際執行依據**，本 plan 文字保留為歷史 snapshot：
+> - `src/utils/positionStateTracker.ts` → 實際位置 `src/services/strategy/lp/positionStateTracker.ts`（LP column L1）
+> - `tests/utils/positionStateTracker.test.ts` → 實際 `tests/services/positionStateTracker.test.ts`（tests flat）
+> - 其餘 LP-related 檔案以 rule doc 的「目錄 & 命名 convention」段落為準
+> - `STORAGE_PATHS.shadow` / `shadowAnalysis` 已於 `i-position-tracking-alignment` Stage 3 刪除，改用 `STORAGE_PATHS.shadowLp` / `shadowLpAnalysis`
+> 執行階段 subagent 遇到衝突一律以 rule 為準。若 rule 與本 plan 對同一語意有衝突以 rule 優先。
+
 ## Context（為何要做）
 
 - **來源：**
