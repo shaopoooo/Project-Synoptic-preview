@@ -30,15 +30,25 @@ export const STORAGE_ROOT: string = process.env.STORAGE_ROOT ?? './storage';
  * - 若未來需要集中管理檔名常數，可新增 `STORAGE_FILES`，現階段不必要。
  */
 export const STORAGE_PATHS = {
+    /** Offline backtest harness 輸出根目錄（grid search 結果 + summary）。 */
     backtestResults: `${STORAGE_ROOT}/backtest-results`,
+    /** GeckoTerminal 歷史 OHLCV 小時蠟燭快取（Bootstrap 抽樣母體）。 */
     ohlcv: `${STORAGE_ROOT}/ohlcv`,
+    /** diagnosticStore 的 jsonl append-only 紀錄（pool 診斷、錯誤、cycle 統計）。 */
     diagnostics: `${STORAGE_ROOT}/diagnostics`,
+    /** winston file transport 輸出（error.log / combined.log）。 */
     debug: `${STORAGE_ROOT}/debug`,
+    /** 預留：LP position state cache（目前未使用，P3 follow-up 決定是否啟用）。 */
     positions: `${STORAGE_ROOT}/positions`,
+    /** 預留：Telegram bot 持久化狀態（目前未使用）。 */
     bot: `${STORAGE_ROOT}/bot`,
+    /** L2 LP counterfactual logs — 月歸檔 jsonl (`<YYYY-MM>.jsonl`)，由 PR 5a shadow observer 寫入。 */
     shadowLp: `${STORAGE_ROOT}/shadow/lp`,
+    /** L2 LP weekly counterfactual report 輸出 (`<weekIso>.md`)，由 PR 5b weeklyAnalyzer 寫入。 */
     shadowLpAnalysis: `${STORAGE_ROOT}/shadow/lp/analysis`,
+    /** L3 archive base path — 未來其他策略歸檔可掛在此 (e.g. `history/perps/`)。 */
     history: `${STORAGE_ROOT}/history`,
+    /** L3 LP closed position archive — writer 尚未實作，P3 follow-up。 */
     historyLp: `${STORAGE_ROOT}/history/lp`,
 } as const;
 

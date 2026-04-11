@@ -49,7 +49,7 @@ describe('src/config/storage', () => {
         });
     });
 
-    test('STORAGE_PATHS 共 10 個 entries（7 個領域 + 2 個 LP shadow + 1 個 LP history）', () => {
+    test('STORAGE_PATHS 共 10 個 entries（6 共享領域 + 2 shadow LP + 2 history）', () => {
         jest.isolateModules(() => {
             const mod = require('../../src/config/storage');
             const { STORAGE_PATHS } = mod;
