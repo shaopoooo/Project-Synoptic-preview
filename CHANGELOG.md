@@ -2,6 +2,34 @@
 
 All notable changes to DexBot will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **PositionAdvisor 純函數（P0 Stage 2 / PR 3）** — 部位建議系統的計算核心，Phase 1 純計算模組
+  - `src/services/strategy/positionAdvisor.ts`：三個 pure function 決策器
+    - `recommendOpen(strategy, regimeVector, poolLabel)`：Sharpe score ≥ 0.5 才建議開倉，低於門檻 / null / `computedAt=0` 一律返回 null
+    - `classifyExit(position, currentPriceNorm, Pa, Pb, atrHalfWidth, regimeVector)`：正規化空間下計算穿出深度，`|depth| ≤ 2×ATR` 且 `regime.range ≥ 0.5` 才 hold，否則 rebalance
+    - `shouldClose(position, mc, regimeVector, outOfRangeSinceMs, cumulativeIlPct)`：嚴格優先序 `trend_shift > il_threshold > opportunity_lost > timeout`，null sentinel 跳過對應條件但不阻擋其他 reason
+  - `computePenetration` helper：上下穿出對稱公式 + `atrHalfWidth === 0` 的 `Infinity` 退化路徑
+  - `formatPoolLabel` helper：`${dex} ${addr.slice(0,6)}...` 顯示字串
+  - 8 個閾值常數集中頂部，全部標註「經驗值，待 backtest 驗證」（PR 4 offline replay 會調參）
+- `src/types/positionAdvice.ts`：`OpenAdvice` / `ExitAdvice` / `CloseAdvice` 契約型別 + `ExitDecision` / `CloseReason` union
+- `tests/services/PositionAdvisor.test.ts`：21 個 TDD 測試（6 recommendOpen + 6 classifyExit + 9 shouldClose），完整覆蓋優先序鏈式傳遞性 + null sentinel 語義 + 對稱穿出
+
+### Changed
+- `src/types/index.ts`：`OpeningStrategy` 介面新增 `mean: number; std: number` 兩個必要欄位（PositionAdvisor 計算 `expectedReturnPct` 與未來 backtest 需要）
+- `src/runners/mcEngine.ts`：建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean` / `std`（2 行 wiring，資料已存在於 `best.mc`，零行為變更）
+
+### Infra
+- **Storage path 集中化（i-unify-storage Stage 2 / S0.5）** — 讓後續所有新 code 第一行就能 import 單一事實來源
+  - `src/config/storage.ts`：`STORAGE_ROOT`（env-driven, prod=`/app/storage`、dev fallback=`./storage`）+ `STORAGE_PATHS` 8 個領域常數（shadow / shadowAnalysis / backtestResults / ohlcv / diagnostics / debug / positions / bot） + `storageSubpath()` + `ensureStorageDir()`
+  - 純 additive util module，不碰 Railway / Dockerfile / R2，獨立 merge 到 dev 解除 PR 3 / 4 / 5 hardcode 舊路徑的風險
+  - 8 個 TDD 測試覆蓋 env fallback、domain key 型別守護、中間層目錄建立、冪等性
+
+### Docs
+- **Storage path paper reservation（i-unify-storage Stage 1 / S0）** — `p0-position-advice-system.md` + `p0-backtest-verification.md` 路徑字串對齊 `storage/...`，禁止 hardcode 字串路徑
+- **Railway volume mount PRE-FLIGHT** — 實測結果回填 `i-unify-storage.md` Risks R1：允許直接 rename mount path（不需 delete+recreate），Stage 4 migration 採 state machine 4a 分支，流程收斂
+
 ## [0.2.0] - 2026-04-11
 
 ### Added

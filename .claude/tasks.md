@@ -222,6 +222,13 @@ PR 3 第一步：在 dev 切 `feature/position-advisor` 分支，以 TDD 執行 
 
 - [ ] `runOnePath` 11 個 positional args 改成單一 `RunOnePathParams` object（code review S1, P0 Stage 1 follow-up）
 - [ ] **Future: TG 指令取代 SSH 操作（backup / restore / backfill）** — 需獨立 Path B brainstorm，注意 `.claude/rules/telegram.md`（bot 只能 format/send，需先設計 ops service layer）。來源：i-unify-storage brainstorm Decision D13
+- [ ] **PositionAdvisor follow-ups（PR 3 code review minor）** — 皆為 non-blocking，適當時機順手處理：
+  - `formatPoolLabel` 改為 `0xabcd...ef12` 雙側縮寫（避免前綴碰撞，如 Base 上多個 `0x4200...` 池）
+  - `recommendOpen` 的 `center === 0` guard 加 JSDoc 說明「理論上不發生的保險護欄」
+  - `ATR_DEPTH_HOLD_MAX` 改名 `MAX_PENETRATION_ATR_MULTIPLE`（常數名更精確表達單位）
+  - 若未來新增第二個 timeout-like 決策函數，統一注入 `nowMs: number` 參數取代 `Date.now()` 蔓延
+  - `shouldClose` priority matrix 補齊剩餘 3 對：`trend↔opportunity_lost` / `trend↔timeout` / `il↔timeout`（目前靠鏈式傳遞性覆蓋，defensive testing 可補齊）
+- [ ] **PositionAdvisor NaN hardening（PR 3 /cso informational）** — `recommendOpen` / `shouldClose` 對 `strategy.score` / `mc.score` / `strategy.mean` / `strategy.cvar95` 加 `Number.isFinite()` guard，避免 NaN 透過 `NaN < 0.5 === false` 繞過門檻後產生 NaN 欄位的 OpenAdvice。非安全議題，屬資料完整性。
 
 ---
 
