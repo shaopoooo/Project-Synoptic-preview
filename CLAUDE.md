@@ -42,6 +42,13 @@
 
 ## 🔁 三階段工作流（必須嚴格遵守）
 
+### ⚠️ 每個 Phase 結束必須同步 `tasks.md`
+
+- **Phase 1 結束後**：新開 / 修改的 plan 必須在 `.claude/tasks.md` 的 🎯 路線圖段落有對應條目（PR 節點 / Stage 節點），或至少 priority section 有索引
+- **Phase 2 結束後**：完成的 Stage / PR 節點標記狀態（`✅ shipped` / `📋 待啟動`），「下次回來最自然的起點」更新為新的下一步
+- **Phase 3 結束後**：`/ship` 內建已刪 plan + 改 tasks.md + 更新 README，若有手動補充的 follow-up（例如 review 時 surface 的技術債）也要寫進對應 priority section 或 🧹 雜項
+- 違反此約定 → 路線圖會跟實際進度漂移，下次 session 讀 tasks.md 看到的是舊狀態
+
 ### Phase 1 — 規劃與架構
 
 新 feature 從以下三條 intake path 擇一進入。所有工具（gstack 與 Claude）都**直接修改** `.claude/plans/<priority>-<feature-slug>.md`，這是唯一 source of truth（不在 `~/.gstack/` 留中間檔）。
