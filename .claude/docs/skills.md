@@ -34,7 +34,7 @@ Claude 會自動判斷何時使用，也可以手動 `/skill-name` 觸發。
 在背景自動攔截並強制執行 TDD 與子代理人工作流，不需手動呼叫。關鍵 skill：
 
 - `brainstorming` — 拆解微型任務
-- `using-git-worktrees` — 建立隔離開發分支
+- ~~`using-git-worktrees`~~ — **本專案不使用**，改為直接在主目錄 `git checkout -b feature/<name>`
 - `subagent-driven-development` — 多 subagent 並行執行
 - `test-driven-development` — RED-GREEN-REFACTOR 循環
 - `writing-plans` / `executing-plans` — 計劃的撰寫與執行（本專案由 gstack 負責寫，superpowers 只讀）

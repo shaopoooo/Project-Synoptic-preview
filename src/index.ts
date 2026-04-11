@@ -14,6 +14,8 @@ import { prefetchAll } from './runners/prefetch';
 import { runMCEngine } from './runners/mcEngine';
 import { DiagnosticStore } from './utils/diagnosticStore';
 import { runStartup } from './runners/startup';
+import { createR2Client } from './services/backup/r2Client';
+import { startBackupCron } from './services/backup/backupCron';
 import type { CycleDiagnostic, MCEngineDiagnostic } from './types';
 
 const log = createServiceLogger('Main');
@@ -91,6 +93,14 @@ async function main() {
     const startup = await runStartup(botService, diagnosticStore);
     currentIntervalMinutes = startup.currentIntervalMinutes;
     botService.setRescheduleCallback(reschedule);
+
+    // R2 backup cron（Stage 3）— 若 env 缺失則 warn 並略過，不阻擋 bot 啟動
+    try {
+        const r2Client = createR2Client();
+        startBackupCron(r2Client, botService.sendAlert.bind(botService));
+    } catch (e) {
+        log.warn(`BackupCron disabled — ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     log.section('ready');
     scheduledTask = buildCronJob();

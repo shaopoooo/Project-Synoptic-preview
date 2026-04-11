@@ -1,6 +1,6 @@
 {
   "name": "dexbot",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -10,13 +10,18 @@
     "dryrun": "dotenvx run -f .env -- ts-node src/dryrun.ts",
     "test": "jest",
     "backtest": "dotenvx run -f .env -- ts-node src/backtest/BacktestEngine.ts",
-    "backfill": "dotenvx run -f .env -- ts-node src/scripts/backfillOhlcv.ts"
+    "backfill": "dotenvx run -f .env -- ts-node src/scripts/backfillOhlcv.ts",
+    "backup:restore-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreMirror.ts",
+    "backup:restore-archive": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreArchive.ts",
+    "backup:list-archives": "dotenvx run -f .env -- ts-node src/scripts/backupListArchives.ts",
+    "backup:smoke-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupSmokeMirror.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1024.0",
     "@dotenvx/dotenvx": "1.52.0",
     "@uniswap/v3-sdk": "3.28.0",
     "axios": "1.13.6",
@@ -29,6 +34,7 @@
     "lru-cache": "11.2.6",
     "node-cron": "4.2.1",
     "p-limit": "3.1.0",
+    "tar": "7.5.13",
     "winston": "3.19.0"
   },
   "devDependencies": {
@@ -37,6 +43,8 @@
     "@types/node": "25.3.3",
     "@types/node-cron": "3.0.11",
     "@types/seedrandom": "3.0.8",
+    "@types/tar": "7.0.87",
+    "aws-sdk-client-mock": "4.1.0",
     "eslint": "10.0.2",
     "eslint-config-prettier": "10.1.8",
     "jest": "30.2.0",
