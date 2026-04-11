@@ -2,6 +2,12 @@
 
 > 本檔案由 gstack 在 Phase 1 結尾產出，作為交接給 superpowers (Phase 2) 的正式契約。
 > superpowers 執行階段**只讀不寫**；若需調整，必須退回 Phase 1 由 gstack 更新。
+>
+> **📐 命名規則（CLAUDE.md line 101 強制）**：
+> - **Stage**：可上線里程碑，用**數字**命名：`Stage 1`、`Stage 2` …（**不**用 `Stage A/B/C`）
+> - **Group**：subagent 並行邊界，用 **Stage 數字 + 字母**：`Group 1.A`、`Group 1.B`、`Group 2.A` …
+> - **Task**：TDD 最小步驟，用 **Stage + Group + 數字**：`Task 1.A.1`、`Task 1.A.2` …
+> - 1 PR ≥ 1 Stage；同 Stage 內不同 Group 可並行；同 Group 內 Task sequential
 
 ## Context（為何要做）
 - 來源：`/office-hours` / `/plan-eng-review` 的討論日期與結論
