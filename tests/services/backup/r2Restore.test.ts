@@ -206,6 +206,33 @@ describe('restoreMirror', () => {
         expect(result.restoredCount).toBe(1);
     });
 
+    it('directory marker key（data/ 或 data）被跳過不視為檔案', async () => {
+        // 場景：CF R2 console UI 上傳時可能建立 zero-byte directory placeholder
+        // key = 'data/' 或 'data'，舊版會嘗試 fs.writeFile('/app/data') → EISDIR
+        // （因為 /app/data 本身是 mount point 目錄）
+        s3Mock.on(ListObjectsV2Command).callsFake(async (input) => {
+            if (input.Prefix === 'data/') {
+                return {
+                    Contents: [
+                        { Key: 'data/', Size: 0 },              // trailing slash marker
+                        { Key: 'data', Size: 0 },               // bare prefix, no slash
+                        { Key: 'data/real.json', Size: 4 },     // 合法檔
+                    ],
+                };
+            }
+            return { Contents: [] };
+        });
+        s3Mock.on(GetObjectCommand).callsFake(async () => ({ Body: makeBody('real') }));
+
+        const result = await restoreMirror(client, { baseDir: tmpBase });
+
+        expect(result.ok).toBe(true);
+        // 合法檔正常寫入
+        expect(await exists(path.join(tmpBase, 'data', 'real.json'))).toBe(true);
+        // restoredCount 只計合法檔（directory marker 兩個都被跳）
+        expect(result.restoredCount).toBe(1);
+    });
+
     it('成功後 data.backup-<ts>/ 留在原地（admin 手動清）', async () => {
         await writeFixture(tmpBase, 'data/old.json', 'legacy');
 

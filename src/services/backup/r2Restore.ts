@@ -248,6 +248,21 @@ export async function restoreMirror(
                 const contents = resp.Contents ?? [];
                 for (const obj of contents) {
                     if (!obj.Key) continue;
+                    // Directory marker guard：CF R2 console UI 上傳可能建立 zero-byte
+                    // placeholder（key 結尾 `/` 或只剩 prefix 沒檔名），若當成檔案
+                    // 寫入會對 mount point 目錄呼叫 fs.writeFile → EISDIR，拖累整批
+                    // rollback。這類 key 不是真的檔案，直接跳過。
+                    if (obj.Key.endsWith('/')) {
+                        log.warn(`Skipping R2 directory marker key: ${obj.Key}`);
+                        continue;
+                    }
+                    const keySegments = obj.Key.split('/').filter((s) => s.length > 0);
+                    if (keySegments.length < 2) {
+                        log.warn(
+                            `Skipping R2 key without sub-path (directory-like): ${obj.Key}`,
+                        );
+                        continue;
+                    }
                     // CSO Finding #1: path traversal guard
                     if (!isSafeRelativePath(obj.Key, baseDir)) {
                         log.warn(
