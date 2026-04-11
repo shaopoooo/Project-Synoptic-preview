@@ -84,7 +84,17 @@ describe('extractFeatures', () => {
             expect(typeof f.candleVolume).toBe('number');
             expect(typeof f.poolTvlProxy).toBe('number');
             expect(typeof f.poolFeeTier).toBe('number');
+        }
+
+        // currentPriceNorm 是 number | null：早期 cycle null，late cycle number
+        const lateCycles = features.filter(f => f.cycleIdx >= MC_WINDOW_HOURS);
+        const earlyCycles = features.filter(f => f.cycleIdx < MC_WINDOW_HOURS);
+        expect(lateCycles.length).toBeGreaterThan(0);
+        for (const f of lateCycles) {
             expect(typeof f.currentPriceNorm).toBe('number');
+        }
+        for (const f of earlyCycles) {
+            expect(f.currentPriceNorm).toBeNull();
         }
     });
 
@@ -125,25 +135,63 @@ describe('extractFeatures', () => {
             expect(f.PaNorm).toBeNull();
             expect(f.PbNorm).toBeNull();
             expect(f.atrHalfWidth).toBeNull();
+            expect(f.currentPriceNorm).toBeNull();
         }
     });
 
     it('test_extractFeatures_regimeFailure_nullsNotCrash', () => {
-        // 構造 degenerate 價格序列：全部 0（log 0 → -Infinity，regime 計算會產生 NaN）
-        // extractFeatures 的 try/catch + NaN guard 應將 regime 設為 null 並繼續
-        const stores = [
-            makeOhlcvStore('0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3', 750, () => 0),
-        ];
+        // 真實地觸發 safeComputeRegime 的 try/catch + NaN guard 分支：
+        // 使用 jest.isolateModules + jest.doMock 把 computeRegimeVector 強制 throw，
+        // 同時保留其他導出函數（computeRangeGuards 等）正常運作。
+        //
+        // 為何不用「pathological 價格序列」：degenerate 輸入（例如全 0）會先命中
+        // featureExtractor 的 `normFactor <= 0` guard 而走 null-feature 捷徑，
+        // 根本觸發不到 safeComputeRegime，防禦路徑等於沒被測試到（code review I1）。
+        jest.isolateModules(() => {
+            jest.doMock('../../../src/services/strategy/MarketRegimeAnalyzer', () => {
+                const actual = jest.requireActual(
+                    '../../../src/services/strategy/MarketRegimeAnalyzer',
+                );
+                return {
+                    ...actual,
+                    computeRegimeVector: () => {
+                        throw new Error('forced regime failure (test)');
+                    },
+                };
+            });
 
-        expect(() => extractFeatures(stores)).not.toThrow();
+            // 重新 require featureExtractor 以套用 mock
+            const { extractFeatures: mockedExtract } = require(
+                '../../../src/backtest/v3lp/featureExtractor',
+            );
+            const { MC_WINDOW_HOURS: W } = require('../../../src/backtest/config');
 
-        const features = extractFeatures(stores);
-        // 有跑到後半段（cycleIdx >= 720）的 features，且 regime 必須為 null
-        const latecycle = features.filter(f => f.cycleIdx >= MC_WINDOW_HOURS);
-        expect(latecycle.length).toBeGreaterThan(0);
-        for (const f of latecycle) {
-            expect(f.regime).toBeNull();
-        }
+            const stores = [
+                makeOhlcvStore(
+                    '0xC211e1f853A898Bd1302385CCdE55f33a8C4B3f3',
+                    W + 3,
+                    oscillatingPrice,
+                ),
+            ];
+
+            expect(() => mockedExtract(stores)).not.toThrow();
+            const features = mockedExtract(stores);
+
+            const lateCycle = features.filter(
+                (f: { cycleIdx: number }) => f.cycleIdx >= W,
+            );
+            expect(lateCycle.length).toBeGreaterThan(0);
+            // regime 必須為 null（來自 safeComputeRegime catch block）；
+            // 但 mc / Pa / Pb / atrHalfWidth 不應因此也變 null（那些依賴其他邏輯）
+            for (const f of lateCycle) {
+                expect(f.regime).toBeNull();
+            }
+            // 至少驗證 mc 路徑仍照跑（證明我們只 null 化 regime，不是整筆全 null）
+            const hasMcPath = lateCycle.some(
+                (f: { mcScore: number | null }) => f.mcScore !== null,
+            );
+            expect(hasMcPath).toBe(true);
+        });
     });
 
     it('test_extractFeatures_uniqueByPoolIdAndTs', () => {

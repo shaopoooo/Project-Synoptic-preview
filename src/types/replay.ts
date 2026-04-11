@@ -37,8 +37,17 @@ export interface ReplayFeature {
     PbNorm: number | null;
     atrHalfWidth: number | null;
 
-    // 當下市場狀態
-    currentPriceNorm: number;
+    /**
+     * 當根 close 在 normFactor 空間（close / mean(window closes)）的座標。
+     *
+     * - 有足夠歷史窗口時：`close / normFactor`，跟 `PaNorm` / `PbNorm` 同空間
+     * - 歷史不足（cycleIdx < MC_WINDOW_HOURS）或 normFactor 退化時：`null`
+     *
+     * **為什麼可為 null**：避免跟「真實 close 剛好等於歷史均值 → 1.0」的
+     * 合法輸出混淆。下游 (replayDriver / outcomeCalculator) 看到 null 必須
+     * 跳過 PositionAdvisor 呼叫（歷史不足無法做有意義的決策）。
+     */
+    currentPriceNorm: number | null;
     candleVolume: number;
     poolTvlProxy: number;
     poolFeeTier: number;

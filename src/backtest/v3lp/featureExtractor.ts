@@ -33,7 +33,8 @@
  *   （已淘汰或未啟用）fallback 至 0.003。
  * - Gap G（normFactor）：取 MC 歷史窗口內 close 的算術平均作為 normFactor，
  *   `currentPriceNorm = close / normFactor`，`PaNorm/PbNorm/atrHalfWidth` 同比尺度化。
- *   cycleIdx < 720 時 currentPriceNorm 為 neutral fallback（以當根 close 本身除以自己 = 1）。
+ *   cycleIdx < 720 或 normFactor 退化時 `currentPriceNorm = null`（避免跟
+ *   合法的「close == 歷史均值 → 1.0」輸出混淆，code review I2 修正）。
  */
 
 import seedrandom from 'seedrandom';
@@ -129,9 +130,8 @@ function buildNullFeature(
         PaNorm: null,
         PbNorm: null,
         atrHalfWidth: null,
-        // 無歷史窗口可比；currentPriceNorm 以 1 作為 neutral fallback
-        // （代表「相對自身無 shift」，語意對 PositionAdvisor 無害）
-        currentPriceNorm: 1,
+        // 歷史不足 → null（非 1.0 fallback，避免與合法「close == 歷史均值」混淆）
+        currentPriceNorm: null,
         candleVolume: candle.volume,
         poolTvlProxy: POOL_TVL_PROXY_DEFAULT,
         poolFeeTier: poolConfig.fee,
@@ -225,10 +225,21 @@ export function extractFeatures(stores: OhlcvStore[]): ReplayFeature[] {
             let mcCvar95: number | null = null;
 
             if (Pa > 0 && Pb > Pa && candle.close > 0) {
-                // 以 pool config 的 fee_tier × TVL proxy 粗估 dailyFeesToken0
-                // （沿用 plan Decisions 的 fee income 公式；詳細校準留給 Batch 3 outcomeCalculator）
+                // dailyFeesToken0 計算：
+                //   candle.volume 是「小時」成交量（GeckoTerminal hour timeframe），
+                //   × 24 還原成日均量後再 × fee × share，交給 runMCSimulation
+                //   （其內部會 / 24 回到小時費收）。
+                //   code review C1 修正：原本漏 × 24，導致 MC mean/cvar95 系統性
+                //   低估 24 倍。修正後 mcScore / mcMean 與 prod 量級對齊。
+                //
+                // TODO(Gap D / I3，tasks.md POOL_TVL_PROXY follow-up)：
+                //   candle.volume 的實際單位是 quote-token（通常 USD），而
+                //   INITIAL_CAPITAL 的語意是 token0 單位。ratio
+                //   `INITIAL_CAPITAL / POOL_TVL_PROXY_DEFAULT` 當成 share of pool
+                //   成立的前提是兩者同單位（USD）。Task 19 跑過後由人工
+                //   tuning POOL_TVL_PROXY_DEFAULT 時一併釐清此單位對齊。
                 const dailyFeesToken0 =
-                    candle.volume * poolConfig.fee * (INITIAL_CAPITAL / POOL_TVL_PROXY_DEFAULT);
+                    candle.volume * 24 * poolConfig.fee * (INITIAL_CAPITAL / POOL_TVL_PROXY_DEFAULT);
 
                 const mcResult = runMCSimulation({
                     historicalReturns,
