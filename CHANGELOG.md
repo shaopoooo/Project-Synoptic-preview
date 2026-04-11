@@ -22,13 +22,28 @@ All notable changes to DexBot will be documented in this file.
 
 ### Infra
 - **Storage path 集中化（i-unify-storage Stage 2 / S0.5）** — 讓後續所有新 code 第一行就能 import 單一事實來源
-  - `src/config/storage.ts`：`STORAGE_ROOT`（env-driven, prod=`/app/storage`、dev fallback=`./storage`）+ `STORAGE_PATHS` 8 個領域常數（shadow / shadowAnalysis / backtestResults / ohlcv / diagnostics / debug / positions / bot） + `storageSubpath()` + `ensureStorageDir()`
+  - `src/config/storage.ts`：`STORAGE_ROOT`（env-driven, prod=`/app/storage`、dev fallback=`./storage`）+ `STORAGE_PATHS` 常數 + `storageSubpath()` + `ensureStorageDir()`
+  - 初版 8 個領域 entries（shadow / shadowAnalysis / backtestResults / ohlcv / diagnostics / debug / positions / bot）；**後續由 `i-position-tracking-alignment` Stage 3 重整為 10 個**（見下方）
   - 純 additive util module，不碰 Railway / Dockerfile / R2，獨立 merge 到 dev 解除 PR 3 / 4 / 5 hardcode 舊路徑的風險
-  - 8 個 TDD 測試覆蓋 env fallback、domain key 型別守護、中間層目錄建立、冪等性
+  - TDD 測試覆蓋 env fallback、domain key 型別守護、中間層目錄建立、冪等性
+- **Position tracking 4 層 × N 策略矩陣（`i-position-tracking-alignment`）** — 定 mental model 讓未來所有策略（LP / FundingRate / Paper Trading）的 tracking 需求有對號入座規則
+  - **NEW** `.claude/rules/position-tracking.md`：永久 artifact 定義 4 層（L0 Reality / L1 Advice / L2 Counterfactual / L3 History）× N 策略的矩陣，`paths` matcher 自動載入到 `src/services/strategy/**` / `src/services/position/**` / `src/services/shadow/**` / `src/bot/**` 的對話
+  - **MODIFY** `CLAUDE.md`：自動載入 rule 表格新增 `position-tracking.md` 行（`services.md` 之後）
+  - **REFACTOR** `STORAGE_PATHS`：刪除 `shadow` / `shadowAnalysis`（Eng review 1A 確認零消費者），新增 4 個 LP 矩陣 entries（`shadowLp` / `shadowLpAnalysis` / `history` / `historyLp`）；每個 entry 附 inline JSDoc
+  - **REFACTOR** `src/services/strategy/positionAdvisor.ts` 移至 `src/services/strategy/lp/`（rebase 已併入 PR 3）
+  - `tests/config/storage.test.ts`：10 個 entries + runtime `'shadow' in STORAGE_PATHS === false` deletion pin
+
+### Changed
+- **`.claude/plans/p0-position-advice-system.md` + `.claude/plans/p0-backtest-verification.md`**：頂部加 Rule override notice（2026-04-12），指向 `position-tracking.md` rule doc 為執行依據；plan 內文保留為歷史 snapshot，不改動（嚴守 Plan 獨立性原則，Eng review 2C 授權）
 
 ### Docs
 - **Storage path paper reservation（i-unify-storage Stage 1 / S0）** — `p0-position-advice-system.md` + `p0-backtest-verification.md` 路徑字串對齊 `storage/...`，禁止 hardcode 字串路徑
 - **Railway volume mount PRE-FLIGHT** — 實測結果回填 `i-unify-storage.md` Risks R1：允許直接 rename mount path（不需 delete+recreate），Stage 4 migration 採 state machine 4a 分支，流程收斂
+- **`.claude/tasks.md`** 雜項區新增 4 個 P3 follow-ups（`i-position-tracking-alignment` 衍生）：
+  - `appState.positions` dead field 處理決策（D2）
+  - L3 archive writer 實作 + minimum schema（D5 Q6e）
+  - Advice tracking feedback loop 儲存路徑（D6 Q7c）
+  - Close reason counter 儲存路徑（D6 Q7c）
 
 ## [0.2.0] - 2026-04-11
 

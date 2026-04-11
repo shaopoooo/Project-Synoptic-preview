@@ -4,13 +4,16 @@
  * 單一事實來源：所有 persist 目錄都從 `STORAGE_PATHS` 取，**禁止**在其他檔案
  * hardcode `'data/...'` 或 `'/app/...'` 字串路徑。
  *
- * 領域子目錄採 P2 flat 結構，無 `data/` 或 `logs/` wrapper：
- *   `<STORAGE_ROOT>/{shadow,backtest-results,ohlcv,diagnostics,debug,positions,bot}`
+ * 領域子目錄採 P2 flat 結構 + 策略矩陣子目錄：
+ *   `<STORAGE_ROOT>/{backtest-results,ohlcv,diagnostics,debug,positions,bot}` — 共享領域
+ *   `<STORAGE_ROOT>/shadow/lp/` — L2 LP counterfactual logs（STORAGE_PATHS.shadowLp / shadowLpAnalysis）
+ *   `<STORAGE_ROOT>/history/lp/` — L3 LP archive（STORAGE_PATHS.history / historyLp；writer 尚未實作，P3 follow-up）
  *
  * 本地 dev（未設 env）：`./storage/...`
  * Prod（Railway）：`STORAGE_ROOT=/app/storage` → `/app/storage/...`
  *
- * 詳見 `.claude/plans/i-unify-storage.md` D3 / D10 決策。
+ * 詳見 `.claude/plans/i-unify-storage.md` D3 / D10 決策，以及
+ * `.claude/plans/i-position-tracking-alignment.md` Stage 3（LP 矩陣 entries）。
  */
 
 import * as fs from 'fs';
@@ -27,14 +30,26 @@ export const STORAGE_ROOT: string = process.env.STORAGE_ROOT ?? './storage';
  * - 若未來需要集中管理檔名常數，可新增 `STORAGE_FILES`，現階段不必要。
  */
 export const STORAGE_PATHS = {
-    shadow: `${STORAGE_ROOT}/shadow`,
-    shadowAnalysis: `${STORAGE_ROOT}/shadow/analysis`,
+    /** Offline backtest harness 輸出根目錄（grid search 結果 + summary）。 */
     backtestResults: `${STORAGE_ROOT}/backtest-results`,
+    /** GeckoTerminal 歷史 OHLCV 小時蠟燭快取（Bootstrap 抽樣母體）。 */
     ohlcv: `${STORAGE_ROOT}/ohlcv`,
+    /** diagnosticStore 的 jsonl append-only 紀錄（pool 診斷、錯誤、cycle 統計）。 */
     diagnostics: `${STORAGE_ROOT}/diagnostics`,
+    /** winston file transport 輸出（error.log / combined.log）。 */
     debug: `${STORAGE_ROOT}/debug`,
+    /** 預留：LP position state cache（目前未使用，P3 follow-up 決定是否啟用）。 */
     positions: `${STORAGE_ROOT}/positions`,
+    /** 預留：Telegram bot 持久化狀態（目前未使用）。 */
     bot: `${STORAGE_ROOT}/bot`,
+    /** L2 LP counterfactual logs — 月歸檔 jsonl (`<YYYY-MM>.jsonl`)，由 PR 5a shadow observer 寫入。 */
+    shadowLp: `${STORAGE_ROOT}/shadow/lp`,
+    /** L2 LP weekly counterfactual report 輸出 (`<weekIso>.md`)，由 PR 5b weeklyAnalyzer 寫入。 */
+    shadowLpAnalysis: `${STORAGE_ROOT}/shadow/lp/analysis`,
+    /** L3 archive base path — 未來其他策略歸檔可掛在此 (e.g. `history/perps/`)。 */
+    history: `${STORAGE_ROOT}/history`,
+    /** L3 LP closed position archive — writer 尚未實作，P3 follow-up。 */
+    historyLp: `${STORAGE_ROOT}/history/lp`,
 } as const;
 
 /** 領域 key 型別，避免誤傳 `'../evil'` 等非法 domain（compile-time 守護）。 */
@@ -45,8 +60,8 @@ export type StorageDomain = keyof typeof STORAGE_PATHS;
  * 使用 `path.join` 處理斜線正規化，避免 `foo//bar` 或跨平台反斜線問題。
  *
  * @example
- *   storageSubpath('shadow', 'foo.jsonl')
- *   // → './storage/shadow/foo.jsonl'
+ *   storageSubpath('shadowLp', '2026-04.jsonl')
+ *   // → './storage/shadow/lp/2026-04.jsonl'
  *   storageSubpath('backtestResults', '2026-04-11', 'summary.md')
  *   // → './storage/backtest-results/2026-04-11/summary.md'
  */
@@ -58,8 +73,8 @@ export function storageSubpath(domain: StorageDomain, ...parts: string[]): strin
  * 領域目錄初始化（消費者 service 在 init 時各自呼叫）。
  *
  * - 冪等：多次呼叫不 throw。
- * - `recursive: true` 會自動建立中間層目錄（例如 `shadowAnalysis` 會連同
- *   父目錄 `shadow/` 一起建）。
+ * - `recursive: true` 會自動建立中間層目錄（例如 `shadowLpAnalysis` 會連同
+ *   父目錄 `shadow/` 與 `shadow/lp/` 一起建）。
  * - 失敗時 throw，讓呼叫端決定 fallback / log 策略（符合
  *   `.claude/rules/logging-errors.md`：不在 util 層 swallow 錯誤）。
  *

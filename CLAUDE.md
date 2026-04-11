@@ -31,6 +31,7 @@
 | `architecture.md` | 整體目錄結構、AppState 注入原則 |
 | `pipeline.md` | `src/runners/`、`src/services/` — Phase 0/1 分離 |
 | `services.md` | `src/services/` — Service 層約束 |
+| `position-tracking.md` | `src/services/strategy/**` — 4 層 × N 策略矩陣（position tracking mental model） |
 | `math.md` | `src/utils/math.ts` — Pure Function + BigInt |
 | `naming.md` | 全專案 — PascalCase / camelCase / UPPER_SNAKE |
 | `logging-errors.md` | 全專案 — `createServiceLogger`、`rpcRetry`、fallback |
