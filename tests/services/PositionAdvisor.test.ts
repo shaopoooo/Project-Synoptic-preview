@@ -2,7 +2,7 @@ import {
   recommendOpen,
   classifyExit,
   shouldClose,
-} from '../../src/services/strategy/positionAdvisor';
+} from '../../src/services/strategy/lp/positionAdvisor';
 import type {
   OpeningStrategy,
   RegimeVector,

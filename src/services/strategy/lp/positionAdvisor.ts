@@ -14,14 +14,14 @@
  *   - TypeScript strict、禁止 any
  */
 
-import type { OpeningStrategy, RegimeVector, PositionRecord, MCSimResult } from '../../types';
+import type { OpeningStrategy, RegimeVector, PositionRecord, MCSimResult } from '../../../types';
 import type {
   OpenAdvice,
   ExitAdvice,
   CloseAdvice,
   ExitDecision,
   CloseReason,
-} from '../../types/positionAdvice';
+} from '../../../types/positionAdvice';
 
 // ─── 閾值常數（經驗值，待 backtest 驗證） ───────────────────────────────────
 
