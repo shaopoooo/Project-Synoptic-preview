@@ -26,52 +26,62 @@ describe('src/config/storage', () => {
         jest.isolateModules(() => {
             const mod = require('../../src/config/storage');
             expect(mod.STORAGE_ROOT).toBe('./storage');
-            expect(mod.STORAGE_PATHS.shadow).toBe('./storage/shadow');
+            expect(mod.STORAGE_PATHS.shadowLp).toBe('./storage/shadow/lp');
+            expect(mod.STORAGE_PATHS.history).toBe('./storage/history');
         });
     });
 
-    test('STORAGE_ROOT=/custom/path 時 STORAGE_PATHS.shadow === "/custom/path/shadow"', () => {
+    test('STORAGE_ROOT=/custom/path 時 STORAGE_PATHS 各 entry 路徑正確', () => {
         process.env.STORAGE_ROOT = '/custom/path';
         jest.isolateModules(() => {
             const mod = require('../../src/config/storage');
             expect(mod.STORAGE_ROOT).toBe('/custom/path');
-            expect(mod.STORAGE_PATHS.shadow).toBe('/custom/path/shadow');
-            expect(mod.STORAGE_PATHS.shadowAnalysis).toBe('/custom/path/shadow/analysis');
             expect(mod.STORAGE_PATHS.backtestResults).toBe('/custom/path/backtest-results');
             expect(mod.STORAGE_PATHS.ohlcv).toBe('/custom/path/ohlcv');
             expect(mod.STORAGE_PATHS.diagnostics).toBe('/custom/path/diagnostics');
             expect(mod.STORAGE_PATHS.debug).toBe('/custom/path/debug');
             expect(mod.STORAGE_PATHS.positions).toBe('/custom/path/positions');
             expect(mod.STORAGE_PATHS.bot).toBe('/custom/path/bot');
+            expect(mod.STORAGE_PATHS.shadowLp).toBe('/custom/path/shadow/lp');
+            expect(mod.STORAGE_PATHS.shadowLpAnalysis).toBe('/custom/path/shadow/lp/analysis');
+            expect(mod.STORAGE_PATHS.history).toBe('/custom/path/history');
+            expect(mod.STORAGE_PATHS.historyLp).toBe('/custom/path/history/lp');
         });
     });
 
-    test('STORAGE_PATHS 共 8 個 entries（7 個領域 + shadowAnalysis 捷徑）', () => {
+    test('STORAGE_PATHS 共 10 個 entries（7 個領域 + 2 個 LP shadow + 1 個 LP history）', () => {
         jest.isolateModules(() => {
-            const { STORAGE_PATHS } = require('../../src/config/storage');
+            const mod = require('../../src/config/storage');
+            const { STORAGE_PATHS } = mod;
             const keys = Object.keys(STORAGE_PATHS);
             expect(keys).toEqual(
                 expect.arrayContaining([
-                    'shadow',
-                    'shadowAnalysis',
                     'backtestResults',
                     'ohlcv',
                     'diagnostics',
                     'debug',
                     'positions',
                     'bot',
+                    'shadowLp',
+                    'shadowLpAnalysis',
+                    'history',
+                    'historyLp',
                 ]),
             );
-            expect(keys.length).toBe(8);
+            expect(keys.length).toBe(10);
+            // 已刪除 legacy entries — runtime assertion（compile-time check via
+            // keyof typeof STORAGE_PATHS 由上述 10-entry exact list 覆蓋）
+            expect('shadow' in STORAGE_PATHS).toBe(false);
+            expect('shadowAnalysis' in STORAGE_PATHS).toBe(false);
         });
     });
 
-    test('storageSubpath("shadow", "foo.jsonl") 產生正確 path', () => {
+    test('storageSubpath("shadowLp", "2026-04.jsonl") 產生正確 path', () => {
         process.env.STORAGE_ROOT = '/tmp/storage-test';
         jest.isolateModules(() => {
             const { storageSubpath } = require('../../src/config/storage');
-            expect(storageSubpath('shadow', 'foo.jsonl')).toBe(
-                path.join('/tmp/storage-test', 'shadow', 'foo.jsonl'),
+            expect(storageSubpath('shadowLp', '2026-04.jsonl')).toBe(
+                path.join('/tmp/storage-test', 'shadow', 'lp', '2026-04.jsonl'),
             );
         });
     });
@@ -100,25 +110,36 @@ describe('src/config/storage', () => {
             }
         });
 
-        test('冪等 — 連續呼叫兩次不 throw', () => {
+        test('冪等 — 連續呼叫兩次不 throw（shadowLp）', () => {
             jest.isolateModules(() => {
                 const { ensureStorageDir } = require('../../src/config/storage');
-                expect(() => ensureStorageDir('shadow')).not.toThrow();
-                expect(() => ensureStorageDir('shadow')).not.toThrow();
+                expect(() => ensureStorageDir('shadowLp')).not.toThrow();
+                expect(() => ensureStorageDir('shadowLp')).not.toThrow();
                 expect(fs.existsSync(path.join(tmpRoot, 'shadow'))).toBe(true);
+                expect(fs.existsSync(path.join(tmpRoot, 'shadow', 'lp'))).toBe(true);
             });
         });
 
-        test('建立中間層目錄（shadowAnalysis 會連同 shadow/ 一起建）', () => {
+        test('建立中間層目錄（shadowLpAnalysis 會連同 shadow/ 與 shadow/lp/ 一起建）', () => {
             jest.isolateModules(() => {
                 const { ensureStorageDir } = require('../../src/config/storage');
-                ensureStorageDir('shadowAnalysis');
+                ensureStorageDir('shadowLpAnalysis');
                 expect(fs.existsSync(path.join(tmpRoot, 'shadow'))).toBe(true);
-                expect(fs.existsSync(path.join(tmpRoot, 'shadow', 'analysis'))).toBe(true);
+                expect(fs.existsSync(path.join(tmpRoot, 'shadow', 'lp'))).toBe(true);
+                expect(fs.existsSync(path.join(tmpRoot, 'shadow', 'lp', 'analysis'))).toBe(true);
             });
         });
 
-        test('所有 8 個領域皆可建立', () => {
+        test('建立 historyLp 會連同 history/ 一起建', () => {
+            jest.isolateModules(() => {
+                const { ensureStorageDir } = require('../../src/config/storage');
+                ensureStorageDir('historyLp');
+                expect(fs.existsSync(path.join(tmpRoot, 'history'))).toBe(true);
+                expect(fs.existsSync(path.join(tmpRoot, 'history', 'lp'))).toBe(true);
+            });
+        });
+
+        test('所有 10 個領域皆可建立', () => {
             jest.isolateModules(() => {
                 const { ensureStorageDir, STORAGE_PATHS } = require('../../src/config/storage');
                 for (const domain of Object.keys(STORAGE_PATHS)) {
