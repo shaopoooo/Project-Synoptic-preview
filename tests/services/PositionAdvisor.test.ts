@@ -272,4 +272,23 @@ describe('PositionAdvisor.shouldClose', () => {
     const miss = shouldClose(position, baseMc(), baseRegime(), null, null);
     expect(miss).toBeNull();
   });
+
+  it('test_shouldClose_ilAndOpportunityLost_priorityIlWins', () => {
+    // IL 與 opportunity_lost 同時觸發 → il_threshold 優先（優先序：trend > il > opportunity_lost > timeout）
+    const position = makePosition();
+    const mc = makeMCResult({ score: 0.2 });
+    const result = shouldClose(position, mc, baseRegime(), null, 0.06);
+    expect(result).not.toBeNull();
+    expect(result!.reason).toBe('il_threshold');
+  });
+
+  it('test_shouldClose_opportunityLostAndTimeout_priorityOpportunityLostWins', () => {
+    // opportunity_lost 與 timeout 同時觸發 → opportunity_lost 優先
+    const position = makePosition();
+    const mc = makeMCResult({ score: 0.2 });
+    const fiveHoursAgo = Date.now() - 5 * 60 * 60 * 1000;
+    const result = shouldClose(position, mc, baseRegime(), fiveHoursAgo, 0.01);
+    expect(result).not.toBeNull();
+    expect(result!.reason).toBe('opportunity_lost');
+  });
 });
