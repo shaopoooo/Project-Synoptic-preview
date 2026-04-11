@@ -2,6 +2,14 @@
 
 > 本檔案由 gstack 在 Phase 1 結尾產出，作為交接給 superpowers (Phase 2) 的正式契約。
 > superpowers 執行階段**只讀不寫**；若需調整，必須退回 Phase 1 由 gstack 更新。
+>
+> **📌 Path paper reservation (i-unify-storage Stage 1 / 2026-04-11)**：
+> 本 plan 的所有 persist 路徑已對齊 `i-unify-storage.md` 的 P2 flat 結構。未來實作時：
+> - `data/shadow/...` → `storage/shadow/...`（由 `STORAGE_PATHS.shadow` 提供）
+> - `data/positions-cache/...`（若本 plan 未來需要）→ `storage/positions/...`
+> - 實作時一律 `import { STORAGE_PATHS } from '@/config/storage'`，**禁止** hardcode 字串路徑
+> - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 3 起即可 import
+> - Rejected 段落中保留的 `data/...` legacy 字串屬**歷史否決紀錄**，不需改動
 
 ## Context（為何要做）
 

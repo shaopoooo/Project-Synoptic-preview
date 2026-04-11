@@ -2,6 +2,16 @@
 
 > 本檔案由 gstack 在 Phase 1 結尾產出，作為交接給 superpowers (Phase 2) 的正式契約。
 > superpowers 執行階段**只讀不寫**；若需調整，必須退回 Phase 1 由 gstack 更新。
+>
+> **📌 Path paper reservation (i-unify-storage Stage 1 / 2026-04-11)**：
+> 本 plan 的所有 persist 路徑已對齊 `i-unify-storage.md` 的 P2 flat 結構：
+> - `storage/backtest-results/<date>/...`（由 `STORAGE_PATHS.backtestResults` 提供）
+> - `storage/shadow/<YYYY-MM>.jsonl`（由 `STORAGE_PATHS.shadow` 提供）
+> - `storage/shadow/analysis/<weekIso>.md`（由 `STORAGE_PATHS.shadowAnalysis` 提供）
+> - 實作時一律 `import { STORAGE_PATHS } from '@/config/storage'`，**禁止** hardcode 字串路徑
+> - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 4 起即可 import
+>
+> **⚠ `ANALYSIS_FLATTEN_RULES` 將被廢除**：本 plan 下文提到的 `analysis/backtest-<date>-summary.md` / `analysis/shadow-<weekIso>.md` 扁平索引層會被 `i-unify-storage` Stage 3 的 D6 決策**完全廢除**。未來 R2 裡只有原生 `storage/...` 樹，沒有 top-level `analysis/` prefix。本 plan 保留該段落作為歷史設計 context，但執行階段**不要**實作 flatten 規則。
 
 ## Context（為何要做）
 
@@ -61,7 +71,7 @@
 
 10. **Pass 1 — Feature Extraction**（跑一次）
     - 對每個池子的每根歷史 candle，跑 mcEngine + regime engine + 範圍計算
-    - 輸出 `data/backtest-results/<date>/features.jsonl` 作為快取
+    - 輸出 `storage/backtest-results/<date>/features.jsonl` 作為快取
     - 使用固定 seed = cycleIdx 確保可重現
 11. **Pass 2 — Decision Sweep**（每個閾值組合跑一次）
     - 從 features cache 讀取，純記憶體運算
@@ -130,7 +140,7 @@
     - 共用的核心決策邏輯由 PositionAdvisor 純函數提供（single source of truth）
 23. **每 cycle all-candidate snapshot**
     - 主 cycle 結束時，對每個池子組裝一筆 ShadowSnapshot
-    - 寫入 `data/shadow/<YYYY-MM>.jsonl`（月歸檔）
+    - 寫入 `storage/shadow/<YYYY-MM>.jsonl`（月歸檔）
 24. **ShadowSnapshot 含完整 debug 欄位**
     - `currentThresholds`（記錄當下生產用的閾值版本）
     - `hysteresisCounters`（記錄當下 hysteresis 累積狀態）
@@ -188,13 +198,15 @@
 
 34. **完全排除 backtest-results 與 shadow log**
     ```gitignore
-    data/backtest-results/
-    data/shadow/
+    storage/backtest-results/
+    storage/shadow/
+    # 整個 storage/ 目錄 gitignore 見 i-unify-storage Stage 3 task 35（.env.sample 同步）
     ```
-35. **R2 backup 增加 analysis/ 雙路徑 mirror**（已寫入 `.claude/plans/i-r2-backup.md` Decision #15）
-    - `data/backtest-results/<date>/summary.md` → `analysis/backtest-<date>-summary.md`
-    - `data/shadow/analysis/<weekIso>.md` → `analysis/shadow-<weekIso>.md`
-    - 攤平命名讓 R2 console list 即可看到完整時間軸
+35. ~~**R2 backup 增加 analysis/ 雙路徑 mirror**（已寫入 `.claude/plans/i-r2-backup.md` Decision #15）~~
+    - ⚠ **已廢除**：本規則由 `i-unify-storage.md` Decision D6 正式廢除。R2 結構收斂為單 prefix `storage/`，**不再**產生 top-level `analysis/` flatten 層。下列歷史映射僅供設計 context 參考：
+    - ~~`data/backtest-results/<date>/summary.md` → `analysis/backtest-<date>-summary.md`~~
+    - ~~`data/shadow/analysis/<weekIso>.md` → `analysis/shadow-<weekIso>.md`~~
+    - 新設計：所有 analysis 產出直接在原生位置 `storage/shadow/analysis/<weekIso>.md` 等，R2 mirror 維持原樹狀結構
 
 ### PR 切分
 
@@ -738,7 +750,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 ### Group 3: Shadow 層
 
 #### `tests/backtest/shadow/shadowLogger.test.ts` — 4 cases
-- [ ] RED: snapshot 寫入 `data/shadow/<YYYY-MM>.jsonl`（月歸檔）
+- [ ] RED: snapshot 寫入 `storage/shadow/<YYYY-MM>.jsonl`（月歸檔，透過 `STORAGE_PATHS.shadow`）
 - [ ] RED: snapshot 含 `currentThresholds` + `hysteresisCounters` 完整 debug 欄位
 - [ ] RED: 寫檔失敗 → log warning + push appState.cycleWarnings，不 throw
 - [ ] RED: schemaVersion = 1 永遠 inline 在 snapshot
@@ -753,7 +765,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 #### `tests/backtest/shadow/framework/weeklyAnalyzer.test.ts` — 4 cases
 - [ ] RED: 讀過去 7 天的 shadow log（可能跨月歸檔）
 - [ ] RED: 呼叫 v3lp shadowDriver 跑 counterfactual
-- [ ] RED: 組裝 WeeklyAnalysis 物件並寫入 `data/shadow/analysis/<weekIso>.md`
+- [ ] RED: 組裝 WeeklyAnalysis 物件並寫入 `storage/shadow/analysis/<weekIso>.md`（透過 `STORAGE_PATHS.shadowAnalysis`）
 - [ ] RED: 呼叫 alertService.sendShadowWeeklyReport 推送 Telegram
 
 #### `tests/backtest/shadow/framework/manualTuneTrigger.test.ts` — 6 cases
@@ -796,7 +808,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 6. **RED**: 寫 `tests/backtest/v3lp/featureExtractor.test.ts` 5 cases
 7. **GREEN**: 實作 `src/backtest/v3lp/featureExtractor.ts`
    - 載入 OHLCV、對齊時間軸、逐 hour 跑 mcEngine + regime engine（固定 seed = cycleIdx）
-   - 輸出 `data/backtest-results/<date>/features.jsonl`
+   - 輸出 `storage/backtest-results/<date>/features.jsonl`（透過 `STORAGE_PATHS.backtestResults`）
    - mcEngine 失敗 → 寫 null + log warning，不中斷
 
 #### Group C: V3 LP outcome calculator（TDD）
@@ -836,7 +848,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
     - 載入 OHLCV → feature extraction → temporal split → grid search × 3 sensitivity runs → 寫 summary.md
     - 含「pass/fail 絕對底線」邏輯：train + val + test 三段都必須通過
 18. **NEW**: 修改 `package.json`，新增 `backtest:verify-thresholds` script
-19. **VERIFY**: 在本地執行 `npm run backtest:verify-thresholds`，產出 `data/backtest-results/<date>/summary.md`
+19. **VERIFY**: 在本地執行 `npm run backtest:verify-thresholds`，產出 `storage/backtest-results/<date>/summary.md`
 20. **REVIEW**: 人工檢視 summary.md，記錄 chosen thresholds，準備寫入 PR 5 的 PositionAdvisor config
 
 ### Stage 2 — Shadow Infrastructure（與 P0 plan Stage 3-5 同 PR，即 PR 5）
@@ -865,7 +877,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 27. **GREEN**: 實作 `src/services/shadow/framework/weeklyAnalyzer.ts` `runWeeklyAnalysis()`
     - 讀過去 7 天的 shadow log
     - 呼叫 v3lp shadowDriver
-    - 寫入 `data/shadow/analysis/<weekIso>.md`
+    - 寫入 `storage/shadow/analysis/<weekIso>.md`
 28. **RED**: 寫 `tests/backtest/shadow/framework/manualTuneTrigger.test.ts` 6 cases
 29. **GREEN**: 實作 `src/services/shadow/framework/manualTuneTrigger.ts` `checkManualTuneTrigger()`
     - A2 + B1 + C1 嚴格邏輯
@@ -887,7 +899,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 
 #### Group L: Smoke Test（Stage 2 進入生產）
 
-36. **VERIFY**: 部署到 Railway，觀察主 cycle 是否每 10 分鐘寫一筆 ShadowSnapshot 到 `data/shadow/<YYYY-MM>.jsonl`
+36. **VERIFY**: 部署到 Railway，觀察主 cycle 是否每 10 分鐘寫一筆 ShadowSnapshot 到 `storage/shadow/<YYYY-MM>.jsonl`
 37. **VERIFY**: 第一個週日 23:00 自動觸發 weeklyAnalyzer，確認 Telegram 收到週報
 38. **VERIFY**: 模擬紅標情境（例如手動修改 currentThresholds 讓 best alternative 偏離很大），確認紅標在 Telegram 正確顯示
 39. **VERIFY**: R2 backup 的 analysis 雙路徑生效（檢查 R2 console 的 `analysis/shadow-<weekIso>.md`）

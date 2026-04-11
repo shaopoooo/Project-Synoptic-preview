@@ -9,6 +9,199 @@
 
 ---
 
+## 🎯 當前執行路線圖 (Current Execution Roadmap)
+
+> 本段**跨 priority**統合所有**進行中 / 待啟動**的 plan 的 stage 執行順序。新 plan 啟動 / 既有 plan 完成時必須同步更新本段。細節決策請查對應 plan 檔案。
+>
+> **涉及的 plans：**
+> - `.claude/plans/p0-position-advice-system.md`（主，PR 3 + PR 5a）
+> - `.claude/plans/p0-backtest-verification.md`（副，PR 4 + PR 5b）
+> - `.claude/plans/i-unify-storage.md`（infra，跨越 S0 / S0.5 / PR 6 / S7）
+
+### 📦 PR / Stage 切分對照表
+
+| 節點 | 內容 | 對應 Plan / Stage | 狀態 | 依賴 |
+|---|---|---|---|---|
+| PR 1 | Cloudflare R2 Backup | ~~`i-r2-backup.md`~~（已刪） | ✅ v0.2.0 已 ship | — |
+| PR 2 | Sharpe scoring 重構 | `p0-position-advice-system.md` Stage 1 | ✅ GitHub PR #20 已合併 | — |
+| **S0** | **Paper reservation（純 markdown commit + Railway PRE-FLIGHT 實測，不開 branch）** | **`i-unify-storage.md` Stage 1** | **📋 下一步** | 無 |
+| **S0.5** | **Config module foundation（`src/config/storage.ts` + `ensureStorageDir()` + test，獨立 merge 到 dev）** | **`i-unify-storage.md` Stage 2** | **📋 待啟動** | **S0** |
+| PR 3 | PositionAdvisor 純函數（第一行就 import `STORAGE_PATHS`） | `p0-position-advice-system.md` Stage 2 | 📋 待啟動 | S0.5 |
+| PR 4 | Offline backtest harness（直接用 `STORAGE_PATHS.backtestResults`） | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | PR 3 |
+| **PR 5a** | **P0 核心：state persistence + cycle integration + telegram + RebalanceService 清理 + ShadowSnapshot 寫入（fire-and-forget，無 analyzer）**。shadow observer 直接用 `STORAGE_PATHS.shadow` | `p0-position-advice-system.md` Stage 3-5 | 📋 待啟動 | PR 3、PR 4 |
+| **PR 5b** | **Shadow 觀察層：weeklyAnalyzer + counterfactual 計算 + Telegram 週報 + `checkManualTuneTrigger()`**（讀 PR 5a 寫出的 shadow log） | `p0-backtest-verification.md` Stage 2-3 | 📋 待啟動 | PR 5a（或 PR 5a code 已穩定足以寫 PR 5b） |
+| **PR 6** | **Storage refactor 剩餘部分：既有服務 path 替換 + Dockerfile/entrypoint + R2 收斂 + 測試重寫 + docs**（原 config module group 已併入 S0.5） | **`i-unify-storage.md` Stage 3** | **📋 待啟動** | **PR 5a + PR 5b 的較晚者（D2 硬約束：同 release window）** |
+| **S7** | **Migration day + 48h 觀察（non-code）** | **`i-unify-storage.md` Stage 4** | **📋 待啟動** | **PR 6 merged + deployed** |
+
+### 🎯 建議執行順序（Stage 為單位）
+
+```
+PR 1 (R2 Backup)  ✅ v0.2.0 shipped 2026-04-11
+PR 2 (Sharpe)     ✅ GitHub PR #20 merged 2026-04-11
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ S0 · i-unify-storage Stage 1（paper reservation）│
+│                                                 │
+│ - 改 p0-position-advice-system.md 路徑字串       │
+│   (data/shadow/ → storage/shadow/ 等)           │
+│ - 改 p0-backtest-verification.md 路徑字串        │
+│ - Railway staging 手動實測 volume rename 行為    │
+│   結果回寫本 plan R1                            │
+│ - 單一 commit 到 dev branch（不開 feature 分支） │
+│                                                 │
+│ ⏱ 時機：立即，在任何 P0 code 開寫前               │
+│ 目的：讓 P0 code 從第一行起就用新路徑字串         │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ S0.5 · i-unify-storage Stage 2（config module）│
+│                                                 │
+│ - RED: tests/config/storage.test.ts              │
+│ - GREEN: 新建 src/config/storage.ts              │
+│   export STORAGE_ROOT / STORAGE_PATHS            │
+│   / storageSubpath() / ensureStorageDir()        │
+│ - REFACTOR: TS strict 通過、無 any               │
+│ - Single commit 或 micro-PR 直接 merge 到 dev    │
+│                                                 │
+│ ⏱ 時機：S0 merge 後立即，不等 P0                  │
+│ 目的：讓 PR 3/4/5 的 P0 新 code 第一行就能      │
+│       import STORAGE_PATHS，消除 Stage 3 對      │
+│       新檔 write-then-rewrite 的浪費             │
+│                                                 │
+│ ⚠ 本節點獨立於 D2 硬約束（純 additive util      │
+│   module，不碰 Railway / Dockerfile / R2）      │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ PR 3 · P0 Stage 2（PositionAdvisor 純函數）       │
+│                                                 │
+│ - 19 RED tests → 純函數實作 → REFACTOR           │
+│ - 無檔案寫入，不觸碰 storage 結構                │
+│ - feature/p0-position-advisor branch            │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ PR 4 · backtest Stage 1（Offline replay harness）│
+│                                                 │
+│ - 跑 5 個月歷史 × grid search                    │
+│ - 直接使用 STORAGE_PATHS.backtestResults         │
+│   （import 自 S0.5 已建立的 config module）      │
+│ - 產出 chosen thresholds 供 PR 5a 使用           │
+│ - 通過 A>0 / D>0 / C≥50% 絕對底線才允許進 PR 5a  │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ PR 5a · P0 Stage 3-5（核心 product value）       │
+│                                                 │
+│ - P0 Stage 3: State persistence                 │
+│   (positionStateTracker 整合進 stateManager)     │
+│ - P0 Stage 4: Cycle integration                 │
+│   + 2 個新 cron jobs（position monitor /        │
+│     new position scan）                          │
+│   + mcEngine 結尾寫 ShadowSnapshot 到            │
+│     STORAGE_PATHS.shadow（fire-and-forget）      │
+│ - P0 Stage 5: Telegram advice alerts + 刪       │
+│   RebalanceService                               │
+│                                                 │
+│ ⚠ 不含 weeklyAnalyzer / manualTuneTrigger        │
+│   (留給 PR 5b 讀 shadow log 做分析)              │
+│ ⚠ ship 後使用者**直接看到**新功能                │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ PR 5b · backtest Stage 2-3（shadow 觀察層）      │
+│                                                 │
+│ - backtest Stage 2:                             │
+│   + weeklyAnalyzer 週日 23:00 cron              │
+│   + counterfactual 計算 + v3lp shadowDriver     │
+│   + shadowReportFormatter                       │
+│   + alertService.sendShadowWeeklyReport         │
+│ - backtest Stage 3:                             │
+│   + checkManualTuneTrigger() 連續 2 週紅標邏輯   │
+│   + alertService.sendManualTuneAlert            │
+│                                                 │
+│ ⚠ 讀 PR 5a 寫出的 shadow log，**單向依賴**       │
+│ ⚠ 無 user-visible UI 變化，純 observability      │
+│ ⚠ manualTuneTrigger 需 ≥ 2 週 shadow log 才     │
+│   可能 fire，不急                                │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ PR 6 · i-unify-storage Stage 3（storage refactor）│
+│                                                 │
+│ (原 Config group 已併入 S0.5 / Stage 2 的       │
+│  Group 2.A，Stage 3 從 Group 3.A 開始)           │
+│ Group 3.A: 既有服務 path refactor（scope 縮減）  │
+│            只改 logger / diagnosticStore /      │
+│            OHLCV（shadow observer + backtest    │
+│            writer 已在 PR 4/5 階段直接用新常數） │
+│            每個 service init 加 ensureStorageDir│
+│ Group 3.B: Dockerfile app user UID 1001         │
+│            + bin/docker-entrypoint.sh (chown)   │
+│ Group 3.C: 刪光 27 個 backup 測試 + 新測試 suite │
+│            + dr-dryrun.test.ts (DR runbook 驗證)│
+│ Group 3.D: R2 結構收斂                          │
+│            MIRROR_PATHS=['storage/']            │
+│            tar root=storage/                    │
+│            r2Restore clean break                │
+│ Group 3.E: docs/ops/dr-runbook.md               │
+│            + README / CHANGELOG / .env.sample   │
+│                                                 │
+│ ⚠ D2 硬約束：必須與 PR 5a + PR 5b 的較晚者在     │
+│    同 release window (同天或緊鄰 1-2 天)         │
+└─────────────────────────────────────────────────┘
+   │
+   ▼
+Phase 3：/cso → /ship → 手動 gh pr create × 3
+        → self-review → merge PR 5a → merge PR 5b
+        → merge PR 6 → (想部署時) 手動 merge dev → main
+   │
+   ▼
+┌─────────────────────────────────────────────────┐
+│ S7 · i-unify-storage Stage 4（migration day）    │
+│                                                 │
+│ 1. railway service pause                        │
+│ 2. ssh: tar czf /tmp/pre-migration.tgz          │
+│    /app/data /app/logs                          │
+│ 3. railway volume download insurance tarball    │
+│ 4. Railway dashboard 切 volume mount（按 S0 的   │
+│    PRE-FLIGHT 結果選 rename 或 recreate 路徑）   │
+│ 5. Deploy Stage 3 merge commit                  │
+│ 6. Entrypoint 自動 chown（不 mkdir）             │
+│ 7. Consumer services ensureStorageDir on init   │
+│ 8. Smoke test 13 項                             │
+│ 9. railway service resume                       │
+│ 10. 48h 觀察 daily mirror + weekly archive       │
+│ 11. T+7d 刪 insurance tarball                    │
+│ 12. T+30d 清 R2 legacy data/+logs/ prefix        │
+└─────────────────────────────────────────────────┘
+```
+
+### 關鍵依賴規則
+
+- **S0 必須先於 S0.5**（S0.5 的 config module 要 import 正確的領域名稱，而領域名稱在 S0 的 paper reservation 就已敲定）
+- **S0.5 必須先於 PR 3**（否則 P0 code 會 hardcode 舊路徑字串，Stage 3 Group 3.A 就無法縮小 scope）
+- **PR 3 必須先於 PR 4**（backtest 依賴 advisor 純函數）
+- **PR 4 必須先於 PR 5a**（PR 5a 需要 PR 4 產出的 chosen thresholds 寫入 config）
+- **PR 5a 必須先於 PR 5b**（PR 5b 的 weeklyAnalyzer 讀 PR 5a 寫出的 shadow log；code 層面可提前寫 PR 5b，但 merge 順序需要 PR 5a 先）
+- **PR 6 與 PR 5a/5b 較晚者同 release window**（D2 硬約束；若 PR 5b 與 PR 6 相隔 > 1 週，γ 假設失效，需回頭改寫 migration script）
+- **S7 在 PR 6 merge + deploy 後**才執行（純 ops，非 code）
+
+**跨 plan 並行策略 = P2（sequential plans）**：同一 plan 內 Group 可並行；不跨 plan 並行。所以實際上是 S0 → S0.5 → PR 3 → PR 4 → PR 5a → PR 5b → PR 6 → S7 嚴格順序，同一 PR 內才考慮 Group 並行。
+
+### 下次回來最自然的起點 = S0（i-unify-storage Stage 1, paper reservation）
+
+理由：純 markdown 改動 + Railway staging 一次性手動測試，低成本就能完成。S0 merge 後立刻接 S0.5（config module + test），再啟動 PR 3。這兩個前置節點成本很低但**徹底解除**後續所有 P0 code 會 hardcode 舊路徑的風險。
+
+---
+
 ## ✅ 已完成
 
 - **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
@@ -24,12 +217,24 @@
 ## 🧹 雜項（無需開 plan 檔案）
 
 - [ ] `runOnePath` 11 個 positional args 改成單一 `RunOnePathParams` object（code review S1, P0 Stage 1 follow-up）
+- [ ] **Future: TG 指令取代 SSH 操作（backup / restore / backfill）** — 需獨立 Path B brainstorm，注意 `.claude/rules/telegram.md`（bot 只能 format/send，需先設計 ops service layer）。來源：i-unify-storage brainstorm Decision D13
 
 ---
 
 ## 🛠️ Infrastructure
 
-- _（目前無待辦 infra，R2 Backup 已於 v0.2.0 ship）_
+> **Plan：** `.claude/plans/i-unify-storage.md`（Path B brainstorming + plan-eng-review 已通過，status: CLEAR）
+
+### 📦 i-unify-storage Stage 總覽
+
+| Stage | 內容 | 時機 | 依賴 |
+|---|---|---|---|
+| **Stage 1** | Paper reservation：更新 p0 plan 路徑字串 + Railway staging PRE-FLIGHT 實測 | **立即**（純 markdown/ops commit 到 dev，不開 branch） | 無 |
+| **Stage 2** | Config module foundation：新建 `src/config/storage.ts` + `ensureStorageDir()` + test | **Stage 1 之後立即**（獨立 merge 到 dev，**不受** D2 硬約束） | Stage 1 |
+| **Stage 3** | 既有服務路徑 refactor + Dockerfile/entrypoint + R2 結構收斂 + 測試重寫（**原 Config group 已併入 Stage 2**） | **與 P0 final PR 同 release window**（D2 硬約束） | P0 Stages 2-5 + backtest Stages 1-3 已全部 ship |
+| **Stage 4** | Migration day：停機 → insurance tarball → volume 切換 → deploy → smoke test → 48h 觀察 → T+7d 刪 insurance → T+30d 清 R2 legacy prefix | Stage 3 merge 後 | Stage 3 |
+
+**核心決策：** P2 flat 結構、`/app/storage/{shadow,backtest-results,ohlcv,diagnostics,debug,positions,bot}`、單 R2 prefix、γ 凍結 migration、roll-forward rollback、Stage 2 post-review 排序優化（避免 write-then-rewrite 浪費）
 
 ---
 
@@ -37,53 +242,9 @@
 
 > **Plan（主）：** `.claude/plans/p0-position-advice-system.md`
 > **Plan（獨立 feature，依寬鬆隔離原則並存）：** `.claude/plans/p0-backtest-verification.md`
+>
+> 本 section 只保留 P0 專屬設計決策與 Stage 清單。**跨 plan 的 PR 切分、執行順序、依賴規則請見本檔案最上方的 🎯 當前執行路線圖**，不在此重複。
 
-### 📦 PR 切分對照表（執行時查閱）
-
-| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 | 依賴 |
-|---------|------|------------------|------|------|
-| PR 1 | Cloudflare R2 Backup | ~~`i-r2-backup.md`~~（已刪） | ✅ v0.2.0 已 ship | — |
-| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 | — |
-| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 | 無 |
-| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | **PR 3** |
-| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 待啟動 | **PR 3、PR 4** |
-
-### 🎯 建議執行順序
-
-```
-PR 1 (R2 Backup) ✅ v0.2.0 shipped 2026-04-11
-   │
-   ▼
-PR 3 (PositionAdvisor 純函數)
-   │
-   │ P0 主體的核心邏輯，純函數易 TDD
-   │ 完成後 backtest 才能呼叫這些函數
-   │
-   ▼
-PR 4 (Offline Backtest Harness)
-   │
-   │ 跑 5 個月歷史資料 × grid search
-   │ 產出 chosen thresholds（sharpeOpen / sharpeClose / atrMultiplier）
-   │ 通過 A>0 / D>0 / C≥50% 絕對底線才允許進 PR 5
-   │
-   ▼
-PR 5 (Cycle integration + Shadow infrastructure)
-   │
-   │ 把 chosen thresholds 寫入 config
-   │ 整合 advisor 到 3 個 cron + Telegram
-   │ 同時加入 shadow logger + 週分析 + Phase 5c trigger
-   │
-   ▼
-Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→main
-```
-
-**關鍵依賴規則：**
-- PR 3 必須在 PR 4 之前完成（backtest 依賴 advisor 純函數）
-- PR 4 必須在 PR 5 之前完成（PR 5 需要 PR 4 產出的 thresholds）
-- PR 1 與 PR 3 之間**可並行**，但本專案採 P2 策略（sequential plans），實務上依序執行
-
-**下次回來最自然的起點 = PR 3（PositionAdvisor 純函數）**
-理由：PR 1（R2 Backup）已於 v0.2.0 shipped（2026-04-11），Phase 2 → Phase 3 workflow 驗證通過。PR 3 是 P0 主體核心邏輯，純函數易 TDD，完成後 backtest 才能呼叫這些函數。
 
 **核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
 
@@ -132,9 +293,16 @@ Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→
 
 > **完整設計：** `.claude/plans/p0-backtest-verification.md`
 >
-> Stage 1 (offline replay) + Stage 2 (shadow mode) + Stage 3 (manual tune trigger)
-> 60 個 RED 測試、framework/v3lp 兩層架構、連續 2 週同方向紅標 trigger
-> 通過絕對底線（A>0, D>0, C≥50%）才允許 P0 ship
+> - **Stage 1** (offline replay) → PR 4
+>   - 跑 5 個月歷史 × grid search、產出 chosen thresholds
+>   - 寫到 `./storage/backtest-results/<date>/`（paper-reserved 新路徑，來自 S0）
+>   - 通過絕對底線（A>0, D>0, C≥50%）才允許進 PR 5a
+> - **Stage 2** (shadow mode) → PR 5b
+>   - weekly analyzer + counterfactual 計算 + Telegram 週報
+> - **Stage 3** (manual tune trigger) → PR 5b
+>   - 連續 2 週同方向紅標觸發 `checkManualTuneTrigger()`，**不**自動改 config
+>
+> 60 個 RED 測試、framework/v3lp 兩層架構
 
 ---
 
@@ -226,32 +394,6 @@ Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→
 
 - [ ] **DEX Adapter 模式**：統一介面 `IDexAdapter`，消除 if-else 分支
 - [ ] **Strategy 模組重新評估**：`PnlCalculator`、`RiskManager`、`rebalance` 與 MC 引擎職責重疊
-
-### 原 P1 遺留
-
-- [ ] 質押倉位自動偵測：掃描 ERC-721 Transfer 事件
-- [ ] 穿倉即時告警 (Out-of-Range Alert)：`ChainEventScanner` 監聽 Swap event（注意：與 P0 Position Advice 場景 B 重疊，需評估）
-- [ ] Aerodrome Gauge Emissions APR
-- [ ] Aerodrome 質押 unclaimed fees 顯示修正
-- [ ] PnlCalculator 參數注入（消除對 `appState.userConfig` 的直接依賴）
-- [ ] GeckoTerminal 請求節流
-- [ ] `_fetchAerodromeTVL` RPC 失敗降級
-
-### 原 P2 遺留
-
-- [ ] BBEngine 帶寬優化
-- [ ] rebalance.ts 帶寬防護
-- [ ] 毒性交易流偵測 (Toxic Order Flow)
-- [ ] EOQ gas 成本乘數
-- [ ] APR 邏輯重構
-- [ ] 池子檢查嚴謹化
-
-### 原 P4
-
-- rebalance.ts 數學升級
-- IL 精算與財務模型重構
-- 回測策略模擬 (BacktestEngine)
-- 拆分 `PositionRecord`、統一 RPC Provider、強化枚舉型別
 
 ---
 
