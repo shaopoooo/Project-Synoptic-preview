@@ -6,6 +6,7 @@
  */
 import { LRUCache } from 'lru-cache';
 import type { MarketSnapshot, PositionRecord, PoolStats } from '../types';
+import type { MirrorResult, ArchiveResult } from '../types/backup';
 import { config } from '../config';
 import { createServiceLogger } from '../utils/logger';
 
@@ -92,4 +93,65 @@ export async function checkMarketAlerts(
             }
         }
     }
+}
+
+// ── R2 Backup failure alert ──────────────────────────────────────────────────
+// 對應 .claude/plans/i-r2-backup.md Decisions #9（任一失敗即推）+ Stage 3 Task 15
+//
+// 規範（rules/telegram.md）：本模組只做格式化與發送，實際業務邏輯（diff / 上傳 / tar）
+// 仍在 src/services/backup/ 內。caller 傳入 sendAlert callback，保持與
+// checkMarketAlerts 同樣的 testable pattern。
+
+const BACKUP_ERROR_PREVIEW_LIMIT = 5;
+
+function formatTs(ts: number): string {
+    return new Date(ts).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', hour12: false });
+}
+
+function formatMirrorFailure(result: MirrorResult): string {
+    const lines: string[] = [];
+    lines.push('🚨 <b>R2 Backup Mirror Failed</b>');
+    lines.push(`時間：${formatTs(result.startedAt)}`);
+    lines.push(`耗時：${result.finishedAt - result.startedAt}ms`);
+    lines.push(`成功：${result.uploadedCount} 檔（${result.uploadedBytes} bytes）`);
+    lines.push(`失敗：${result.failedCount} 檔`);
+    if (result.errors.length > 0) {
+        lines.push('');
+        lines.push('失敗檔案清單：');
+        const shown = result.errors.slice(0, BACKUP_ERROR_PREVIEW_LIMIT);
+        for (const err of shown) {
+            lines.push(`• <code>${err.path}</code> — ${err.message}`);
+        }
+        const remaining = result.errors.length - shown.length;
+        if (remaining > 0) lines.push(`• …（尚有 ${remaining} 筆略）`);
+    }
+    return lines.join('\n');
+}
+
+function formatArchiveFailure(result: ArchiveResult): string {
+    const lines: string[] = [];
+    lines.push('🚨 <b>R2 Backup Archive Failed</b>');
+    lines.push(`時間：${formatTs(result.startedAt)}`);
+    lines.push(`耗時：${result.finishedAt - result.startedAt}ms`);
+    lines.push(`週次：${result.weekIso}`);
+    if (result.r2Key) lines.push(`目標：<code>${result.r2Key}</code>`);
+    lines.push(`錯誤：${result.error ?? '(unknown)'}`);
+    return lines.join('\n');
+}
+
+/**
+ * 格式化 backup failure 並透過 sendAlert 推送。
+ *
+ * caller 只需在 result.ok === false 時呼叫本函式；本函式自己不重複判斷。
+ */
+export async function sendBackupFailure(
+    type: 'mirror' | 'archive',
+    result: MirrorResult | ArchiveResult,
+    sendAlert: (msg: string) => Promise<void>,
+): Promise<void> {
+    const msg = type === 'mirror'
+        ? formatMirrorFailure(result as MirrorResult)
+        : formatArchiveFailure(result as ArchiveResult);
+    log.warn(`Backup ${type} failure alert dispatched`);
+    await sendAlert(msg).catch((e) => log.error(`sendBackupFailure (${type}) send failed`, e));
 }
