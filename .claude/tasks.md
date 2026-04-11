@@ -13,10 +13,11 @@
 
 - **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
 - **P0 Stage 1 — Sharpe scoring 重構** (PR #20, 2026-04-11): MC score 從 `mean/|cvar95|` 改為 `mean/std`（Sharpe-like），含 seedrandom 固定 seed canary regression test
-- **Phase 1 Planning Brainstorm（本對話 2026-04-10/11）**: 三份 plan 完整就緒
+- **Cloudflare R2 Backup** (v0.2.0, 2026-04-11): Daily mirror + weekly archive + analysis flatten + 手動 CLI restore + Telegram failure alert；prod/dev 雙 bucket + 兩組 token；CSO audit 修復 path traversal + tar.x hardening
+- **Phase 1 Planning Brainstorm（2026-04-10/11）**: 三份 plan 完整就緒
   - `.claude/plans/p0-position-advice-system.md`（修改 5 處）
-  - `.claude/plans/i-r2-backup.md`（新建）
   - `.claude/plans/p0-backtest-verification.md`（新建，B2 brainstorm 產出）
+  - ~~`.claude/plans/i-r2-backup.md`~~（已隨 v0.2.0 ship，依 Phase 2 規則 α 刪除）
 
 ---
 
@@ -28,7 +29,7 @@
 
 ## 🛠️ Infrastructure
 
-- [ ] **Cloudflare R2 Backup** → `.claude/plans/i-r2-backup.md`（DR + Dev Access；mirror 每日 + weekly archive + 手動 CLI restore；與 P0 Stage 2 並行）
+- _（目前無待辦 infra，R2 Backup 已於 v0.2.0 ship）_
 
 ---
 
@@ -41,7 +42,7 @@
 
 | 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 | 依賴 |
 |---------|------|------------------|------|------|
-| PR 1 | Cloudflare R2 Backup | `i-r2-backup.md`（Stage 1-5） | 📋 待啟動 | 無 |
+| PR 1 | Cloudflare R2 Backup | ~~`i-r2-backup.md`~~（已刪） | ✅ v0.2.0 已 ship | — |
 | PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 | — |
 | PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 | 無 |
 | PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | **PR 3** |
@@ -50,10 +51,7 @@
 ### 🎯 建議執行順序
 
 ```
-PR 1 (R2 Backup)
-   │
-   │ 最先 ship：獨立無依賴、檔案少、最適合
-   │ 驗證完整 /ship workflow 是否正常運作
+PR 1 (R2 Backup) ✅ v0.2.0 shipped 2026-04-11
    │
    ▼
 PR 3 (PositionAdvisor 純函數)
@@ -84,8 +82,8 @@ Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→
 - PR 4 必須在 PR 5 之前完成（PR 5 需要 PR 4 產出的 thresholds）
 - PR 1 與 PR 3 之間**可並行**，但本專案採 P2 策略（sequential plans），實務上依序執行
 
-**下次回來最自然的起點 = PR 1（R2 Backup）**
-理由：獨立、無前置依賴、檔案少、可以快速 land 第一個 PR 來驗證 Phase 2 → Phase 3 的完整 workflow（特別是 /ship 不 create PR 的新流程是否順暢）。若 PR 1 流程順利，後續 PR 3/4/5 的執行經驗就會更踏實。
+**下次回來最自然的起點 = PR 3（PositionAdvisor 純函數）**
+理由：PR 1（R2 Backup）已於 v0.2.0 shipped（2026-04-11），Phase 2 → Phase 3 workflow 驗證通過。PR 3 是 P0 主體核心邏輯，純函數易 TDD，完成後 backtest 才能呼叫這些函數。
 
 **核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
 
