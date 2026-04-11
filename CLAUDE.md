@@ -17,7 +17,8 @@
 | 建置 / 測試指令、套件安裝鐵律 | `.claude/docs/dev-commands.md` |
 | 專案 Skill、gstack Skill、superpowers Skill | `.claude/docs/skills.md` |
 | Git 分支策略細則、commit 慣例 | `.claude/docs/git-workflow.md` |
-| Plan 檔案生命週期、刪除時機、hook 安裝 | `.claude/docs/plan-lifecycle.md` |
+| Plan 檔案生命週期、刪除時機 | `.claude/docs/plan-lifecycle.md` |
+| Hooks 規則與設定（git hook + Claude Code hook） | `.claude/docs/hooks.md` |
 | 任務索引 + 雜項待辦 | `.claude/tasks.md` |
 | 活躍中的 feature plan | `.claude/plans/<name>.md` |
 

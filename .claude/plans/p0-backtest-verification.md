@@ -204,6 +204,20 @@
     - PR 4 跑出 grid search 結果 → 把 chosen thresholds 寫進 PR 5 的 config
     - 詳細 PR 切分見 P0 plan 結尾的「PR 切分」段落
 
+### 命名對齊
+
+37. **Code identifier 一律用自描述技術詞彙，不沿用 P0 plan 的 phase 序號**
+    - 本 plan 內部敘事用 **Stage 1 / Stage 2 / Stage 3**
+    - Code 層命名採用自描述詞彙：
+      - Stage 1 entry：`npm run backtest:verify-thresholds` / `src/backtest/runVerifyThresholds.ts`
+      - Stage 3 trigger：`src/services/shadow/framework/manualTuneTrigger.ts` / `interface ManualTuneDecision` / `checkManualTuneTrigger()` / `alertService.sendManualTuneAlert()`
+    - 對應關係（僅供交叉引用 P0 plan 時參考，**禁止**寫進 code identifier）：
+      - Stage 1 ↔ P0 plan Phase 5a
+      - Stage 2 ↔ P0 plan Phase 5b
+      - Stage 3 ↔ P0 plan Phase 5c
+    - 交叉引用只允許出現在 markdown 段落或 code 註解，**不得**出現在 script / file / type / function / method 名稱
+    - 理由：P0 plan 的 phase 序號只在規劃敘事層有意義，滲透到 code 會讓未來讀 code 的人需回頭翻規劃文件才懂語意
+
 ## Rejected（已否決，subagent 不得再提）
 
 ### 整體方法
@@ -282,6 +296,10 @@
 - ❌ **bot 自動 commit weekly markdown 到 git**：自動 push 是反 pattern
 - ❌ **手動 cp 到 docs/backtest-history/**：依賴人工紀律
 
+### 命名
+- ❌ **用 `stage1 / stage3` 作 code identifier**：stage 序號只在 plan 敘事層有意義，寫進 code 會綁定規劃詞彙，讀 code 的人無法從名稱理解行為。自描述技術詞彙（verify-thresholds / manualTuneTrigger）優於序號
+- ❌ **保留 `phase5a / phase5c` 序號在 code identifier**：P0 plan 的 phase 序號滲透到 backtest code 造成「三套 phase 詞彙交錯」（CLAUDE.md 工作流 Phase / P0 plan Phase / 本 plan Stage），讀者炸裂
+
 ### 一般原則
 - ❌ **Plan 標註時間預估**：違反 CLAUDE.md「Avoid giving time estimates」原則
 
@@ -322,8 +340,8 @@
   - shadow log 不應包含敏感資料（不要把 wallet address 完整 hash 寫進去）
 
 - **`.claude/rules/telegram.md`**：
-  - `src/bot/alertService.ts` 的新方法（`sendShadowWeeklyReport`、`sendPhase5cTrigger`）只負責格式化 + 發送
-  - 業務邏輯（counterfactual 計算、紅標判定）在 `shadowAnalyzer` / `phase5cTrigger`
+  - `src/bot/alertService.ts` 的新方法（`sendShadowWeeklyReport`、`sendManualTuneAlert`）只負責格式化 + 發送
+  - 業務邏輯（counterfactual 計算、紅標判定）在 `shadowAnalyzer` / `manualTuneTrigger`
 
 - **`.claude/rules/testing.md`**：
   - 60 個 RED 測試在實作前完成
@@ -624,14 +642,14 @@ export class V3LpShadowDriver {
 // framework/weeklyAnalyzer.ts
 export async function runWeeklyAnalysis(): Promise<WeeklyAnalysis>;
 
-// framework/phase5cTrigger.ts
-export interface Phase5cDecision {
+// framework/manualTuneTrigger.ts
+export interface ManualTuneDecision {
   shouldTrigger: boolean;
   reason: string;
   detectedAxis?: 'sharpeOpen' | 'sharpeClose' | 'atrMultiplier';
   detectedDirection?: 'up' | 'down';
 }
-export function checkPhase5cTrigger(history: WeeklyAnalysis[]): Phase5cDecision;
+export function checkManualTuneTrigger(history: WeeklyAnalysis[]): ManualTuneDecision;
 
 // v3lp/shadowReportFormatter.ts
 export function formatWeeklyReport(analysis: WeeklyAnalysis): string;
@@ -641,7 +659,7 @@ export function formatWeeklyReport(analysis: WeeklyAnalysis): string;
 
 ```ts
 sendShadowWeeklyReport(analysis: WeeklyAnalysis): Promise<void>;
-sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
+sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 ```
 
 ### `src/runners/mcEngine.ts`（MODIFY）
@@ -653,7 +671,7 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
 ```json
 {
   "scripts": {
-    "backtest:phase5a": "dotenvx run -f .env -- ts-node src/backtest/runPhase5aBacktest.ts"
+    "backtest:verify-thresholds": "dotenvx run -f .env -- ts-node src/backtest/runVerifyThresholds.ts"
   }
 }
 ```
@@ -738,7 +756,7 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
 - [ ] RED: 組裝 WeeklyAnalysis 物件並寫入 `data/shadow/analysis/<weekIso>.md`
 - [ ] RED: 呼叫 alertService.sendShadowWeeklyReport 推送 Telegram
 
-#### `tests/backtest/shadow/framework/phase5cTrigger.test.ts` — 6 cases
+#### `tests/backtest/shadow/framework/manualTuneTrigger.test.ts` — 6 cases
 - [ ] RED: 最近 2 週都是 Red 且 sharpeOpen 同方向 → trigger=true
 - [ ] RED: 最近 2 週都是 Red 但 sharpeOpen 方向相反 → trigger=false（C1 嚴格同方向）
 - [ ] RED: 最近 2 週是 Red, Yellow → trigger=false（B1 嚴格連續）
@@ -814,11 +832,11 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
 #### Group F: 入口 script + summary 輸出
 
 16. **NEW**: 建立 `src/backtest/config.ts`，硬編碼 train/val/test 日期邊界與 grid 範圍
-17. **NEW**: 建立 `src/backtest/runPhase5aBacktest.ts` 入口 script
+17. **NEW**: 建立 `src/backtest/runVerifyThresholds.ts` 入口 script
     - 載入 OHLCV → feature extraction → temporal split → grid search × 3 sensitivity runs → 寫 summary.md
     - 含「pass/fail 絕對底線」邏輯：train + val + test 三段都必須通過
-18. **NEW**: 修改 `package.json`，新增 `backtest:phase5a` script
-19. **VERIFY**: 在本地執行 `npm run backtest:phase5a`，產出 `data/backtest-results/<date>/summary.md`
+18. **NEW**: 修改 `package.json`，新增 `backtest:verify-thresholds` script
+19. **VERIFY**: 在本地執行 `npm run backtest:verify-thresholds`，產出 `data/backtest-results/<date>/summary.md`
 20. **REVIEW**: 人工檢視 summary.md，記錄 chosen thresholds，準備寫入 PR 5 的 PositionAdvisor config
 
 ### Stage 2 — Shadow Infrastructure（與 P0 plan Stage 3-5 同 PR，即 PR 5）
@@ -848,8 +866,8 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
     - 讀過去 7 天的 shadow log
     - 呼叫 v3lp shadowDriver
     - 寫入 `data/shadow/analysis/<weekIso>.md`
-28. **RED**: 寫 `tests/backtest/shadow/framework/phase5cTrigger.test.ts` 6 cases
-29. **GREEN**: 實作 `src/services/shadow/framework/phase5cTrigger.ts` `checkPhase5cTrigger()`
+28. **RED**: 寫 `tests/backtest/shadow/framework/manualTuneTrigger.test.ts` 6 cases
+29. **GREEN**: 實作 `src/services/shadow/framework/manualTuneTrigger.ts` `checkManualTuneTrigger()`
     - A2 + B1 + C1 嚴格邏輯
     - 連續 4 週 Yellow → soft notice flag
 
@@ -862,7 +880,7 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
 
 #### Group K: Cron 整合與 alertService
 
-32. **MODIFY**: `src/bot/alertService.ts` 新增 `sendShadowWeeklyReport()` + `sendPhase5cTrigger()` 方法
+32. **MODIFY**: `src/bot/alertService.ts` 新增 `sendShadowWeeklyReport()` + `sendManualTuneAlert()` 方法
 33. **MODIFY**: `src/runners/mcEngine.ts` cycle 結尾新增「組裝 ShadowSnapshot[] + fire-and-forget shadowLogger」邏輯（**這個動作已在 P0 plan Stage 4 task 17.5 列出**）
 34. **MODIFY**: `src/index.ts` 啟動流程新增「週日 23:00 (Asia/Taipei) cron 觸發 weeklyAnalyzer」+ `isShadowAnalyzeRunning` guard
 35. **VERIFY**: 手動觸發 weeklyAnalyzer（暫時改 cron expression），確認完整流程：讀 log → 跑 analyze → 寫 markdown → 推 Telegram
@@ -878,7 +896,7 @@ sendPhase5cTrigger(decision: Phase5cDecision): Promise<void>;
 
 - **Stage 1（PR 4）**:
   - 所有 36 個 framework + v3lp 測試 GREEN
-  - 本地執行 `npm run backtest:phase5a` 產出 `summary.md`
+  - 本地執行 `npm run backtest:verify-thresholds` 產出 `summary.md`
   - summary.md 顯示 train + val + test 三段全部通過絕對底線
   - chosen thresholds 已記錄供 PR 5 使用
 - **Stage 2（PR 5 的一部分）**:
