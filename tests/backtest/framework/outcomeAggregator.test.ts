@@ -82,7 +82,7 @@ describe('aggregateOutcomes', () => {
         expect(failing.passesAbsoluteFloor).toBe(false);
     });
 
-    it('weighted score = 0.4*A + 0.3*C + 0.3*D（unnormalized，normalization 交給 gridSearcher）', () => {
+    it('weightedRaw score = 0.4*A + 0.3*C + 0.3*D（unnormalized，normalization 交給 gridSearcher）', () => {
         // 單筆 outcome，讓 A=0.1、C=0.6、D=2.0
         const result = aggregateOutcomes([
             makeOutcome({ outperformancePct: 0.1, hitRate: 0.6, lpNetProfit: 2.0 }),
@@ -90,6 +90,17 @@ describe('aggregateOutcomes', () => {
         expect(result.A).toBeCloseTo(0.1, 10);
         expect(result.C).toBeCloseTo(0.6, 10);
         expect(result.D).toBeCloseTo(2.0, 10);
-        expect(result.weighted).toBeCloseTo(0.4 * 0.1 + 0.3 * 0.6 + 0.3 * 2.0, 10);
+        expect(result.weightedRaw).toBeCloseTo(0.4 * 0.1 + 0.3 * 0.6 + 0.3 * 2.0, 10);
+    });
+
+    it('empty outcomes → 全 0 + passesAbsoluteFloor=false（避免 NaN 汙染）', () => {
+        const result = aggregateOutcomes([]);
+        expect(result).toEqual({
+            A: 0,
+            C: 0,
+            D: 0,
+            weightedRaw: 0,
+            passesAbsoluteFloor: false,
+        });
     });
 });

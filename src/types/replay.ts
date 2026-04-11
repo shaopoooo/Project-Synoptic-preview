@@ -52,14 +52,24 @@ export interface HypotheticalPosition {
     positionId: string;          // `${poolId}:${openTs}`
     poolId: string;
     openedAtCycle: number;
+    /** Unix seconds — 開倉時的 replay cycle 時間戳（對齊 `ReplayFeature.ts`） */
     openedAtTs: number;
     openPriceNorm: number;
     PaNorm: number;
     PbNorm: number;
     initialCapital: number;
     feesAccumulated: number;
+    /**
+     * **Unix milliseconds**（不是 seconds！），對齊 `positionAdvisor.shouldClose`
+     * 的 grandfathered 契約（`Date.now() - outOfRangeSinceMs > 4h in ms`）。
+     *
+     * 本 interface 其他時間欄位（`openedAtTs`、`closedAtTs`）是 unix seconds，
+     * 這個欄位**刻意用 ms**以免 replayDriver 呼叫 `shouldClose` 時每次都要轉換。
+     * replayDriver 在讀取 `ReplayFeature.ts`（seconds）時要 `ts * 1000` 才能寫入此欄位。
+     */
     outOfRangeSinceMs: number | null;
     closedAtCycle: number | null;
+    /** Unix seconds — 關倉時的 replay cycle 時間戳 */
     closedAtTs: number | null;
     closeReason:
         | 'trend_shift'

@@ -33,9 +33,10 @@ describe('temporalSplit', () => {
         expect(split.trainStart).toBe(startTs);
         expect(split.testEnd).toBe(endTs);
         expect(split.trainStart).toBeLessThan(split.trainEnd);
-        expect(split.trainEnd).toBeLessThanOrEqual(split.valStart);
+        // half-open 邊界為嚴格相等（非 ≤），用 toBe 防未來 off-by-one 迴歸
+        expect(split.trainEnd).toBe(split.valStart);
         expect(split.valStart).toBeLessThan(split.valEnd);
-        expect(split.valEnd).toBeLessThanOrEqual(split.testStart);
+        expect(split.valEnd).toBe(split.testStart);
         expect(split.testStart).toBeLessThan(split.testEnd);
     });
 
@@ -43,5 +44,17 @@ describe('temporalSplit', () => {
         expect(() =>
             temporalSplit(0, 20 * DAY, { train: 0.6, val: 0.2, test: 0.2 }),
         ).toThrow(/至少|minimum|too short/i);
+    });
+
+    it('ratios 總和 ≠ 1 （超出 ±0.001 容忍）應拋出錯誤', () => {
+        expect(() =>
+            temporalSplit(0, 153 * DAY, { train: 0.6, val: 0.2, test: 0.3 }),
+        ).toThrow(/ratios|sum|1/i);
+    });
+
+    it('任一 ratio ≤ 0 應拋出錯誤（契約：所有段必須 > 0，不允許 train-only / train-test-only）', () => {
+        expect(() =>
+            temporalSplit(0, 153 * DAY, { train: 0.8, val: 0, test: 0.2 }),
+        ).toThrow(/> 0|大於 0|positive|必須/i);
     });
 });

@@ -13,11 +13,13 @@
  * - D = sum(lpNetProfit)          ← 所有倉位的 LP 淨利「總和」（不是平均），
  *                                   因為 D 是 absolute 金額指標，能反映部位規模差異。
  *
- * Weighted score：
- * - 本層只算 `0.4 * A + 0.3 * C + 0.3 * D`，**未正規化**。
+ * Weighted score（`weightedRaw`）：
+ * - 本層只算 `0.4 * A + 0.3 * C + 0.3 * D`，**未正規化**，命名刻意加 `Raw` 後綴
+ *   提醒呼叫端不可直接比較（D 是絕對金額單位、A/C 是比率/率，單位不一致）。
  * - 原因：單筆 sweep 結果沒有比較基準無法做 min-max normalize。真正的正規化
- *   會在 gridSearcher 拿到整個 grid 的所有 AggregatedMetrics 之後才做。
- * - 本層提供的 weighted 只是便利欄位，gridSearcher 可選擇重新計算。
+ *   會在 gridSearcher 拿到整個 grid 的所有 AggregatedMetrics 之後才做，
+ *   產生 `weightedNormalized` 欄位才能跨 sweep 排序。
+ * - 本層提供的 `weightedRaw` 只是便利欄位。
  *
  * Empty outcomes：回傳全 0 + `passesAbsoluteFloor=false`，避免 NaN 汙染下游。
  *
@@ -33,8 +35,14 @@ export interface AggregatedMetrics {
     C: number;
     /** sum(lpNetProfit)；USD 絕對金額 */
     D: number;
-    /** 0.4*A + 0.3*C + 0.3*D；unnormalized，normalization 交給 gridSearcher */
-    weighted: number;
+    /**
+     * `0.4*A + 0.3*C + 0.3*D` **未正規化** raw score。
+     *
+     * ⚠ 命名刻意加 `Raw` 後綴：D 是絕對金額、A/C 是比率/率，單位不一致，
+     * 跨 sweep 排序必須先經過 gridSearcher 的 min-max normalization 後使用
+     * `weightedNormalized` 欄位，不可直接拿 `weightedRaw` 排序。
+     */
+    weightedRaw: number;
     /** 絕對底線：A > 0 && D > 0 && C >= 0.5 */
     passesAbsoluteFloor: boolean;
 }
@@ -45,7 +53,7 @@ const W_D = 0.3;
 
 export function aggregateOutcomes(outcomes: PositionOutcome[]): AggregatedMetrics {
     if (outcomes.length === 0) {
-        return { A: 0, C: 0, D: 0, weighted: 0, passesAbsoluteFloor: false };
+        return { A: 0, C: 0, D: 0, weightedRaw: 0, passesAbsoluteFloor: false };
     }
 
     let sumOutperformance = 0;
@@ -62,8 +70,8 @@ export function aggregateOutcomes(outcomes: PositionOutcome[]): AggregatedMetric
     const A = sumOutperformance / n;
     const C = sumHitRate / n;
     const D = sumLpNetProfit; // sum, not mean
-    const weighted = W_A * A + W_C * C + W_D * D;
+    const weightedRaw = W_A * A + W_C * C + W_D * D;
     const passesAbsoluteFloor = A > 0 && D > 0 && C >= 0.5;
 
-    return { A, C, D, weighted, passesAbsoluteFloor };
+    return { A, C, D, weightedRaw, passesAbsoluteFloor };
 }
