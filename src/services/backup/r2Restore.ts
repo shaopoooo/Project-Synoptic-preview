@@ -20,6 +20,49 @@ const log = createServiceLogger('R2Restore');
 /** Decision #10: restore 來源與 Decision #1 的 mirror 一致 */
 const RESTORE_PATHS = ['data', 'logs'] as const;
 
+/**
+ * 驗證一個相對路徑（R2 key 或 tar entry path）是否安全可解壓/下載到 baseDir 下：
+ *
+ * 1. 第一個 segment 必須是 RESTORE_PATHS 白名單之一（`data` 或 `logs`）
+ * 2. 任何 segment 都不可以是 `..`
+ * 3. 經過 path.resolve 後必須仍在 baseDir 之內（double-check，防 Unicode 繞過）
+ *
+ * 對應 CSO audit Finding #1（path traversal in restoreMirror）與 #2（tar.x hardening）。
+ * 威脅模型：攻擊者拿到 R2 write credentials，上傳惡意 key 到 mirror 或 archive。
+ * 若無此檢查，`path.join(baseDir, '../../.ssh/authorized_keys')` 會逃出 baseDir。
+ */
+export function isSafeRelativePath(
+    relativePath: string,
+    baseDir: string,
+): boolean {
+    if (!relativePath) return false;
+
+    // 拒絕絕對路徑（`/etc/xxx` 或 Windows 碟機）
+    if (path.isAbsolute(relativePath)) return false;
+
+    // 以 POSIX 分隔符切（R2 key 是 POSIX 格式）
+    const segments = relativePath.split('/').filter((s) => s.length > 0);
+    if (segments.length === 0) return false;
+
+    // 任一 segment 為 '..' 立刻拒絕
+    if (segments.some((s) => s === '..')) return false;
+
+    // 第一段必須是白名單
+    if (!(RESTORE_PATHS as readonly string[]).includes(segments[0])) return false;
+
+    // 最後再 path.resolve 比對，防 Unicode / 不可見字元繞過
+    const resolvedTarget = path.resolve(baseDir, relativePath);
+    const resolvedBase = path.resolve(baseDir);
+    if (
+        resolvedTarget !== resolvedBase &&
+        !resolvedTarget.startsWith(resolvedBase + path.sep)
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
 /** 預設暫存目錄（與 r2Archive 一致） */
 const DEFAULT_TMP_DIR = '/tmp/dexbot-backup';
 
@@ -154,6 +197,13 @@ export async function restoreMirror(
                 const contents = resp.Contents ?? [];
                 for (const obj of contents) {
                     if (!obj.Key) continue;
+                    // CSO Finding #1: path traversal guard
+                    if (!isSafeRelativePath(obj.Key, baseDir)) {
+                        log.warn(
+                            `Refusing to restore suspicious R2 key outside baseDir / whitelist: ${obj.Key}`,
+                        );
+                        continue;
+                    }
                     const getResp = await client.send(
                         new GetObjectCommand({ Bucket: R2_BUCKET, Key: obj.Key }),
                     );
@@ -225,7 +275,21 @@ export async function restoreArchive(
         await bodyToFile(getResp.Body, tmpTarPath);
 
         // 2. tar.x extract into baseDir
-        await tar.x({ file: tmpTarPath, cwd: baseDir });
+        //    CSO Finding #2: strict + filter hardening。node-tar v7 預設已 strip
+        //    絕對路徑與 '..'，這裡再加白名單 filter 作為 defense-in-depth。
+        await tar.x({
+            file: tmpTarPath,
+            cwd: baseDir,
+            filter: (entryPath: string) => {
+                if (!isSafeRelativePath(entryPath, baseDir)) {
+                    log.warn(
+                        `tar.x skipping entry outside whitelist / baseDir: ${entryPath}`,
+                    );
+                    return false;
+                }
+                return true;
+            },
+        });
 
         // 3. 計算 restored 檔案數（粗略：扫描 extracted 目錄）
         let restoredCount = 0;

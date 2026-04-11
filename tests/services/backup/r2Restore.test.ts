@@ -149,6 +149,59 @@ describe('restoreMirror', () => {
         expect(existingContent).toBe('valuable');
     });
 
+    it('惡意 R2 key 含 ".." → 被跳過，不寫出 baseDir 外的檔案', async () => {
+        // 威脅模型：R2 credentials 被盜 → 攻擊者上傳惡意 key 到 data/ prefix
+        // 預期：restoreMirror 辨識 ".." segment，跳過該檔，其他合法檔照常下載，
+        // 最終 result.ok=true（單檔跳過不視為整批失敗）。
+        s3Mock.on(ListObjectsV2Command).callsFake(async (input) => {
+            if (input.Prefix === 'data/') {
+                return {
+                    Contents: [
+                        { Key: 'data/legit.json', Size: 4 },
+                        { Key: 'data/../../../etc/pwned', Size: 4 },
+                    ],
+                };
+            }
+            return { Contents: [] };
+        });
+        s3Mock.on(GetObjectCommand).callsFake(async () => ({ Body: makeBody('evil') }));
+
+        const result = await restoreMirror(client, { baseDir: tmpBase });
+
+        expect(result.ok).toBe(true);
+        // 合法檔有寫入
+        expect(await exists(path.join(tmpBase, 'data', 'legit.json'))).toBe(true);
+        // 惡意檔不應該出現在 baseDir 外
+        const parent = path.dirname(tmpBase);
+        expect(await exists(path.join(parent, 'etc', 'pwned'))).toBe(false);
+        // restoredCount 只計合法檔
+        expect(result.restoredCount).toBe(1);
+    });
+
+    it('R2 key 不屬於白名單 prefix → 被跳過', async () => {
+        // 即便 listObjects Prefix='data/'，R2 字串比對可能回傳 'data-other/xxx'
+        // 或 'dataX/...'。防守性地要求第一段必須是 RESTORE_PATHS 白名單之一。
+        s3Mock.on(ListObjectsV2Command).callsFake(async (input) => {
+            if (input.Prefix === 'data/') {
+                return {
+                    Contents: [
+                        { Key: 'data/ok.json', Size: 2 },
+                        { Key: 'other/evil.json', Size: 2 },
+                    ],
+                };
+            }
+            return { Contents: [] };
+        });
+        s3Mock.on(GetObjectCommand).callsFake(async () => ({ Body: makeBody('x') }));
+
+        const result = await restoreMirror(client, { baseDir: tmpBase });
+
+        expect(result.ok).toBe(true);
+        expect(await exists(path.join(tmpBase, 'data', 'ok.json'))).toBe(true);
+        expect(await exists(path.join(tmpBase, 'other', 'evil.json'))).toBe(false);
+        expect(result.restoredCount).toBe(1);
+    });
+
     it('成功後 data.backup-<ts>/ 留在原地（admin 手動清）', async () => {
         await writeFixture(tmpBase, 'data/old.json', 'legacy');
 
@@ -246,6 +299,42 @@ describe('restoreArchive', () => {
             'utf8',
         );
         expect(logContent).toBe('restored log');
+    });
+
+    it('惡意 tar 含非白名單 entry → 跳過該 entry，不寫出 baseDir 外', async () => {
+        // 威脅模型：攻擊者拿到 R2 write creds，上傳惡意 archives/<week>.tar.gz
+        // tar 內容包含非白名單 prefix（例如 "other/"）
+        // 預期：strict + filter 會拒絕該 entry，合法 data/ entry 照常解壓
+        const evilSource = await createTmpDir('r2restore-evil-src-');
+        try {
+            await writeFixture(evilSource, 'data/legit.json', '{"ok":1}');
+            await writeFixture(evilSource, 'other/evil.json', '{"pwn":1}');
+
+            const tarPath = path.join(tmpWork, `evil-${Date.now()}.tar.gz`);
+            await tar.c(
+                { gzip: true, file: tarPath, cwd: evilSource },
+                ['data', 'other'],
+            );
+            const tarball = await fs.readFile(tarPath);
+            s3Mock.on(GetObjectCommand).resolves({ Body: makeBody(tarball) });
+
+            const result = await restoreArchive(client, '2026-W15', {
+                baseDir: tmpBase,
+                tmpDir: tmpWork,
+            });
+
+            expect(result.ok).toBe(true);
+            // 合法 entry 被解壓
+            expect(
+                await exists(path.join(tmpBase, 'data', 'legit.json')),
+            ).toBe(true);
+            // 非白名單 entry 被拒
+            expect(
+                await exists(path.join(tmpBase, 'other', 'evil.json')),
+            ).toBe(false);
+        } finally {
+            await fs.rm(evilSource, { recursive: true, force: true });
+        }
     });
 
     it('tar.x 失敗 → rollback 既有 data/', async () => {
