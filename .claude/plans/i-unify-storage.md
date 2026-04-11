@@ -488,7 +488,11 @@ BOT STATE          VOLUME STATE            ACTION
 
 ## Risks
 
-- **R1**：Railway UI 切 volume mount path 的具體行為未知（可 rename vs 必須 delete+recreate）；若是後者，Stage 4 task 36 的順序需要重排。Mitigation：**Stage 1 task 5 的 PRE-FLIGHT 實測**先釐清，結果回寫本段
+- **R1** ✅ **PRE-FLIGHT 實測結果（2026-04-11）**：Railway 允許直接**修改既有 volume 的 mount path**（不需 delete+recreate），但修改後**會要求重新部署**。對 Stage 4 task 36 的影響：
+  - 採用 state machine 的 **4a 分支（rename 路徑）**，跳過 4b（delete+recreate）
+  - Migration day 流程：`railway service pause` → ssh 產 insurance tarball → `railway volume download` → Railway dashboard rename mount path `/app/data` → `/app/storage` → `git push` trigger redeploy → entrypoint 自動 chown → `railway service resume`
+  - 原有 volume 內容保留（但內容是舊 `data/`+`logs/` 結構，不會自動搬遷；γ 凍結策略下直接由新結構從零開始，舊內容靠 insurance tarball + R2 legacy prefix 作為 DR 後援）
+  - **簡化效益**：無需處理「volume 消失後 tarball 留本地回不去」的 recreate 分支邊 case，migration day state machine 明顯收斂
 - **R2**：`chown -R` 對大 volume 啟動時間影響；volume < 2GB 時幾乎無感，> 10GB 時可能多 30 秒。Mitigation：Stage 4 smoke test 記錄 boot time baseline；若未來踩痛才改 D9 marker 版本
 - **R3**：γ 凍結策略下，P0 Stage 2 shadow observer 在 migration 後連續性中斷；β-tight timing 讓斷層壓到幾天，可接受，但 P0 的 manual-tune trigger 需重新累積 N 週資料才能再次觸發
 - **R4**：Clean break 下 T ~ T+7d 窗內若需 DR，手動程度高（SSH + tar + mv + chown）。Mitigation：DR runbook 寫清楚 + `tests/integration/dr-dryrun.test.ts` 定期驗證指令序列可執行性
