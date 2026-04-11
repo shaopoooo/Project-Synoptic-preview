@@ -39,13 +39,53 @@
 
 ### 📦 PR 切分對照表（執行時查閱）
 
-| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 |
-|---------|------|------------------|------|
-| PR 1 | Cloudflare R2 Backup | `i-r2-backup.md`（Stage 1-5） | 📋 待啟動（可與 PR 3 並行） |
-| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 |
-| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 |
-| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 依賴 PR 3 |
-| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 依賴 PR 3、PR 4 |
+| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 | 依賴 |
+|---------|------|------------------|------|------|
+| PR 1 | Cloudflare R2 Backup | `i-r2-backup.md`（Stage 1-5） | 📋 待啟動 | 無 |
+| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 | — |
+| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 | 無 |
+| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | **PR 3** |
+| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 待啟動 | **PR 3、PR 4** |
+
+### 🎯 建議執行順序
+
+```
+PR 1 (R2 Backup)
+   │
+   │ 最先 ship：獨立無依賴、檔案少、最適合
+   │ 驗證完整 /ship workflow 是否正常運作
+   │
+   ▼
+PR 3 (PositionAdvisor 純函數)
+   │
+   │ P0 主體的核心邏輯，純函數易 TDD
+   │ 完成後 backtest 才能呼叫這些函數
+   │
+   ▼
+PR 4 (Offline Backtest Harness)
+   │
+   │ 跑 5 個月歷史資料 × grid search
+   │ 產出 chosen thresholds（sharpeOpen / sharpeClose / atrMultiplier）
+   │ 通過 A>0 / D>0 / C≥50% 絕對底線才允許進 PR 5
+   │
+   ▼
+PR 5 (Cycle integration + Shadow infrastructure)
+   │
+   │ 把 chosen thresholds 寫入 config
+   │ 整合 advisor 到 3 個 cron + Telegram
+   │ 同時加入 shadow logger + 週分析 + Phase 5c trigger
+   │
+   ▼
+Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→main
+```
+
+**關鍵依賴規則：**
+- PR 3 必須在 PR 4 之前完成（backtest 依賴 advisor 純函數）
+- PR 4 必須在 PR 5 之前完成（PR 5 需要 PR 4 產出的 thresholds）
+- PR 1 與 PR 3 之間**可並行**，但本專案採 P2 策略（sequential plans），實務上依序執行
+
+**下次回來最自然的起點 = PR 1（R2 Backup）**
+理由：獨立、無前置依賴、檔案少、可以快速 land 第一個 PR 來驗證 Phase 2 → Phase 3 的完整 workflow（特別是 /ship 不 create PR 的新流程是否順暢）。若 PR 1 流程順利，後續 PR 3/4/5 的執行經驗就會更踏實。
 
 **核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
 
