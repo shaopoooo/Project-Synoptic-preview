@@ -10,6 +10,10 @@ data/ohlcv/
 data/diagnostics*.jsonl
 data/genomes/
 
+# R2 restore safety backup dirs（`npm run backup:restore-mirror` 產生）
+data.backup-*/
+logs.backup-*/
+
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
