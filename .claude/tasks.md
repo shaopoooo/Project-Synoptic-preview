@@ -308,7 +308,15 @@ Phase 3：/cso → /ship → 手動 gh pr create × 3
 
 ## 🟠 P1 通用策略框架 (Universal Strategy Engine)
 
-**架構決定（from prior eng review）：** 混合架構 — 共享 PricePathGenerator + RiskMetrics 工具，但每個策略擁有自己的 pipeline（編排 + payoff + go/noGo），輸出標準化 StrategyResult 給 StrategyAllocator。
+> ⚠️ **P1 尚未建立正式 plan 檔案**（違反 CLAUDE.md Phase 1「正式 feature 必須開 `.claude/plans/<name>.md`」規則的**知情豁免**）。
+>
+> 當前本段內容是 2026-04-11 三 path 工作流改寫**之前**、舊 eng review 的結論壓縮版，直接寫在 tasks.md — 有歷史參考價值但**不具執行合約效力**。
+>
+> **啟動時必須走 Path B brainstorm**（`superpowers:brainstorming` → `/plan-eng-review`）產出正式 `p1-universal-strategy-engine.md`（或類似命名）plan 檔案，再進 Phase 2 執行。當前段落屆時只留一行索引指向新 plan。
+>
+> **為什麼現在不補建**：P1 明確「P0 穩定後再啟動」。P0 ship 後的經驗（`storage/` 結構、`STORAGE_PATHS` 用法、shadow observer 資料流、PositionAdvisor 純函數模式）會影響 P1 的設計決策，現在 brainstorm 會白工。
+
+**架構決定（from prior eng review，2026-04 前，舊流程遺產）：** 混合架構 — 共享 PricePathGenerator + RiskMetrics 工具，但每個策略擁有自己的 pipeline（編排 + payoff + go/noGo），輸出標準化 StrategyResult 給 StrategyAllocator。
 
 開倉建議系統穩定後再啟動。
 
