@@ -24,9 +24,9 @@
 |---|---|---|---|---|
 | PR 1 | Cloudflare R2 Backup | ~~`i-r2-backup.md`~~（已刪） | ✅ v0.2.0 已 ship | — |
 | PR 2 | Sharpe scoring 重構 | `p0-position-advice-system.md` Stage 1 | ✅ GitHub PR #20 已合併 | — |
-| **S0** | **Paper reservation（純 markdown commit + Railway PRE-FLIGHT 實測，不開 branch）** | **`i-unify-storage.md` Stage 1** | **📋 下一步** | 無 |
-| **S0.5** | **Config module foundation（`src/config/storage.ts` + `ensureStorageDir()` + test，獨立 merge 到 dev）** | **`i-unify-storage.md` Stage 2** | **📋 待啟動** | **S0** |
-| PR 3 | PositionAdvisor 純函數（第一行就 import `STORAGE_PATHS`） | `p0-position-advice-system.md` Stage 2 | 📋 待啟動 | S0.5 |
+| S0 | Paper reservation（純 markdown commit + Railway PRE-FLIGHT 實測，不開 branch） | `i-unify-storage.md` Stage 1 | ✅ 2026-04-11（`6252c17` + `3e1275a`） | 無 |
+| S0.5 | Config module foundation（`src/config/storage.ts` + `ensureStorageDir()` + test，獨立 merge 到 dev） | `i-unify-storage.md` Stage 2 | ✅ 2026-04-11（`d1d6fee`） | S0 |
+| **PR 3** | **PositionAdvisor 純函數（第一行就 import `STORAGE_PATHS`）** | **`p0-position-advice-system.md` Stage 2** | **📋 下一步** | **S0.5 ✅** |
 | PR 4 | Offline backtest harness（直接用 `STORAGE_PATHS.backtestResults`） | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | PR 3 |
 | **PR 5a** | **P0 核心：state persistence + cycle integration + telegram + RebalanceService 清理 + ShadowSnapshot 寫入（fire-and-forget，無 analyzer）**。shadow observer 直接用 `STORAGE_PATHS.shadow` | `p0-position-advice-system.md` Stage 3-5 | 📋 待啟動 | PR 3、PR 4 |
 | **PR 5b** | **Shadow 觀察層：weeklyAnalyzer + counterfactual 計算 + Telegram 週報 + `checkManualTuneTrigger()`**（讀 PR 5a 寫出的 shadow log） | `p0-backtest-verification.md` Stage 2-3 | 📋 待啟動 | PR 5a（或 PR 5a code 已穩定足以寫 PR 5b） |
@@ -196,9 +196,11 @@ Phase 3：/cso → /ship → 手動 gh pr create × 3
 
 **跨 plan 並行策略 = P2（sequential plans）**：同一 plan 內 Group 可並行；不跨 plan 並行。所以實際上是 S0 → S0.5 → PR 3 → PR 4 → PR 5a → PR 5b → PR 6 → S7 嚴格順序，同一 PR 內才考慮 Group 並行。
 
-### 下次回來最自然的起點 = S0（i-unify-storage Stage 1, paper reservation）
+### 下次回來最自然的起點 = PR 3（P0 Stage 2, PositionAdvisor 純函數）
 
-理由：純 markdown 改動 + Railway staging 一次性手動測試，低成本就能完成。S0 merge 後立刻接 S0.5（config module + test），再啟動 PR 3。這兩個前置節點成本很低但**徹底解除**後續所有 P0 code 會 hardcode 舊路徑的風險。
+S0 + S0.5 已於 2026-04-11 完成（i-unify-storage Stage 1 paper reservation + Stage 2 config module foundation）。`src/config/storage.ts` 已在 dev，PR 3 / 4 / 5 的新 code 可直接 `import { STORAGE_PATHS } from '../config/storage'`。
+
+PR 3 第一步：在 dev 切 `feature/position-advisor` 分支，以 TDD 執行 Stage 2 Task 6–9（19 RED tests → 實作三個純函數 → REFACTOR）。plan gap（`OpeningStrategy` 補 `mean: number; std: number`）已於 commit `0d1338a` 修補完畢，Task 7 / Task 8 負責實作對應的 types 與 MC engine 寫入。
 
 ---
 
@@ -207,6 +209,8 @@ Phase 3：/cso → /ship → 手動 gh pr create × 3
 - **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
 - **P0 Stage 1 — Sharpe scoring 重構** (PR #20, 2026-04-11): MC score 從 `mean/|cvar95|` 改為 `mean/std`（Sharpe-like），含 seedrandom 固定 seed canary regression test
 - **Cloudflare R2 Backup** (v0.2.0, 2026-04-11): Daily mirror + weekly archive + analysis flatten + 手動 CLI restore + Telegram failure alert；prod/dev 雙 bucket + 兩組 token；CSO audit 修復 path traversal + tar.x hardening
+- **S0 — i-unify-storage Stage 1 (Paper reservation)** (2026-04-11, commit `6252c17` + `3e1275a`): P0 plan 路徑字串對齊 `storage/...`、P0 plan gap 補 `OpeningStrategy.mean/std`、R1 Railway volume rename PRE-FLIGHT 實測結果回填（可 rename 不需 delete+recreate → 採 migration state machine 4a 分支）
+- **S0.5 — i-unify-storage Stage 2 (Config module foundation)** (2026-04-11, commit `d1d6fee`): 新建 `src/config/storage.ts`（`STORAGE_ROOT` / `STORAGE_PATHS` 8 個領域 / `storageSubpath()` / `ensureStorageDir()`），8 個 TDD 測試全綠、tsc strict 零 error、整體 18 suites / 132 tests 全綠；純 additive util module 解除 PR 3 / 4 / 5 所有新 code hardcode 舊路徑的風險
 - **Phase 1 Planning Brainstorm（2026-04-10/11）**: 三份 plan 完整就緒
   - `.claude/plans/p0-position-advice-system.md`（修改 5 處）
   - `.claude/plans/p0-backtest-verification.md`（新建，B2 brainstorm 產出）
