@@ -229,6 +229,10 @@ PR 3 第一步：在 dev 切 `feature/position-advisor` 分支，以 TDD 執行 
   - 若未來新增第二個 timeout-like 決策函數，統一注入 `nowMs: number` 參數取代 `Date.now()` 蔓延
   - `shouldClose` priority matrix 補齊剩餘 3 對：`trend↔opportunity_lost` / `trend↔timeout` / `il↔timeout`（目前靠鏈式傳遞性覆蓋，defensive testing 可補齊）
 - [ ] **PositionAdvisor NaN hardening（PR 3 /cso informational）** — `recommendOpen` / `shouldClose` 對 `strategy.score` / `mc.score` / `strategy.mean` / `strategy.cvar95` 加 `Number.isFinite()` guard，避免 NaN 透過 `NaN < 0.5 === false` 繞過門檻後產生 NaN 欄位的 OpenAdvice。非安全議題，屬資料完整性。
+- [ ] **P3: `appState.positions` dead field 處理**（刪除 vs 補活 vs 純 document）— 來源：`i-position-tracking-alignment` Decision D2。`PositionScanner.positions` 是 L0 truth owner、不經 AppState，此欄位目前宣告但從未寫入
+- [ ] **P3: L3 archive writer 實作**（`lpClosedPositionArchive` → `storage/history/lp/<YYYY>.jsonl`）+ minimum schema 定義 — 來源：`i-position-tracking-alignment` Decision D5 Q6e。`STORAGE_PATHS.historyLp` 已於 Stage 3 建立，但無 writer
+- [ ] **P3: Advice tracking feedback loop 儲存路徑決定**（P2 雜項已登記，此處補 matrix 指標）— 來源：`i-position-tracking-alignment` Decision D6 Q7c。aggregate stats 是 derived view，路徑延後決定
+- [ ] **P3: Close reason counter 儲存路徑決定**（P2 雜項已登記，此處補 matrix 指標）— 來源：`i-position-tracking-alignment` Decision D6 Q7c。同上
 
 ---
 
