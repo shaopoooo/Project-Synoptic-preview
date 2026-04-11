@@ -329,7 +329,65 @@ Phase 2 完成
 
 同一個 plan 內的 Group 可由多 subagent 並行（前提：Group 間無檔案重疊）。**不**跨 plan 並行——若想加速兩個 plan，sequential 完成 plan A → 再 sequential 完成 plan B。
 
-跨 plan 並行的需求只在「真的同時急 ship 兩個獨立 feature」才考慮，這時用第二個 git clone 處理（不在主流程內）。
+跨 plan 並行的需求只在「真的同時急 ship 兩個獨立 feature」才考慮。另一種更常見的並行需求——「A 施工中、同時想 brainstorm B」——見下一節「並行規劃模式」。
+
+---
+
+## 🔀 並行規劃模式（第二 clone 工作站）
+
+### 問題
+
+subagent 正在 `feature/A` 跑 Phase 2 實作，同時你想 brainstorm 一個全新 feature B。若在同一個 working tree 開 brainstorm，B 的 plan 檔會落進 `feature/A` 的 working tree，污染該 branch 的 diff。
+
+本專案約定**不使用 git worktree**（見 CLAUDE.md），所以唯一乾淨的解法是：開第二個 git clone 當「規劃工作站」。
+
+### 目錄結構
+
+```
+~/Documents/project/DexBot           # 主 repo：跑 subagent、施工 feature/A
+~/Documents/project/DexBot-planning  # 第二 clone：永遠停在 dev，只做 brainstorm
+```
+
+第二 clone 用 `git clone <origin>` 正常複製，不是 worktree，擁有完整獨立 `.git`，IDE / tooling 不會搞混。
+
+### 工作流程
+
+```
+┌─ 主 repo（DexBot）─────────────────┐   ┌─ 規劃 repo（DexBot-planning）─┐
+│ feature/A：subagent 執行 Phase 2   │   │ dev：brainstorm feature B      │
+│                                    │   │ ↓                              │
+│                                    │   │ 寫 .claude/plans/<p>-b.md      │
+│                                    │   │ ↓                              │
+│                                    │   │ commit 到本地 dev              │
+│                                    │   │ ↓                              │
+│                                    │   │ git push origin dev            │
+└────────────────────────────────────┘   └────────────────────────────────┘
+                 │                                    │
+                 │  A 收工、切回 dev 時               │
+                 │  git pull origin dev ──────────────┘
+                 │  自動拿到 plan B
+                 ▼
+       主 repo 也有 plan B，開始 Phase 2
+```
+
+### 同步策略
+
+- **規劃 repo → 主 repo**：brainstorm 完 commit + push 到遠端 `dev`；主 repo 之後 `git pull` 時自然帶回
+- **主 repo → 規劃 repo**：主 repo feature 合併進 dev 後，規劃 repo 下次 brainstorm 前先 `git pull`，確保看到最新 plan 狀態
+- 兩邊 `dev` 都以 **origin/dev** 為唯一 source of truth
+
+### 適用時機
+
+- ✅ 施工中的 feature A 還要 1 天以上，期間想 brainstorm 下一個 feature B
+- ✅ B 的 brainstorm 需要完整 repo context（grep 現有 code、看 CLAUDE.md）
+- ❌ 只想快速記個想法 → 直接寫 `.claude/tasks.md` 🧹 雜項區塊即可，不需要開第二 clone
+- ❌ 想修改 feature A 正在使用的 plan → 違反「禁止偏離 plan」，應先暫停施工回 Phase 1
+
+### 常見錯誤
+
+- **在規劃 repo 切 feature branch 施工**：規劃 repo 的角色是**只讀 + 寫 plan 檔案**，不跑 subagent、不寫 code。若要施工 B，等 A 收工後在主 repo 開 `feature/B`
+- **忘記 push dev**：commit 留在規劃 repo 本地 → 主 repo pull 不到 → 等於白 brainstorm。每次 commit 完務必 push
+- **兩邊同時改 dev**：理論上可能衝突，實務上 brainstorm 只動 `.claude/plans/` 新檔案，主 repo 的 dev 不會碰這個路徑，衝突機率極低
 
 ---
 
