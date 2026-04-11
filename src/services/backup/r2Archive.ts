@@ -2,7 +2,7 @@
 // 對應 .claude/plans/i-r2-backup.md Decision #3（weekly tar.gz + 90d lifecycle）
 
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { promises as fs, createReadStream } from 'fs';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as tar from 'tar';
 import { R2_BUCKET } from './r2Client';
@@ -87,23 +87,27 @@ export async function runWeeklyArchive(
             [...ARCHIVE_SOURCES],
         );
 
-        // 2. 讀取大小與上傳
-        const stat = await fs.stat(archivePath);
+        // 2. 讀取整個 tarball 成 Buffer 後上傳
+        //    不用 createReadStream：stream 是 lazy open，aws-sdk-client-mock 環境下
+        //    PutObject mock 直接 resolve 不消耗 stream，於是 finally 刪檔後 stream
+        //    才延遲 open() → ENOENT。Buffer 上傳是原子操作，無此 race。
+        //    Tarball 在 /tmp 且本專案 data + logs 總量 ~3 MB，memory footprint 可接受。
+        const body = await fs.readFile(archivePath);
         await client.send(
             new PutObjectCommand({
                 Bucket: R2_BUCKET,
                 Key: r2Key,
-                Body: createReadStream(archivePath),
-                ContentLength: stat.size,
+                Body: body,
+                ContentLength: body.length,
             }),
         );
 
-        log.info(`Archive ${weekIso} uploaded, ${stat.size} bytes`);
+        log.info(`Archive ${weekIso} uploaded, ${body.length} bytes`);
         return {
             startedAt,
             finishedAt: Date.now(),
             weekIso,
-            archiveSizeBytes: stat.size,
+            archiveSizeBytes: body.length,
             r2Key,
             ok: true,
             error: null,
