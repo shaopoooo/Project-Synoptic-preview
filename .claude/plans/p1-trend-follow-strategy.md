@@ -108,6 +108,16 @@
 - 拒絕理由：framework-first 思路，當前只有 1 個策略 class 不值得抽象
 - tasks.md P1 段落啟動本 plan 後應改寫：保留 disclaimer、保留 Phase 2a-3 未取代部分、把 Phase 1 替換為「see p1-trend-follow-strategy.md」
 
+### D10 — Backtest 必須 model funding rate（Eng review A5=5A，從 Open Question 3 升級）
+- `perpPnlCalculator.ts` 加一個 `fundingRatePer8h: number` 參數（default 0.03%）
+- 每個 trade 的 P&L 扣除 `持倉小時數 / 8 × fundingRatePer8h × notional × 2 legs` 的 funding cost
+- 理由：pair trade 72h time stop 下 funding drag 0.18-1.8%，研究階段不能假設零 funding，否則 Sharpe / P&L 都 systematically overestimate
+
+### D11 — Backtest 需要 BTC-USD + ETH-USD 個別 price series（Eng review A4=4B）
+- Pair trade 的 per-leg P&L 需要每條腿的**個別 USD 價格**，不是 BTC/ETH ratio
+- Stage 3 backtest runner 必須取得 BTC-USD + ETH-USD 的歷史 OHLCV（從 CoinGecko / exchange API / 或從既有 OHLCV cache 延伸）
+- 不接受 ratio 近似（4A）— user 明確要求精確 per-leg P&L
+
 ## Rejected（已否決，subagent 不得再提）
 
 ### Framing
@@ -159,6 +169,46 @@
 
 ## Interfaces（API 契約）
 
+### Data flow（Eng review A1）
+
+```
+┌──────────────┐     ┌──────────────┐     ┌────────────────┐     ┌──────────────┐
+│ Regime Engine │────►│ trendAdvisor │────►│ IExecution     │────►│ PairTrade    │
+│ (PR #19)     │     │ (pure fn)    │     │ Adapter        │     │ Adapter      │
+│              │     │              │     │ (interface)    │     │ (impl)       │
+│ regimeVector │     │ TrendDecision│     │                │     │ via          │
+│ + direction  │     │ open/close/  │     │ openPosition() │     │ IPerpClient  │
+│   scalar     │     │ hold         │     │ closePosition()│     │ (BacktestSim │
+└──────────────┘     └──────────────┘     └────────────────┘     │  or Hyper)   │
+       ▲                                                          └──────────────┘
+       │ HourlyReturn[]                                                  │
+       │ from pool OHLCV                                                 ▼
+┌──────────────┐     ┌──────────────┐                           ┌──────────────┐
+│ prefetchAll  │     │ BTC-USD +    │                           │ BacktestResult│
+│ (existing)   │     │ ETH-USD      │──► perpPnlCalculator ───►│ P&L / Sharpe │
+└──────────────┘     │ price series │    (per-leg accurate)     │ / baselines  │
+                     │ (A4=4B 新增) │                           └──────────────┘
+                     └──────────────┘
+```
+
+### `src/services/strategy/trendFollow/types.ts` — NEW（含 PoolRef + IPerpClient）
+
+```ts
+// PoolRef：最小 pool 識別型別（Eng review A2）
+export interface PoolRef {
+  poolAddress: string;
+  dex: Dex;
+}
+
+// IPerpClient：perp venue 抽象（Eng review A3 = 3A）
+// BacktestPerpSim 跟未來 HyperliquidClient 都 implement 此 interface
+export interface IPerpClient {
+  submitOrder(asset: string, side: 'long' | 'short', sizeUsd: number): Promise<{ fillPrice: number; fillSize: number }>;
+  closeOrder(asset: string, positionId: string): Promise<{ fillPrice: number; pnlUsd: number }>;
+  getOpenPositions(): Promise<Array<{ asset: string; side: 'long' | 'short'; entryPrice: number; size: number }>>;
+}
+```
+
 ### `src/services/strategy/trendFollow/trendAdvisor.ts` — NEW
 
 ```ts
@@ -172,11 +222,11 @@ export interface TrendAdvisorParams {
   timeStopHours: number;           // hard time stop（避免 regime signal 卡住）
 }
 
-export interface TrendDecision {
-  action: 'open' | 'close' | 'hold';
-  direction?: 'long-ratio' | 'short-ratio';   // 只有 action=open 時存在
-  reason: string;                               // debug / log / backtest attribution
-}
+// Discriminated union（Eng review CQ1）— direction 只在 action=open 時存在
+export type TrendDecision =
+  | { action: 'open'; direction: 'long-ratio' | 'short-ratio'; reason: string }
+  | { action: 'close'; reason: string }
+  | { action: 'hold'; reason: string };
 
 export function recommendTrendAction(
   pool: PoolRef,                               // which pool's regime signal to consume
@@ -246,7 +296,7 @@ export class PairTradeAdapter implements IExecutionAdapter {
   readonly name = 'pair-trade';
 
   constructor(
-    private perpClient: HyperliquidClient | BacktestPerpSim,  // injected, live or backtest mode
+    private perpClient: IPerpClient,                           // injected (Eng review A3=3A, 解耦具體實作)
     private longAsset: string,                                 // 'BTC-USD'
     private shortAsset: string,                                // 'ETH-USD'
     private hedgeRatio: number,                                // notional ratio between legs (default 1:1)
@@ -360,6 +410,24 @@ interface BacktestResult {
 - [ ] RED: 輸出 `trendDirection = 0` 當 sum == 0
 - [ ] RED: 既有 LP positionAdvisor 測試在 `trendDirection` 被加入後**全部仍綠**（回歸保護）
 
+### `tests/backtest/trendFollow/perpPnlCalculator.test.ts` — NEW（Eng review T1A）
+
+**Per-leg P&L 計算 tests（pure function，無 mock）：**
+- [ ] RED: long BTC-USD $1000 at 50000, exit at 52000 → P&L = +$40 (+4%)
+- [ ] RED: short ETH-USD $1000 at 3000, exit at 2800 → P&L = +$66.67 (+6.67%)
+- [ ] RED: pair trade combined P&L = 兩條腿加總
+- [ ] RED: funding rate deduction（0.03% per 8h × 24h 持倉 = 3 periods × 2 legs）→ P&L 減少對應金額
+- [ ] RED: zero-duration trade（即開即關）→ P&L ≈ 0
+- [ ] RED: entryPrice = 0 → throw error（不是 NaN 傳播）
+
+### `tests/backtest/trendFollow/baselineCalculator.test.ts` — NEW（Eng review T2A）
+
+**Baseline 計算 tests（pure function，無 mock）：**
+- [ ] RED: LP-alone baseline（range period → positive fees, trending → negative IL）
+- [ ] RED: 50-50 hold baseline（BTC +10% ETH +5% → 合計 +7.5%）
+- [ ] RED: cash baseline = 0%
+- [ ] RED: 手動算的 reference value 對比（golden test）
+
 ### `tests/backtest/trendFollow/runBacktest.test.ts` — NEW
 
 **Backtest runner integration tests：**
@@ -412,29 +480,37 @@ interface BacktestResult {
 
 ### Stage 3 — Backtest runner（TDD + integration）
 
-**Group 3.A / Runner skeleton**
+**Group 3.A / Data source + Runner skeleton**
 
-16. **NEW**：`src/backtest/trendFollow/runTrendFollowBacktest.ts` 入口 script
-17. **REUSE**：參考 `p0-backtest-verification` 的 `runVerifyThresholds.ts` 架構（如果已存在）
-18. **NEW**：`src/backtest/trendFollow/perpPnlCalculator.ts`（pure function，給定 entry/exit price 算 perp P&L + funding cost）
-19. **NEW**：`src/backtest/trendFollow/baselineCalculator.ts`（LP alone / 50-50 hold / cash 的同期 return 計算）
+16. **NEW**：`src/backtest/trendFollow/fetchIndividualPrices.ts`（D11：取得 BTC-USD + ETH-USD 歷史 OHLCV，data source = CoinGecko API 或 exchange API，覆蓋 ≥ 6 個月。輸出格式對齊既有 `HourlyReturn[]` 或類似 typed array）
+17. **NEW**：`src/backtest/trendFollow/runTrendFollowBacktest.ts` 入口 script
+18. **REUSE**：參考 `p0-backtest-verification` 的 `runVerifyThresholds.ts` 架構（如果已存在）
+19. **NEW**：`src/backtest/trendFollow/perpPnlCalculator.ts`（pure function，給定 entry/exit price per-leg 算 P&L + D10 funding rate deduction）
+20. **NEW**：`src/backtest/trendFollow/baselineCalculator.ts`（LP alone / 50-50 hold / cash 的同期 return 計算，需要 BTC-USD + ETH-USD 個別 series）
 
-**Group 3.B / Runner tests**
+**Group 3.B / P&L + baseline tests（Eng review T1A + T2A）**
 
-20. **RED**：寫 `tests/backtest/trendFollow/runBacktest.test.ts` 4 cases（含 whipsaw edge case）
-21. **GREEN**：完成 runner 實作
-22. **RED**：寫 `tests/integration/trendFollowEndToEnd.test.ts` end-to-end smoke test
-23. **GREEN**：實測 30 天真實 BTC/ETH OHLCV
+21. **RED**：寫 `tests/backtest/trendFollow/perpPnlCalculator.test.ts` 6 cases
+22. **GREEN**：perpPnlCalculator 實作（含 D10 flat-rate funding model）
+23. **RED**：寫 `tests/backtest/trendFollow/baselineCalculator.test.ts` 4 cases
+24. **GREEN**：baselineCalculator 實作
 
-**Group 3.C / Output format**
+**Group 3.C / Runner integration tests**
 
-24. **NEW**：`src/backtest/trendFollow/summaryFormatter.ts`（產出 markdown summary，含 P&L / Sharpe / DD / 勝率 / 3 baselines 對照表 / pass/fail verdict）
+25. **RED**：寫 `tests/backtest/trendFollow/runBacktest.test.ts` 4 cases（含 whipsaw edge case）
+26. **GREEN**：完成 runner 實作
+27. **RED**：寫 `tests/integration/trendFollowEndToEnd.test.ts` end-to-end smoke test
+28. **GREEN**：實測 30 天真實 BTC/ETH OHLCV
+
+**Group 3.D / Output format**
+
+29. **NEW**：`src/backtest/trendFollow/summaryFormatter.ts`（產出 markdown summary，含 P&L / Sharpe / DD / 勝率 / 3 baselines 對照表 / pass/fail verdict）
 
 ### Stage 4 — Pass criteria definition + 6-month run
 
 **Group 4.A / 定義 pass criteria（本 Stage 的 brainstorm 輸出）**
 
-25. **BRAINSTORM-IN-PLAN**：決定具體 pass criteria 數字
+30. **BRAINSTORM-IN-PLAN**：決定具體 pass criteria 數字
     - Sharpe ≥ ?
     - vs LP baseline 差距 ≥ ? pp
     - Max drawdown ≤ ?
@@ -444,9 +520,9 @@ interface BacktestResult {
 
 **Group 4.B / 6-month run**
 
-26. **RUN**：執行 `npm run backtest:trend-follow` 跑 6 個月 BTC/ETH 歷史
-27. **ANALYZE**：人工檢視 summary.md，對照 pass criteria 產出 verdict
-28. **DECISION**：
+31. **RUN**：執行 `npm run backtest:trend-follow` 跑 6 個月 BTC/ETH 歷史（使用 D11 的 BTC-USD + ETH-USD 個別 price series）
+32. **ANALYZE**：人工檢視 summary.md，對照 pass criteria 產出 verdict
+33. **DECISION**：
     - **If pass** → Stage 5.A（勝利路徑）
     - **If fail** → Stage 5.B（失敗路徑）
 
@@ -454,17 +530,17 @@ interface BacktestResult {
 
 **Group 5.A / 產出 production follow-up plan**
 
-29. **NEW**：`.claude/plans/p1-trend-follow-production.md`（新 plan，獨立 brainstorm scope）— 涵蓋 live deploy、Hyperliquid 實作、paper trading gate、monitoring、kill switch、position sizing refinement
-30. **UPDATE**：`.claude/tasks.md` 路線圖加入新節點
-31. **COMMIT**：本 plan 刪除（Phase 2 α 規則），artifacts（backtest report）留在 `storage/backtest-results/`
+34. **NEW**：`.claude/plans/p1-trend-follow-production.md`（新 plan，獨立 brainstorm scope）— 涵蓋 live deploy、Hyperliquid 實作（HyperliquidClient implements IPerpClient）、paper trading gate、monitoring、kill switch、position sizing refinement
+35. **UPDATE**：`.claude/tasks.md` 路線圖加入新節點
+36. **COMMIT**：本 plan 刪除（Phase 2 α 規則），artifacts（backtest report）留在 `storage/backtest-results/`
 
 ### Stage 5.B — Fail path（若未通過）
 
 **Group 5.B / Retrospective doc**
 
-29. **NEW**：`.claude/docs/p1-trend-follow-retrospective.md`（分析失敗原因：是 signal quality 不夠？還是 execution cost 吃掉 edge？還是 BTC/ETH ratio 在這 6 個月本來就不 trendy？）
-30. **UPDATE**：`.claude/tasks.md` 的 P1 段落加入失敗記錄 + 下一個 idea 的 follow-up
-31. **COMMIT**：本 plan 刪除
+34. **NEW**：`.claude/docs/p1-trend-follow-retrospective.md`（分析失敗原因：是 signal quality 不夠？還是 funding rate 吃掉 edge？還是 BTC/ETH ratio 在這 6 個月本來就不 trendy？）
+35. **UPDATE**：`.claude/tasks.md` 的 P1 段落加入失敗記錄 + 下一個 idea 的 follow-up
+36. **COMMIT**：本 plan 刪除
 
 ## Smoke Test Checklist
 
@@ -489,9 +565,10 @@ interface BacktestResult {
 
 1. **Pass criteria 具體數字**：Stage 4 Group 4.A 的 mini-brainstorm 決定。目前 shape 已定（Sharpe / vs LP / max DD / trade count / win rate 五個維度），具體 threshold 待定
 2. **`directionLookbackHours` tune**：D5 暫定 24，可能需要 Stage 2 micro-backtest 確認
-3. **Funding rate 在 backtest 裡怎麼 model**：Hyperliquid 歷史 funding rate 可取得？還是 naive 假設零成本？(影響 P&L 精確度)
+3. ~~**Funding rate 在 backtest 裡怎麼 model**~~ → **已升級為 D10**（Eng review A5=5A 決策，flat-rate model 必須實作）
 4. **Slippage model**：pair trade 兩條 leg 的 execution timing gap 怎麼 model？naive = 同時 fill at mid-price
 5. **`STORAGE_PATHS.trendFollowState`**：是否需要在 `src/config/storage.ts` 新增 entry？Stage 3 只用 `storage/backtest-results/`（已有 entry），live 階段（Stage 5.A 之後）才需要新 entry
+6. **BTC-USD + ETH-USD OHLCV 資料來源**（D11 衍生）：用 CoinGecko API / exchange API / 其他？Stage 3 task 需要確認 data source + 歷史覆蓋範圍 ≥ 6 個月
 
 ## Risks
 
@@ -544,8 +621,21 @@ interface BacktestResult {
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 issues found, 0 critical gaps — all resolved inline (A3=3A / A4=4B / A5=5A / T1=T1A / T2=T2A) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | N/A (無 UI) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-**VERDICT:** NO REVIEWS YET — 本 plan 為 office-hours 產出初稿（Path A 第 1 步）。下一步是 `/plan-eng-review`（Path A 第 3 步，必要）。可選中間插入 `/plan-ceo-review`（第 2 步）。最後 `superpowers:brainstorming` 定稿（第 4 步）。
+**Eng review 修改摘要**（2026-04-13，已全部套用）：
+- **A1**：新增 data flow ASCII 圖（Interfaces 段落開頭）
+- **A2**：定義 `PoolRef` type + 新增 `IPerpClient` interface（types.ts NEW 段落）
+- **A3 → 3A**：`PairTradeAdapter` constructor 從 `HyperliquidClient | BacktestPerpSim` 改為 `IPerpClient`（解耦具體實作）
+- **A4 → 4B**：Backtest 必須取得 BTC-USD + ETH-USD 個別 price series（不接受 ratio 近似）。Stage 3 新增 task 16 `fetchIndividualPrices.ts`，Open Question 6 新增資料來源待定
+- **A5 → 5A → D10**：Funding rate 從 Open Question 3 升級為 D10 決策（flat-rate model 0.03% per 8h per leg，必須實作）
+- **CQ1**：`TrendDecision` 改為 discriminated union（direction 只在 action='open' 時存在）
+- **T1 → T1A**：新增 `perpPnlCalculator.test.ts` 6 cases（per-leg P&L + funding deduction + zero-duration + NaN guard）
+- **T2 → T2A**：新增 `baselineCalculator.test.ts` 4 cases（LP-alone + 50-50 hold + cash + golden test）
+- **Task renumber**：Stage 3 task 16→29，Stage 4 task 30→33，Stage 5 task 34→36（新增 data source + P&L/baseline test Groups）
+
+**UNRESOLVED:** 0
+
+**VERDICT:** ENG CLEARED — Path A 第 3 步通過。下一步：`superpowers:brainstorming` 定稿（Path A 第 4 步）→ Phase 2 執行。
