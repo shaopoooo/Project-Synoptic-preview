@@ -347,6 +347,18 @@ export interface OpeningStrategy {
     sigmaOpt: number;
     score: number;
     cvar95: number;
+    /**
+     * 最佳 σ 對應 MCSimResult 的 mean（比率形式，相對 HODL 基準）。
+     * 由 MonteCarloEngine 在寫入 strategy 時從 best.mc.mean 複製過來，
+     * PositionAdvisor 會讀此欄位換算 expectedReturnPct。
+     */
+    mean: number;
+    /**
+     * 最佳 σ 對應 MCSimResult 的 std（pnlRatios 標準差）。
+     * 由 MonteCarloEngine 在寫入 strategy 時從 best.mc.std 複製過來，
+     * 供 PositionAdvisor / 診斷報告使用。
+     */
+    std: number;
     coreBand: { lower: number; upper: number };
     bufferBand: { lower: number; upper: number };
     trancheCore: number;

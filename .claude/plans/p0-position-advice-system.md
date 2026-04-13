@@ -2,6 +2,21 @@
 
 > 本檔案由 gstack 在 Phase 1 結尾產出，作為交接給 superpowers (Phase 2) 的正式契約。
 > superpowers 執行階段**只讀不寫**；若需調整，必須退回 Phase 1 由 gstack 更新。
+>
+> **📌 Path paper reservation (i-unify-storage Stage 1 / 2026-04-11)**：
+> 本 plan 的所有 persist 路徑已對齊 `i-unify-storage.md` 的 P2 flat 結構。未來實作時：
+> - `data/shadow/...` → `storage/shadow/...`（由 `STORAGE_PATHS.shadow` 提供）
+> - `data/positions-cache/...`（若本 plan 未來需要）→ `storage/positions/...`
+> - 實作時一律 `import { STORAGE_PATHS } from '@/config/storage'`，**禁止** hardcode 字串路徑
+> - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 3 起即可 import
+> - Rejected 段落中保留的 `data/...` legacy 字串屬**歷史否決紀錄**，不需改動
+
+> **📐 Rule override notice (2026-04-12)**：本 plan 內文的路徑字串與命名以 `.claude/rules/position-tracking.md` 為**實際執行依據**，本 plan 文字保留為歷史 snapshot：
+> - `src/utils/positionStateTracker.ts` → 實際位置 `src/services/strategy/lp/positionStateTracker.ts`（LP column L1）
+> - `tests/utils/positionStateTracker.test.ts` → 實際 `tests/services/positionStateTracker.test.ts`（tests flat）
+> - 其餘 LP-related 檔案以 rule doc 的「目錄 & 命名 convention」段落為準
+> - `STORAGE_PATHS.shadow` / `shadowAnalysis` 已於 `i-position-tracking-alignment` Stage 3 刪除，改用 `STORAGE_PATHS.shadowLp` / `shadowLpAnalysis`
+> 執行階段 subagent 遇到衝突一律以 rule 為準。若 rule 與本 plan 對同一語意有衝突以 rule 優先。
 
 ## Context（為何要做）
 
@@ -266,6 +281,20 @@ export function checkCooldown(
 // Score 公式從 mean/|cvar95| → mean/std
 // 影響欄位：MCSimResult 內的 score 計算
 // 影響 callers：mcEngine.ts:135, calcCommands.ts (任何讀 OpeningStrategy.score 的地方)
+
+// src/types/index.ts — OpeningStrategy 補兩個欄位
+// 原因：recommendOpen 需要 mean 計算 expectedReturnPct (mean × 100)，
+//       但 OpeningStrategy 目前只有 score/cvar95，沒 propagate mean/std。
+//       Stage 1 只改到 MCSimResult，沒把 mean/std 帶到 OpeningStrategy。
+// 修法：補 mean: number; std: number 兩個欄位，MonteCarloEngine 建構
+//       OpeningStrategy 時從最佳 σ 的 MCSimResult 複製這兩個值。
+// 影響 callers：只有 MC engine 的寫入點；讀取點僅 positionAdvisor 會用。
+// 決定於 2026-04-11 plan gap 修補，subagent 執行前回 Phase 1 補的。
+export interface OpeningStrategy {
+  // ... 既有欄位 ...
+  mean: number;    // NEW — from best-σ MCSimResult.mean
+  std: number;     // NEW — from best-σ MCSimResult.std
+}
 ```
 
 **Delete:**
@@ -358,8 +387,8 @@ export function checkCooldown(
 ### Stage 2 — PositionAdvisor pure functions（TDD）
 
 6. **RED**：寫 `tests/services/PositionAdvisor.test.ts` 19 個 cases（全部失敗）
-7. **GREEN**：建立 `src/types/positionAdvice.ts`（型別定義）
-8. **GREEN**：實作 `src/services/strategy/positionAdvisor.ts` 的 3 個函數，逐一讓測試 GREEN
+7. **GREEN**：建立 `src/types/positionAdvice.ts`（型別定義）；同時擴充 `src/types/index.ts` 的 `OpeningStrategy` 加 `mean: number; std: number` 兩個欄位
+8. **GREEN**：實作 `src/services/strategy/positionAdvisor.ts` 的 3 個函數逐一讓測試 GREEN；並在 `MonteCarloEngine.ts` 建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean`/`std`
 9. **REFACTOR**：抽出共用 helper（例如「穿出方向偵測」），保持純函數
 
 ### Stage 3 — State persistence（TDD）

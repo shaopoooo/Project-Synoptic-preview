@@ -2,6 +2,67 @@
 
 All notable changes to DexBot will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **PositionAdvisor 純函數（P0 Stage 2 / PR 3）** — 部位建議系統的計算核心，Phase 1 純計算模組
+  - `src/services/strategy/positionAdvisor.ts`：三個 pure function 決策器
+    - `recommendOpen(strategy, regimeVector, poolLabel)`：Sharpe score ≥ 0.5 才建議開倉，低於門檻 / null / `computedAt=0` 一律返回 null
+    - `classifyExit(position, currentPriceNorm, Pa, Pb, atrHalfWidth, regimeVector)`：正規化空間下計算穿出深度，`|depth| ≤ 2×ATR` 且 `regime.range ≥ 0.5` 才 hold，否則 rebalance
+    - `shouldClose(position, mc, regimeVector, outOfRangeSinceMs, cumulativeIlPct)`：嚴格優先序 `trend_shift > il_threshold > opportunity_lost > timeout`，null sentinel 跳過對應條件但不阻擋其他 reason
+  - `computePenetration` helper：上下穿出對稱公式 + `atrHalfWidth === 0` 的 `Infinity` 退化路徑
+  - `formatPoolLabel` helper：`${dex} ${addr.slice(0,6)}...` 顯示字串
+  - 8 個閾值常數集中頂部，全部標註「經驗值，待 backtest 驗證」（PR 4 offline replay 會調參）
+- `src/types/positionAdvice.ts`：`OpenAdvice` / `ExitAdvice` / `CloseAdvice` 契約型別 + `ExitDecision` / `CloseReason` union
+- `tests/services/PositionAdvisor.test.ts`：21 個 TDD 測試（6 recommendOpen + 6 classifyExit + 9 shouldClose），完整覆蓋優先序鏈式傳遞性 + null sentinel 語義 + 對稱穿出
+
+- **Offline Backtest Harness（p0-backtest-verification Stage 1 / PR 4）** — 離線 threshold 驗證工具，Two Pass 架構
+  - `src/types/replay.ts`：`ReplayFeature` / `HypotheticalPosition` / `PositionOutcome` / `ThresholdSet` / `GridSpace`
+  - `src/backtest/framework/`：策略無關 framework 層
+    - `walkForwardSplit.ts`：`temporalSplit()` 60/20/20 半開區間時序切分
+    - `outcomeAggregator.ts`：`aggregateOutcomes()` — A=mean / C=mean / D=sum / `weightedRaw` 未正規化 / absolute floor `A>0 && D>0 && C≥0.5`
+    - `gridSearcher.ts`：`runCoarseGrid` (120 combos) + `selectTopCandidates` + `runFineGrid` (±1 step 鄰域展開，去重)
+    - `sensitivityRunner.ts`：TVL multiplier {0.5, 1.0, 2.0} × 3 runs + robustness 判定
+    - `regimeSignalAudit.ts`：regime engine signal quality 量化（trendVsRangeRatio / flipFlopRate / pctWithinAtr24h）
+  - `src/backtest/v3lp/`：V3 LP 策略層
+    - `featureExtractor.ts`：`extractFeatures(stores)` 純同步，per-pool progress log，固定 seed = cycleIdx
+    - `outcomeCalculator.ts`：`computeOutcome()` — A/C/D 指標 + V3 IL 公式（reuse PositionCalculator）+ HODL 50/50 counterfactual
+    - `replayDriver.ts`：`V3LpReplayDriver` class — raw/full-state 兩模式 + inline evaluateExit/evaluateClose（避免 hardcoded 閾值 + Date.now() 問題）
+  - `src/backtest/config.ts`：MC_NUM_PATHS=1k（backtest 專用，10× speedup）+ temporal split 日期 + grid space
+  - `src/backtest/runVerifyThresholds.ts`：入口腳本 — OHLCV 載入 → features.jsonl 快取 → temporal split → grid search → sensitivity → regime audit → summary.md
+  - `npm run backtest:verify-thresholds`：新 npm script
+  - 39 個 TDD tests（framework 12 + featureExtractor 5 + outcomeCalculator 6 + replayDriver 7 + regimeSignalAudit 4 + gridSearcher 6 + sensitivity 3 = 43... 確切數字以 `npm test` 為準）
+  - **Task 19 結果：FAIL** — 2025-11-10 → 2026-01-22 訓練期間為趨勢市，LP 一致性虧損 vs HODL（A = -1.5% ~ -2.7%）。所有 120 組 threshold 未通過 absolute floor。基礎設施正常運作，結果退回 Decisions review
+
+### Changed
+- `src/types/index.ts`：`OpeningStrategy` 介面新增 `mean: number; std: number` 兩個必要欄位（PositionAdvisor 計算 `expectedReturnPct` 與未來 backtest 需要）
+- `src/runners/mcEngine.ts`：建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean` / `std`（2 行 wiring，資料已存在於 `best.mc`，零行為變更）
+
+### Infra
+- **Storage path 集中化（i-unify-storage Stage 2 / S0.5）** — 讓後續所有新 code 第一行就能 import 單一事實來源
+  - `src/config/storage.ts`：`STORAGE_ROOT`（env-driven, prod=`/app/storage`、dev fallback=`./storage`）+ `STORAGE_PATHS` 常數 + `storageSubpath()` + `ensureStorageDir()`
+  - 初版 8 個領域 entries（shadow / shadowAnalysis / backtestResults / ohlcv / diagnostics / debug / positions / bot）；**後續由 `i-position-tracking-alignment` Stage 3 重整為 10 個**（見下方）
+  - 純 additive util module，不碰 Railway / Dockerfile / R2，獨立 merge 到 dev 解除 PR 3 / 4 / 5 hardcode 舊路徑的風險
+  - TDD 測試覆蓋 env fallback、domain key 型別守護、中間層目錄建立、冪等性
+- **Position tracking 4 層 × N 策略矩陣（`i-position-tracking-alignment`）** — 定 mental model 讓未來所有策略（LP / FundingRate / Paper Trading）的 tracking 需求有對號入座規則
+  - **NEW** `.claude/rules/position-tracking.md`：永久 artifact 定義 4 層（L0 Reality / L1 Advice / L2 Counterfactual / L3 History）× N 策略的矩陣，`paths` matcher 自動載入到 `src/services/strategy/**` / `src/services/position/**` / `src/services/shadow/**` / `src/bot/**` 的對話
+  - **MODIFY** `CLAUDE.md`：自動載入 rule 表格新增 `position-tracking.md` 行（`services.md` 之後）
+  - **REFACTOR** `STORAGE_PATHS`：刪除 `shadow` / `shadowAnalysis`（Eng review 1A 確認零消費者），新增 4 個 LP 矩陣 entries（`shadowLp` / `shadowLpAnalysis` / `history` / `historyLp`）；每個 entry 附 inline JSDoc
+  - **REFACTOR** `src/services/strategy/positionAdvisor.ts` 移至 `src/services/strategy/lp/`（rebase 已併入 PR 3）
+  - `tests/config/storage.test.ts`：10 個 entries + runtime `'shadow' in STORAGE_PATHS === false` deletion pin
+
+### Changed
+- **`.claude/plans/p0-position-advice-system.md` + `.claude/plans/p0-backtest-verification.md`**：頂部加 Rule override notice（2026-04-12），指向 `position-tracking.md` rule doc 為執行依據；plan 內文保留為歷史 snapshot，不改動（嚴守 Plan 獨立性原則，Eng review 2C 授權）
+
+### Docs
+- **Storage path paper reservation（i-unify-storage Stage 1 / S0）** — `p0-position-advice-system.md` + `p0-backtest-verification.md` 路徑字串對齊 `storage/...`，禁止 hardcode 字串路徑
+- **Railway volume mount PRE-FLIGHT** — 實測結果回填 `i-unify-storage.md` Risks R1：允許直接 rename mount path（不需 delete+recreate），Stage 4 migration 採 state machine 4a 分支，流程收斂
+- **`.claude/tasks.md`** 雜項區新增 4 個 P3 follow-ups（`i-position-tracking-alignment` 衍生）：
+  - `appState.positions` dead field 處理決策（D2）
+  - L3 archive writer 實作 + minimum schema（D5 Q6e）
+  - Advice tracking feedback loop 儲存路徑（D6 Q7c）
+  - Close reason counter 儲存路徑（D6 Q7c）
+
 ## [0.2.0] - 2026-04-11
 
 ### Added

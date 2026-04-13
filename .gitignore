@@ -114,3 +114,4 @@ dist
 # Mac OS
 .DS_Store
 .gstack/
+storage/
