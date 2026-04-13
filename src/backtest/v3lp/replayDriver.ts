@@ -142,7 +142,17 @@ function evaluateClose(
 // ─── V3LpReplayDriver ────────────────────────────────────────────────────
 
 export class V3LpReplayDriver {
-    constructor(private readonly features: ReplayFeature[]) {}
+    /** TVL 乘數（用於 fee 計算的 pool TVL 調整，預設 1.0） */
+    tvlMultiplier: number;
+
+    constructor(private readonly features: ReplayFeature[], tvlMultiplier = 1.0) {
+        this.tvlMultiplier = tvlMultiplier;
+    }
+
+    /** 設定 TVL 乘數（供 sensitivityRunner 在不同情境間切換） */
+    setTvlMultiplier(m: number): void {
+        this.tvlMultiplier = m;
+    }
 
     /**
      * 執行 replay，回傳所有已結算的 PositionOutcome[]。
@@ -338,7 +348,7 @@ export class V3LpReplayDriver {
                  f.cycleIdx <= closeFeature.cycleIdx,
         );
 
-        const outcome = computeOutcome(hp, lifecycleFeatures, 1.0);
+        const outcome = computeOutcome(hp, lifecycleFeatures, this.tvlMultiplier);
         outcomes.push(outcome);
     }
 }
