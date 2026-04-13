@@ -16,6 +16,24 @@ All notable changes to DexBot will be documented in this file.
 - `src/types/positionAdvice.ts`：`OpenAdvice` / `ExitAdvice` / `CloseAdvice` 契約型別 + `ExitDecision` / `CloseReason` union
 - `tests/services/PositionAdvisor.test.ts`：21 個 TDD 測試（6 recommendOpen + 6 classifyExit + 9 shouldClose），完整覆蓋優先序鏈式傳遞性 + null sentinel 語義 + 對稱穿出
 
+- **Offline Backtest Harness（p0-backtest-verification Stage 1 / PR 4）** — 離線 threshold 驗證工具，Two Pass 架構
+  - `src/types/replay.ts`：`ReplayFeature` / `HypotheticalPosition` / `PositionOutcome` / `ThresholdSet` / `GridSpace`
+  - `src/backtest/framework/`：策略無關 framework 層
+    - `walkForwardSplit.ts`：`temporalSplit()` 60/20/20 半開區間時序切分
+    - `outcomeAggregator.ts`：`aggregateOutcomes()` — A=mean / C=mean / D=sum / `weightedRaw` 未正規化 / absolute floor `A>0 && D>0 && C≥0.5`
+    - `gridSearcher.ts`：`runCoarseGrid` (120 combos) + `selectTopCandidates` + `runFineGrid` (±1 step 鄰域展開，去重)
+    - `sensitivityRunner.ts`：TVL multiplier {0.5, 1.0, 2.0} × 3 runs + robustness 判定
+    - `regimeSignalAudit.ts`：regime engine signal quality 量化（trendVsRangeRatio / flipFlopRate / pctWithinAtr24h）
+  - `src/backtest/v3lp/`：V3 LP 策略層
+    - `featureExtractor.ts`：`extractFeatures(stores)` 純同步，per-pool progress log，固定 seed = cycleIdx
+    - `outcomeCalculator.ts`：`computeOutcome()` — A/C/D 指標 + V3 IL 公式（reuse PositionCalculator）+ HODL 50/50 counterfactual
+    - `replayDriver.ts`：`V3LpReplayDriver` class — raw/full-state 兩模式 + inline evaluateExit/evaluateClose（避免 hardcoded 閾值 + Date.now() 問題）
+  - `src/backtest/config.ts`：MC_NUM_PATHS=1k（backtest 專用，10× speedup）+ temporal split 日期 + grid space
+  - `src/backtest/runVerifyThresholds.ts`：入口腳本 — OHLCV 載入 → features.jsonl 快取 → temporal split → grid search → sensitivity → regime audit → summary.md
+  - `npm run backtest:verify-thresholds`：新 npm script
+  - 39 個 TDD tests（framework 12 + featureExtractor 5 + outcomeCalculator 6 + replayDriver 7 + regimeSignalAudit 4 + gridSearcher 6 + sensitivity 3 = 43... 確切數字以 `npm test` 為準）
+  - **Task 19 結果：FAIL** — 2025-11-10 → 2026-01-22 訓練期間為趨勢市，LP 一致性虧損 vs HODL（A = -1.5% ~ -2.7%）。所有 120 組 threshold 未通過 absolute floor。基礎設施正常運作，結果退回 Decisions review
+
 ### Changed
 - `src/types/index.ts`：`OpeningStrategy` 介面新增 `mean: number; std: number` 兩個必要欄位（PositionAdvisor 計算 `expectedReturnPct` 與未來 backtest 需要）
 - `src/runners/mcEngine.ts`：建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean` / `std`（2 行 wiring，資料已存在於 `best.mc`，零行為變更）

@@ -235,6 +235,7 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 - [ ] **P3: L3 archive writer 實作**（`lpClosedPositionArchive` → `storage/history/lp/<YYYY>.jsonl`）+ minimum schema 定義 — 來源：`i-position-tracking-alignment` Decision D5 Q6e。`STORAGE_PATHS.historyLp` 已於 Stage 3 建立，但無 writer
 - [ ] **P3: Advice tracking feedback loop 儲存路徑決定**（P2 雜項已登記，此處補 matrix 指標）— 來源：`i-position-tracking-alignment` Decision D6 Q7c。aggregate stats 是 derived view，路徑延後決定
 - [ ] **P3: Close reason counter 儲存路徑決定**（P2 雜項已登記，此處補 matrix 指標）— 來源：`i-position-tracking-alignment` Decision D6 Q7c。同上
+- [ ] **PR 4 Task 19 執行後補真實 `POOL_TVL_PROXY`**（`src/backtest/config.ts`）— 目前所有池子統一 $1M placeholder，跑過一次 `backtest:verify-thresholds` 後依實際觀察每池調整。來源：Gap D decision (2026-04-12)
 
 ---
 
