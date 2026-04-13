@@ -85,10 +85,18 @@ export const TEST_END_TS = Math.floor(new Date('2026-04-10T00:00:00Z').getTime()
 
 // ─── Grid search space（plan Decisions #12-14） ──────────────────────────────
 
-/** 粗 grid：6 × 3 × 4 = 72 組合 */
+/**
+ * 粗 grid：6 × 5 × 4 = 120 組合。
+ *
+ * sharpeClose 從原 plan 的 {0.20, 0.30, 0.40} 擴展至 {0.05, 0.10, 0.15, 0.20, 0.30}，
+ * 原因：Task 19 首次跑發現 sharpeClose ≥ 0.2 時所有組合都因 opportunity_lost churn
+ * 而 FAIL（倉位平均只撐 2-9 小時就被關掉，累積不了足夠 fees）。
+ * MC score 小時級自然波動大，sharpeClose 需要降到 0.05-0.15 讓倉位有足夠存活時間。
+ * 0.40 移除（過高，無診斷價值）。
+ */
 export const COARSE_GRID: GridSpace = {
     sharpeOpen: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
-    sharpeClose: [0.20, 0.30, 0.40],
+    sharpeClose: [0.05, 0.10, 0.15, 0.20, 0.30],
     atrMultiplier: [1.5, 2.0, 2.5, 3.0],
 };
 
