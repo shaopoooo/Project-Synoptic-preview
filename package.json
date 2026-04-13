@@ -10,6 +10,7 @@
     "dryrun": "dotenvx run -f .env -- ts-node src/dryrun.ts",
     "test": "jest",
     "backfill": "dotenvx run -f .env -- ts-node src/scripts/backfillOhlcv.ts",
+    "backtest:verify-thresholds": "dotenvx run -f .env -- ts-node src/backtest/runVerifyThresholds.ts",
     "backup:restore-mirror": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreMirror.ts",
     "backup:restore-archive": "dotenvx run -f .env -- ts-node src/scripts/backupRestoreArchive.ts",
     "backup:list-archives": "dotenvx run -f .env -- ts-node src/scripts/backupListArchives.ts",

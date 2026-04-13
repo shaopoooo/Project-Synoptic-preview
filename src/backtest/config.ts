@@ -9,6 +9,7 @@
  */
 
 import type { RegimeGenome } from '../types';
+import type { GridSpace } from '../types/replay';
 
 /**
  * MC simulation 歷史窗口大小（hours of historical data）。
@@ -57,3 +58,32 @@ export const DEFAULT_REGIME_GENOME: RegimeGenome = {
  * 對齊 legacy BacktestEngine 的 INITIAL_CAPITAL = 10000，方便 A 指標比對直覺。
  */
 export const INITIAL_CAPITAL = 10_000;
+
+// ─── Temporal split boundaries（plan Decision #16，硬編碼） ──────────────────
+
+/** Train window 起始（Unix seconds）— 2025-11-10T00:00:00Z */
+export const TRAIN_START_TS = Math.floor(new Date('2025-11-10T00:00:00Z').getTime() / 1000);
+
+/** Train window 結束 / Val window 起始（Unix seconds）— 2026-01-22T00:00:00Z */
+export const VAL_START_TS = Math.floor(new Date('2026-01-22T00:00:00Z').getTime() / 1000);
+
+/** Val window 結束 / Test window 起始（Unix seconds）— 2026-03-01T00:00:00Z */
+export const TEST_START_TS = Math.floor(new Date('2026-03-01T00:00:00Z').getTime() / 1000);
+
+/** Test window 結束（Unix seconds）— 2026-04-10T00:00:00Z */
+export const TEST_END_TS = Math.floor(new Date('2026-04-10T00:00:00Z').getTime() / 1000);
+
+// ─── Grid search space（plan Decisions #12-14） ──────────────────────────────
+
+/** 粗 grid：6 × 3 × 4 = 72 組合 */
+export const COARSE_GRID: GridSpace = {
+    sharpeOpen: [0.30, 0.40, 0.50, 0.60, 0.70, 0.80],
+    sharpeClose: [0.20, 0.30, 0.40],
+    atrMultiplier: [1.5, 2.0, 2.5, 3.0],
+};
+
+/** 細 grid top-N 候選數（進 fine grid 鄰域展開） */
+export const FINE_GRID_TOP_N = 5;
+
+/** Gas cost per rebalance on Base (~$0.5) */
+export const GAS_COST_USD = 0.5;
