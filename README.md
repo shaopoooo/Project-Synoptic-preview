@@ -35,6 +35,62 @@ DexBot 是一個運行於 Cloudflare Railway 的長駐 bot，負責監控 Uniswa
 | R2 weekly archive | 週日 04:00 | tar.gz → R2 archives/ |
 | Shadow analyze | 週日 23:00 | counterfactual + Telegram 週報 |
 
+### Regime Engine 運算流程
+
+Regime engine 負責判斷每個 LP 池子當前處於「震盪（range）」、「趨勢（trend）」還是「中立（neutral）」狀態。所有 LP 開倉建議、MC 模擬的 bootstrap 抽樣權重都依賴此分類。
+
+**輸入**：per-pool 的 `HourlyReturn[]`（1h K 線，含 high / low / close / log return `r`）
+
+**三軌指標計算**（`src/services/strategy/MarketRegimeAnalyzer.ts`）：
+
+| Track | 指標 | 公式 | 意義 |
+|-------|------|------|------|
+| 1a | **CHOP**（Choppiness Index） | `100 × log10(Σ(high-low) / totalRange) / log10(n)` | > 55 震盪（LP 友善）、< 45 趨勢（LP 危險） |
+| 1b | **Hurst**（R/S Analysis） | R/S 回歸斜率 H | < 0.5 均值回歸（LP 友善）、> 0.5 趨勢延續 |
+| 2 | **ATR**（Average True Range） | `avg(high-low)` over n candles | 開倉區間半寬的最小值 |
+| 3 | **Percentile P5/P95** | 歷史 close 的第 5 / 95 百分位 | 開倉區間的天花板 |
+
+**兩種輸出**：
+
+1. **硬分類** `analyzeRegime()` → `MarketRegime.signal`：
+   ```
+   range   = CHOP > 55 AND Hurst < 0.52  （雙重確認才判定震盪）
+   trend   = CHOP < 45 OR  Hurst > 0.65  （單一觸發就判定趨勢）
+   neutral = 其他
+   ```
+   用途：`segmentByRegime()` 把歷史 returns 分到 range / trend / neutral 三個 bucket
+
+2. **連續機率向量** `computeRegimeVector()` → `RegimeVector { range, trend, neutral }`：
+   ```
+   rangeScore  = (CHOP - threshold) / 100 + (threshold - Hurst) / 1
+   trendScore  = (threshold - CHOP) / 100 + (Hurst - threshold) / 1
+   neutralScore = 0
+   → softmax(temperature T) → 三分量總和 = 1
+   ```
+   用途：MC engine 的 blended bootstrap 權重（決定從哪個 regime bucket 抽樣的機率）
+
+**Genome 參數**（`RegimeGenome`，9 個基因）：
+
+所有閾值（CHOP/Hurst thresholds、窗口大小、sigmoid 溫度 T）由 **Self-Learning Regime Engine**（PR #19）的演化搜索 + walk-forward validation 自動調整，不需手動 tune。
+
+```
+prefetchAll() → HourlyReturn[] per pool
+      │
+      ▼
+  analyzeRegime()     → signal (hard: range/trend/neutral)
+  computeRegimeVector() → { range: 0.6, trend: 0.3, neutral: 0.1 }
+  segmentByRegime()   → [range bucket, trend bucket, neutral bucket]
+  computeRangeGuards() → { atrHalfWidth, p5, p95 }
+      │
+      ▼
+  MC Engine: blended bootstrap (per-step 按 regimeVector 權重選 bucket 抽樣)
+      │
+      ▼
+  LP 開倉建議 / PositionAdvisor
+```
+
+相關檔案：`src/services/strategy/MarketRegimeAnalyzer.ts`、`src/types/index.ts`（`RegimeVector` / `RegimeGenome` / `MarketRegime`）、`src/runners/mcEngine.ts`、`src/services/strategy/MonteCarloEngine.ts`
+
 ### 核心設計原則
 
 - **AppState 注入式**：所有 Service 透過參數注入 AppState，禁止直接修改全域狀態
