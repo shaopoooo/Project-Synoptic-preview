@@ -80,7 +80,7 @@
 ### D5 — Direction derivation = signed scalar from recent returns
 - `computeRegimeVector()` 目前輸出 magnitude 但無方向
 - 加一個 `trendDirection: number` 欄位（+1 / -1 / 0），由 `sign(sum(last N hours of log returns))` 計算
-- N 暫定 24（24 小時），是 Open Question（Stage 2 brainstorm）
+- **N = 24**（24 小時，brainstorming 定稿確認）。理由：平衡 noise / responsiveness，跟 DexBot OHLCV 24h 計算窗口對齊
 - 這是對 regime engine 的**唯一修改**，不影響 LP advisor
 
 ### D6 — Pool-parameterized module from day 1（P6 強化版）
@@ -93,7 +93,12 @@
 ### D7 — Backtest-first, pass criteria gated production
 - Deliverable = `storage/backtest-results/<date>/trend-follow-btceth-summary.md`
 - 只有 pass criteria 達標才允許開 follow-up plan 處理 production
-- Pass criteria **shape 已定，具體數字延後**（Open Question 1）
+- **Pass criteria 已定（brainstorming 定稿 2026-04-13）**：
+  - Sharpe ≥ **0.3**（trend follow 勝率天然低，0.3 = "signal 存在" 合理門檻）
+  - vs LP baseline ≥ **+0 pp**（LP + trend follow 合計不低於 LP alone — 止血價值）
+  - Max drawdown ≤ **20%**（pair trade 天然 DD 低，20% 保守）
+  - Trade count ≥ **10**（6 個月最少 10 筆，統計最小門檻）
+  - Win rate ≥ **30%**（trend follow 天然 30-40%，低於 30% = noise）
 
 ### D8 — Matrix model 對齊
 - `trendFollow` = 新 strategy class column
@@ -115,8 +120,20 @@
 
 ### D11 — Backtest 需要 BTC-USD + ETH-USD 個別 price series（Eng review A4=4B）
 - Pair trade 的 per-leg P&L 需要每條腿的**個別 USD 價格**，不是 BTC/ETH ratio
-- Stage 3 backtest runner 必須取得 BTC-USD + ETH-USD 的歷史 OHLCV（從 CoinGecko / exchange API / 或從既有 OHLCV cache 延伸）
+- **Data source = CoinGecko API**（brainstorming OQ6=a 定稿）：`/coins/{id}/ohlc` endpoint，1h granularity，用多次 query 覆蓋 6 個月
 - 不接受 ratio 近似（4A）— user 明確要求精確 per-leg P&L
+
+### D12 — Slippage model = 固定 5 bps per leg（brainstorming OQ4=b 定稿）
+- 每條 perp leg 扣 **0.05%**（5 bps）slippage
+- Pair trade 合計 ~0.1%/trade（兩條腿各扣）
+- 理由：BTC + ETH perp 在 Hyperliquid 的 typical market impact 量級
+- `perpPnlCalculator.ts` 加 `slippageBps: number` 參數（default 5）
+
+### D13 — `STORAGE_PATHS.trendFollowState` 現在預留（brainstorming OQ5=b 定稿）
+- 在 `src/config/storage.ts` 新增 `trendFollowState: storage/trend-follow` entry
+- Stage 3 backtest 不用（只用 `backtestResults`），但 live 階段（p1-trend-follow-production.md）會用
+- 預留成本 = 零，跟 i-unify-storage 的 paper reservation 精神一致
+- **注意**：此 entry 應在本 plan Stage 1 或前置步驟加入，因為 `i-position-tracking-alignment` Phase 2 的 storage.ts 擴充可能已跑完，需要另開一個 additive commit
 
 ## Rejected（已否決，subagent 不得再提）
 
@@ -508,15 +525,15 @@ interface BacktestResult {
 
 ### Stage 4 — Pass criteria definition + 6-month run
 
-**Group 4.A / 定義 pass criteria（本 Stage 的 brainstorm 輸出）**
+**Group 4.A / Pass criteria 已定（brainstorming 定稿 2026-04-13，見 D7）**
 
-30. **BRAINSTORM-IN-PLAN**：決定具體 pass criteria 數字
-    - Sharpe ≥ ?
-    - vs LP baseline 差距 ≥ ? pp
-    - Max drawdown ≤ ?
-    - Trade count ≥ ? （最小樣本 for statistical significance）
-    - Win rate ≥ ?
-    - 這些數字目前是 Open Question 1，Stage 4 的 task 是**本 plan 的 mini-brainstorm**，不是 separate plan
+30. **VERIFY**：確認 pass criteria 已寫進 `summaryFormatter.ts` 的 verdict logic：
+    - Sharpe ≥ 0.3
+    - vs LP baseline ≥ +0 pp
+    - Max drawdown ≤ 20%
+    - Trade count ≥ 10
+    - Win rate ≥ 30%
+    - 五個全 pass = verdict PASS，任一 fail = verdict FAIL（在 summary.md 逐條標記）
 
 **Group 4.B / 6-month run**
 
@@ -561,14 +578,16 @@ interface BacktestResult {
 - [ ] Summary 含 6 個核心指標（Sharpe / 勝率 / DD / trade count / 3 baselines）
 - [ ] Verdict 明確（pass 或 fail，不含糊）
 
-## Open Questions（本 plan 執行過程中要解的，不阻擋 Stage 1-3）
+## Open Questions — ✅ 全部已 resolve（brainstorming 定稿 2026-04-13）
 
-1. **Pass criteria 具體數字**：Stage 4 Group 4.A 的 mini-brainstorm 決定。目前 shape 已定（Sharpe / vs LP / max DD / trade count / win rate 五個維度），具體 threshold 待定
-2. **`directionLookbackHours` tune**：D5 暫定 24，可能需要 Stage 2 micro-backtest 確認
-3. ~~**Funding rate 在 backtest 裡怎麼 model**~~ → **已升級為 D10**（Eng review A5=5A 決策，flat-rate model 必須實作）
-4. **Slippage model**：pair trade 兩條 leg 的 execution timing gap 怎麼 model？naive = 同時 fill at mid-price
-5. **`STORAGE_PATHS.trendFollowState`**：是否需要在 `src/config/storage.ts` 新增 entry？Stage 3 只用 `storage/backtest-results/`（已有 entry），live 階段（Stage 5.A 之後）才需要新 entry
-6. **BTC-USD + ETH-USD OHLCV 資料來源**（D11 衍生）：用 CoinGecko API / exchange API / 其他？Stage 3 task 需要確認 data source + 歷史覆蓋範圍 ≥ 6 個月
+1. ~~**Pass criteria 具體數字**~~ → **已寫入 D7**（Sharpe ≥ 0.3 / vs LP ≥ +0 pp / DD ≤ 20% / trades ≥ 10 / win rate ≥ 30%）
+2. ~~**`directionLookbackHours` tune**~~ → **D5 確認 N = 24**
+3. ~~**Funding rate 在 backtest 裡怎麼 model**~~ → **已升級為 D10**（flat-rate 0.03%/8h/leg）
+4. ~~**Slippage model**~~ → **已升級為 D12**（固定 5 bps per leg）
+5. ~~**`STORAGE_PATHS.trendFollowState`**~~ → **已升級為 D13**（現在預留 `storage/trend-follow`）
+6. ~~**BTC-USD + ETH-USD OHLCV 資料來源**~~ → **已寫入 D11**（CoinGecko API）
+
+**本 plan 無剩餘 Open Questions。所有執行參數已定案。**
 
 ## Risks
 
@@ -629,7 +648,7 @@ interface BacktestResult {
 - **A1**：新增 data flow ASCII 圖（Interfaces 段落開頭）
 - **A2**：定義 `PoolRef` type + 新增 `IPerpClient` interface（types.ts NEW 段落）
 - **A3 → 3A**：`PairTradeAdapter` constructor 從 `HyperliquidClient | BacktestPerpSim` 改為 `IPerpClient`（解耦具體實作）
-- **A4 → 4B**：Backtest 必須取得 BTC-USD + ETH-USD 個別 price series（不接受 ratio 近似）。Stage 3 新增 task 16 `fetchIndividualPrices.ts`，Open Question 6 新增資料來源待定
+- **A4 → 4B**：Backtest 必須取得 BTC-USD + ETH-USD 個別 price series（不接受 ratio 近似）。Stage 3 新增 task 16 `fetchIndividualPrices.ts`，資料來源 = CoinGecko API（brainstorming OQ6 定稿）
 - **A5 → 5A → D10**：Funding rate 從 Open Question 3 升級為 D10 決策（flat-rate model 0.03% per 8h per leg，必須實作）
 - **CQ1**：`TrendDecision` 改為 discriminated union（direction 只在 action='open' 時存在）
 - **T1 → T1A**：新增 `perpPnlCalculator.test.ts` 6 cases（per-leg P&L + funding deduction + zero-duration + NaN guard）
