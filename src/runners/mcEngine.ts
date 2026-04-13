@@ -174,8 +174,6 @@ export async function runMCEngine(
                 sigmaOpt: best.sigma,
                 score: bestScore,
                 cvar95: best.mc.cvar95,
-                mean: best.mc.mean,
-                std: best.mc.std,
                 coreBand: { lower: best.lowerPrice, upper: best.upperPrice },
                 bufferBand: tranche
                     ? { lower: tranche.buffer.lowerPrice, upper: tranche.buffer.upperPrice }
