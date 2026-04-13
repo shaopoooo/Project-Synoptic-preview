@@ -231,9 +231,19 @@ git show <sha>:.claude/plans/<priority>-<slug>.md
 
 ## 🛡️ Pre-push Hook 守門
 
-`.claude/hooks/pre-push` 會在推送 `feature/*` 或 `fix/*` 分支時檢查對應 plan 是否還留著，作為漏刪 plan 的安全網。
+`.claude/hooks/pre-push` 會在推送 `feature/*` 或 `fix/*` 分支時：
+1. 從分支名推導對應的 plan 檔案名
+2. 若 plan 仍存在，互動式詢問 `[y/N]` 是否繼續推送
+3. 預設 N（取消推送），避免手滑
 
-**完整規則、安裝方式與停用方法見** `.claude/docs/hooks.md`。
+**WIP 推送情境**：plan 未刪除是正常的，回 `y` 繼續。
+
+### 初次 clone / 換機器安裝 hook
+
+```bash
+ln -s ../../.claude/hooks/pre-push .git/hooks/pre-push
+chmod +x .claude/hooks/pre-push
+```
 
 ---
 

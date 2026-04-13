@@ -17,8 +17,7 @@
 | 建置 / 測試指令、套件安裝鐵律 | `.claude/docs/dev-commands.md` |
 | 專案 Skill、gstack Skill、superpowers Skill | `.claude/docs/skills.md` |
 | Git 分支策略細則、commit 慣例 | `.claude/docs/git-workflow.md` |
-| Plan 檔案生命週期、刪除時機 | `.claude/docs/plan-lifecycle.md` |
-| Hooks 規則與設定（git hook + Claude Code hook） | `.claude/docs/hooks.md` |
+| Plan 檔案生命週期、刪除時機、hook 安裝 | `.claude/docs/plan-lifecycle.md` |
 | 任務索引 + 雜項待辦 | `.claude/tasks.md` |
 | 活躍中的 feature plan | `.claude/plans/<name>.md` |
 
@@ -31,7 +30,6 @@
 | `architecture.md` | 整體目錄結構、AppState 注入原則 |
 | `pipeline.md` | `src/runners/`、`src/services/` — Phase 0/1 分離 |
 | `services.md` | `src/services/` — Service 層約束 |
-| `position-tracking.md` | `src/services/strategy/**` — 4 層 × N 策略矩陣（position tracking mental model） |
 | `math.md` | `src/utils/math.ts` — Pure Function + BigInt |
 | `naming.md` | 全專案 — PascalCase / camelCase / UPPER_SNAKE |
 | `logging-errors.md` | 全專案 — `createServiceLogger`、`rpcRetry`、fallback |
@@ -42,13 +40,6 @@
 ---
 
 ## 🔁 三階段工作流（必須嚴格遵守）
-
-### ⚠️ 每個 Phase 結束必須同步 `tasks.md`
-
-- **Phase 1 結束後**：新開 / 修改的 plan 必須在 `.claude/tasks.md` 的 🎯 路線圖段落有對應條目（PR 節點 / Stage 節點），或至少 priority section 有索引
-- **Phase 2 結束後**：完成的 Stage / PR 節點標記狀態（`✅ shipped` / `📋 待啟動`），「下次回來最自然的起點」更新為新的下一步
-- **Phase 3 結束後**：`/ship` 內建已刪 plan + 改 tasks.md + 更新 README，若有手動補充的 follow-up（例如 review 時 surface 的技術債）也要寫進對應 priority section 或 🧹 雜項
-- 違反此約定 → 路線圖會跟實際進度漂移，下次 session 讀 tasks.md 看到的是舊狀態
 
 ### Phase 1 — 規劃與架構
 
