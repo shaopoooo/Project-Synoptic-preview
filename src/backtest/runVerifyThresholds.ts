@@ -28,11 +28,14 @@ import { runSensitivity } from './framework/sensitivityRunner';
 import type { SensitivityResult } from './framework/sensitivityRunner';
 import { aggregateOutcomes } from './framework/outcomeAggregator';
 import type { AggregatedMetrics } from './framework/outcomeAggregator';
+import { auditRegimeSignal } from './framework/regimeSignalAudit';
+import type { RegimeAuditResult } from './framework/regimeSignalAudit';
 import {
     TRAIN_START_TS, VAL_START_TS, TEST_START_TS, TEST_END_TS,
     COARSE_GRID, FINE_GRID_TOP_N,
 } from './config';
 import type { OhlcvStore } from '../services/market/HistoricalDataService';
+import type { ReplayFeature } from '../types/replay';
 import type { ThresholdSet } from '../types/replay';
 import { createServiceLogger } from '../utils/logger';
 
@@ -54,6 +57,7 @@ interface SummaryParams {
     fineResultCount: number;
     poolCount: number;
     featureCount: number;
+    regimeAudit: RegimeAuditResult;
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────
@@ -80,10 +84,35 @@ async function main(): Promise<void> {
     });
     log.info(`載入 ${stores.length} 個 pool 的 OHLCV 資料`);
 
-    // 2. Feature extraction
-    log.info('開始 feature extraction...');
-    const allFeatures = extractFeatures(stores);
-    log.info(`產出 ${allFeatures.length} 筆 ReplayFeature`);
+    // ── 輸出目錄（提前建立，供 features.jsonl 快取使用）────────────────────
+    const date = new Date().toISOString().slice(0, 10);
+    const outputDir = path.join(STORAGE_PATHS.backtestResults, date);
+    ensureStorageDir('backtestResults');
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    // 2. Feature extraction（含 features.jsonl 快取 — Plan Decision #10）
+    const featuresPath = path.join(outputDir, 'features.jsonl');
+    let allFeatures: ReplayFeature[];
+
+    if (fs.existsSync(featuresPath) && !process.env.FORCE_EXTRACT) {
+        log.info(`偵測到 features 快取: ${featuresPath}，跳過 Pass 1 extraction`);
+        const lines = fs.readFileSync(featuresPath, 'utf-8').trim().split('\n');
+        allFeatures = lines.map(l => JSON.parse(l) as ReplayFeature);
+        log.info(`從快取載入 ${allFeatures.length} 筆 features`);
+    } else {
+        log.info('開始 Pass 1 feature extraction...');
+        allFeatures = extractFeatures(stores);
+        log.info(`產出 ${allFeatures.length} 筆 ReplayFeature`);
+
+        // 寫入 features.jsonl 快取
+        const featuresContent = allFeatures.map(f => JSON.stringify(f)).join('\n') + '\n';
+        fs.writeFileSync(featuresPath, featuresContent, 'utf-8');
+        log.info(`features.jsonl 快取寫入完成 (${allFeatures.length} 筆, ${(Buffer.byteLength(featuresContent) / 1024 / 1024).toFixed(1)} MB)`);
+    }
+
+    // 2.5 Regime signal 品質審計
+    const regimeAudit = auditRegimeSignal(allFeatures);
+    log.info(`Regime audit: trendVsRangeRatio=${regimeAudit.trendVsRangeRatio}, flipFlopRate=${regimeAudit.flipFlopRate}`);
 
     // 3. Temporal split by filtering features
     const trainFeatures = allFeatures.filter(f => f.ts >= TRAIN_START_TS && f.ts < VAL_START_TS);
@@ -168,11 +197,6 @@ async function main(): Promise<void> {
     const trainMetrics = aggregateOutcomes(trainOutcomes);
 
     // 10. Write summary.md
-    const date = new Date().toISOString().slice(0, 10);
-    const outputDir = path.join(STORAGE_PATHS.backtestResults, date);
-    ensureStorageDir('backtestResults');
-    fs.mkdirSync(outputDir, { recursive: true });
-
     const summaryPath = path.join(outputDir, 'summary.md');
     const summaryContent = buildSummaryMarkdown({
         chosenThreshold,
@@ -188,6 +212,7 @@ async function main(): Promise<void> {
         fineResultCount: fineResults.length,
         poolCount: stores.length,
         featureCount: allFeatures.length,
+        regimeAudit,
     });
 
     fs.writeFileSync(summaryPath, summaryContent, 'utf-8');
@@ -258,6 +283,7 @@ function buildSummaryMarkdown(params: SummaryParams): string {
         hypothesisMetrics,
         coarseResultCount, fineResultCount,
         poolCount, featureCount,
+        regimeAudit: ra,
     } = params;
 
     const overallResult = testPassed && valPassed ? 'PASS' : 'FAIL';
@@ -305,6 +331,18 @@ function buildSummaryMarkdown(params: SummaryParams): string {
                 .join(', ');
             return `| ${r.tvlMultiplier} | ${thresholds || '(none)' } |`;
         }),
+        '',
+        '### Regime Signal 品質審計',
+        '',
+        '| 指標 | 值 | 判讀 |',
+        '|------|-----|------|',
+        `| trendVsRangeRatio | ${ra.trendVsRangeRatio.toFixed(2)} | ${ra.trendVsRangeRatio > 2.0 ? '> 2.0 = 強 signal' : ra.trendVsRangeRatio >= 1.5 ? '1.5-2.0 = 可用' : '< 1.5 = 弱'} |`,
+        `| flipFlopRate | ${ra.flipFlopRate.toFixed(3)} | ${ra.flipFlopRate < 0.2 ? '< 0.2 = 穩定' : ra.flipFlopRate > 0.5 ? '> 0.5 = 噪音' : '0.2-0.5 = 中等'} |`,
+        `| avgTrendDuration | ${ra.avgTrendDurationHours.toFixed(1)}h | - |`,
+        `| avgRangeDuration | ${ra.avgRangeDurationHours.toFixed(1)}h | - |`,
+        `| trend 24h avg |price move| | ${ra.trendRegime.avgAbsMove24h.toFixed(2)}% | - |`,
+        `| range 24h avg |price move| | ${ra.rangeRegime.avgAbsMove24h.toFixed(2)}% | - |`,
+        `| range pctWithinAtr24h | ${(ra.rangeRegime.pctWithinAtr24h * 100).toFixed(1)}% | ${ra.rangeRegime.pctWithinAtr24h > 0.8 ? '> 80% = 好' : '< 80% = 待改善'} |`,
         '',
         '### 元資料',
         '',

@@ -44,6 +44,7 @@ import type { HourlyReturn, RegimeVector, Dex } from '../../types';
 import { runMCSimulation } from '../../services/strategy/MonteCarloEngine';
 import { computeRegimeVector, computeRangeGuards } from '../../services/strategy/MarketRegimeAnalyzer';
 import { config } from '../../config';
+import { createServiceLogger } from '../../utils/logger';
 import {
     MC_WINDOW_HOURS,
     MC_NUM_PATHS,
@@ -52,6 +53,15 @@ import {
     DEFAULT_REGIME_GENOME,
     INITIAL_CAPITAL,
 } from '../config';
+
+/**
+ * Logger for per-pool progress reporting。
+ *
+ * extractFeatures 本質上是「計算性純函數」（deterministic output from same input），
+ * 但因 backtest dev tool 需要 progress visibility，此處引入 logging side-effect。
+ * 這不影響函數的計算正確性：相同輸入永遠產出相同 ReplayFeature[]。
+ */
+const log = createServiceLogger('FeatureExtractor');
 
 // ─── pool config resolution ──────────────────────────────────────────────────
 
@@ -180,10 +190,17 @@ function safeComputeRegime(window: HourlyReturn[]): RegimeVector | null {
 export function extractFeatures(stores: OhlcvStore[]): ReplayFeature[] {
     const features: ReplayFeature[] = [];
 
-    for (const store of stores) {
+    for (let poolIdx = 0; poolIdx < stores.length; poolIdx++) {
+        const store = stores[poolIdx];
         const poolConfig = resolvePoolConfig(store.poolAddress);
         const poolLabel = formatPoolLabel(poolConfig);
         const hourlyReturns = toHourlyReturns(store.candles);
+
+        const lateCycles = Math.max(0, hourlyReturns.length - MC_WINDOW_HOURS);
+        const startMs = Date.now();
+        log.info(`[${poolIdx + 1}/${stores.length}] ${poolLabel} — ${hourlyReturns.length} candles, ${lateCycles} late cycles 需跑 MC...`);
+
+        const poolFeaturesBefore = features.length;
 
         for (let cycleIdx = 0; cycleIdx < hourlyReturns.length; cycleIdx++) {
             const candle = store.candles[cycleIdx];
@@ -288,6 +305,10 @@ export function extractFeatures(stores: OhlcvStore[]): ReplayFeature[] {
                 poolFeeTier: poolConfig.fee,
             });
         }
+
+        const poolFeatureCount = features.length - poolFeaturesBefore;
+        const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1);
+        log.info(`[${poolIdx + 1}/${stores.length}] ${poolLabel} — ${poolFeatureCount} features extracted (${elapsedSec}s)`);
     }
 
     return features;

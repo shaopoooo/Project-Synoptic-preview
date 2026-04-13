@@ -19,8 +19,18 @@ import type { GridSpace } from '../types/replay';
  */
 export const MC_WINDOW_HOURS = 720;
 
-/** Monte Carlo 每次模擬的 path 數（對齊 prod `config.MC_NUM_PATHS`） */
-export const MC_NUM_PATHS = 10_000;
+/**
+ * Monte Carlo path 數 — backtest 專用，降至 1,000 節省 10× 運算量。
+ *
+ * Prod 使用 10,000 paths（`config.MC_NUM_PATHS`），但 backtest threshold selection
+ * 不需要那麼高精度：
+ * - grid search 比較的是 threshold 組合間的**相對排序**，不是絕對 score
+ * - sensitivity analysis × 3 runs 已 catch 隨機噪音
+ * - 1,000 paths 的 score 估算 standard error ≈ σ/√1000，足夠 ranking
+ *
+ * 若 Task 19 執行後發現 ranking 不穩定，提高至 2,000-3,000 即可。
+ */
+export const MC_NUM_PATHS = 1_000;
 
 /** Simulation horizon（天數；MC engine 內部會乘 24 轉小時步進） */
 export const MC_HORIZON_DAYS = 14;
