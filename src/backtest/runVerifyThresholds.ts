@@ -136,7 +136,75 @@ async function main(): Promise<void> {
     log.info(`Top-${FINE_GRID_TOP_N} candidates (通過 absolute floor): ${topCandidates.length} 組`);
 
     if (topCandidates.length === 0) {
-        log.error('粗 grid 無任何組合通過 absolute floor (A>0, D>0, C>=0.5)。退回 Decisions review。');
+        log.error('粗 grid 無任何組合通過 absolute floor (A>0, D>0, C>=0.5)。');
+
+        // ── Diagnostic dump：印出 72 組的 A/C/D 幫助診斷 ─────────────────
+        log.info('=== Diagnostic: coarse grid 全 72 組 A/C/D dump ===');
+        const sorted = [...coarseResults].sort((a, b) => b.metrics.weightedRaw - a.metrics.weightedRaw);
+        // Top 10 (最接近通過的)
+        log.info('--- Top 10 by weightedRaw ---');
+        for (const r of sorted.slice(0, 10)) {
+            const t = r.threshold;
+            const m = r.metrics;
+            const flags = [
+                m.A > 0 ? '' : 'A≤0',
+                m.D > 0 ? '' : 'D≤0',
+                m.C >= 0.5 ? '' : 'C<0.5',
+            ].filter(Boolean).join(', ');
+            log.info(
+                `  sharpeOpen=${t.sharpeOpen} sharpeClose=${t.sharpeClose} atr=${t.atrMultiplier}` +
+                ` → A=${m.A.toFixed(6)} C=${m.C.toFixed(4)} D=${m.D.toFixed(2)} weighted=${m.weightedRaw.toFixed(4)}` +
+                ` | FAIL: ${flags || '(none?)'}`,
+            );
+        }
+        // Bottom 3 (最差的)
+        log.info('--- Bottom 3 ---');
+        for (const r of sorted.slice(-3)) {
+            const t = r.threshold;
+            const m = r.metrics;
+            log.info(
+                `  sharpeOpen=${t.sharpeOpen} sharpeClose=${t.sharpeClose} atr=${t.atrMultiplier}` +
+                ` → A=${m.A.toFixed(6)} C=${m.C.toFixed(4)} D=${m.D.toFixed(2)}`,
+            );
+        }
+        // Summary stats
+        const allA = coarseResults.map(r => r.metrics.A);
+        const allC = coarseResults.map(r => r.metrics.C);
+        const allD = coarseResults.map(r => r.metrics.D);
+        const zeroOutcome = coarseResults.filter(r => r.metrics.A === 0 && r.metrics.C === 0 && r.metrics.D === 0);
+        log.info(`--- Aggregate ---`);
+        log.info(`  A: min=${Math.min(...allA).toFixed(6)} max=${Math.max(...allA).toFixed(6)} avg=${(allA.reduce((s,v)=>s+v,0)/allA.length).toFixed(6)}`);
+        log.info(`  C: min=${Math.min(...allC).toFixed(4)} max=${Math.max(...allC).toFixed(4)} avg=${(allC.reduce((s,v)=>s+v,0)/allC.length).toFixed(4)}`);
+        log.info(`  D: min=${Math.min(...allD).toFixed(2)} max=${Math.max(...allD).toFixed(2)} avg=${(allD.reduce((s,v)=>s+v,0)/allD.length).toFixed(2)}`);
+        log.info(`  全 0 結果 (A=0, C=0, D=0): ${zeroOutcome.length} / ${coarseResults.length}`);
+        log.info(`  A>0 的組合數: ${allA.filter(a => a > 0).length}`);
+        log.info(`  D>0 的組合數: ${allD.filter(d => d > 0).length}`);
+        log.info(`  C>=0.5 的組合數: ${allC.filter(c => c >= 0.5).length}`);
+
+        // ── Per-position outcome dump（取最佳組合的前 10 筆倉位） ──────────
+        if (sorted.length > 0) {
+            const bestThreshold = sorted[0].threshold;
+            log.info(`--- Per-position dump (best combo: sharpeOpen=${bestThreshold.sharpeOpen} sharpeClose=${bestThreshold.sharpeClose} atr=${bestThreshold.atrMultiplier}) ---`);
+            const bestDriver = new V3LpReplayDriver(trainFeatures);
+            const bestOutcomes = bestDriver.run(bestThreshold, 'raw');
+            log.info(`  Total positions opened: ${bestOutcomes.length}`);
+            for (const o of bestOutcomes.slice(0, 10)) {
+                const p = o.position;
+                log.info(
+                    `  [${p.poolId.slice(0, 8)}] open@cycle${p.openedAtCycle} close@cycle${p.closedAtCycle ?? '?'} reason=${p.closeReason ?? 'null'}` +
+                    ` dur=${o.durationHours}h` +
+                    ` | fees=$${o.feeIncome.toFixed(2)} IL=$${o.impermanentLoss.toFixed(2)} gas=$${o.gasCost.toFixed(2)}` +
+                    ` | lpFinal=$${o.lpFinalValue.toFixed(2)} hodl=$${o.hodlFinalValue.toFixed(2)}` +
+                    ` | A=${o.outperformancePct.toFixed(6)} C=${o.hitRate.toFixed(4)} D=${o.lpNetProfit.toFixed(2)}`,
+                );
+            }
+            if (bestOutcomes.length > 10) {
+                log.info(`  ... (${bestOutcomes.length - 10} more positions omitted)`);
+            }
+        }
+
+        log.info('=== End diagnostic ===');
+
         writeSummaryAndExit(coarseResults.length, 0, stores.length, allFeatures.length);
         return;
     }

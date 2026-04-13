@@ -2,8 +2,9 @@
  * V3LpReplayDriver — V3 LP replay 驅動器（Stage 1 / Group D / Batch 4）
  *
  * 遍歷 ReplayFeature[] 序列，以 Map 維護 hypothetical positions，
- * 呼叫 PositionAdvisor 純函數（recommendOpen / classifyExit）判斷開倉 / rebalance，
- * 並自行實作 close 邏輯（避免 shouldClose 的 Date.now() 在 backtest 不適用問題）。
+ * 呼叫 PositionAdvisor 純函數 recommendOpen 判斷開倉，
+ * 自行實作 classifyExit（使用 threshold.atrMultiplier 取代 hardcoded ATR_DEPTH_HOLD_MAX）
+ * 與 close 邏輯（避免 shouldClose 的 Date.now() 在 backtest 不適用問題）。
  *
  * 兩種模式：
  * - `'raw'`：無 hysteresis，score 過門檻即觸發（粗掃 grid search 用）
@@ -27,11 +28,10 @@ import type {
 } from '../../types/replay';
 import type {
     OpeningStrategy,
-    PositionRecord,
     RegimeVector,
 } from '../../types';
-import type { CloseReason } from '../../types/positionAdvice';
-import { recommendOpen, classifyExit } from '../../services/strategy/lp/positionAdvisor';
+import type { CloseReason, ExitDecision } from '../../types/positionAdvice';
+import { recommendOpen } from '../../services/strategy/lp/positionAdvisor';
 import { computeOutcome } from './outcomeCalculator';
 import { INITIAL_CAPITAL } from '../config';
 
@@ -48,6 +48,9 @@ const IL_THRESHOLD_PCT = 0.05;
 
 /** out-of-range 容忍時間：4 小時（ms）（對齊 positionAdvisor） */
 const OUT_OF_RANGE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+
+/** regime.range 下限：≥ 0.5 才允許 hold（對齊 positionAdvisor REGIME_RANGE_HOLD_MIN） */
+const REGIME_RANGE_HOLD_MIN = 0.5;
 
 /** 7 天 hard cap（cycle 數 = 168 hours） */
 const HARD_CAP_CYCLES = 168;
@@ -88,21 +91,47 @@ function featureToStrategy(f: ReplayFeature): OpeningStrategy | null {
     };
 }
 
+// ─── Exit 邏輯（inline classifyExit，使用 threshold.atrMultiplier）────────
+
 /**
- * 從 HypotheticalPosition 合成最小化 PositionRecord（供 classifyExit 使用）。
+ * 判斷穿出倉位的 hold vs rebalance（inline 版，取代 positionAdvisor.classifyExit）。
  *
- * classifyExit 內部只讀 `position.tokenId`（用於 positionId）和
- * `position.dex + position.poolAddress`（用於 formatPoolLabel）。
- * 其餘數十個欄位由 PositionCore / PositionFees / PositionMetrics / PositionMeta
- * 聯合型別要求，在 backtest context 中無實際用途，故以 `as PositionRecord` cast
- * 提供最小必要欄位集。
+ * 原因：positionAdvisor.classifyExit 使用 hardcoded `ATR_DEPTH_HOLD_MAX = 2`，
+ * 但 grid search 需要以 `threshold.atrMultiplier` 參數化此閾值。若直接呼叫
+ * classifyExit，atrMultiplier 維度的 sweep 完全無效（所有 ATR 值產生相同結果）。
+ *
+ * 公式（與 positionAdvisor.classifyExit 等價，差別在 depth 閾值來源）：
+ *   - 穿出深度 depth = |price - nearestBound| / atrHalfWidth
+ *   - hold 條件：depth ≤ threshold.atrMultiplier AND regime.range ≥ 0.5
+ *   - 否則 rebalance
+ *   - atrHalfWidth === 0 → 強制 rebalance（避免除零）
  */
-function positionToRecord(hp: HypotheticalPosition): PositionRecord {
-    return {
-        tokenId: hp.positionId,
-        dex: 'UniswapV3',
-        poolAddress: hp.poolId,
-    } as PositionRecord;
+function evaluateExit(
+    currentPriceNorm: number,
+    PaNorm: number,
+    PbNorm: number,
+    atrHalfWidth: number,
+    regime: RegimeVector,
+    atrMultiplier: number,
+): ExitDecision | null {
+    // 在 range 內 → 無需處置
+    if (currentPriceNorm >= PaNorm && currentPriceNorm <= PbNorm) return null;
+
+    // 計算穿出深度
+    let depth: number;
+    if (atrHalfWidth === 0) {
+        depth = Number.POSITIVE_INFINITY;
+    } else if (currentPriceNorm < PaNorm) {
+        depth = (PaNorm - currentPriceNorm) / atrHalfWidth;
+    } else {
+        depth = (currentPriceNorm - PbNorm) / atrHalfWidth;
+    }
+
+    // hold 條件：深度淺 + 震盪市場
+    if (depth <= atrMultiplier && regime.range >= REGIME_RANGE_HOLD_MIN) {
+        return 'hold';
+    }
+    return 'rebalance';
 }
 
 // ─── Close 邏輯（自行實作，避免 shouldClose 的 Date.now() 問題）──────────
@@ -191,18 +220,17 @@ export class V3LpReplayDriver {
                 // 追蹤 out-of-range 狀態
                 this.updateOutOfRange(hp, f);
 
-                // 檢查是否穿出 band → classifyExit
-                const record = positionToRecord(hp);
-                const exitAdvice = classifyExit(
-                    record,
+                // 檢查是否穿出 band → evaluateExit（inline，使用 threshold.atrMultiplier）
+                const exitDecision = evaluateExit(
                     f.currentPriceNorm,
                     hp.PaNorm,
                     hp.PbNorm,
                     f.atrHalfWidth ?? 0.05,
                     f.regime ?? { range: 0.5, trend: 0.3, neutral: 0.2 },
+                    threshold.atrMultiplier,
                 );
 
-                if (exitAdvice !== null && exitAdvice.decision === 'rebalance') {
+                if (exitDecision === 'rebalance') {
                     // Rebalance：close old + deduct gas + open new
                     hp.feesAccumulated = Math.max(0, hp.feesAccumulated - REBALANCE_GAS_USD);
                     this.settlePosition(hp, f, null, outcomes);
