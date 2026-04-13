@@ -134,14 +134,24 @@
 **P1 平行軌道（非阻擋 P0，可在 P0 穩定後啟動）**
 
 - 📋 **P1 Phase 1 · Trend follow strategy (BTC/ETH instance, research wedge)**
-  - Plan: `.claude/plans/p1-trend-follow-strategy.md`（Path A office-hours 產出，2026-04-12）
+  - Plan: `.claude/plans/p1-trend-follow-strategy.md`（Path A 全流程完成，2026-04-12/13）
   - Strategy class = trend follow via perp，driven by regime transitions
   - BTC/ETH instance = 用 pair trade (BTC-USD + ETH-USD on Hyperliquid) 補 LP short-vol 漏洞
-  - Wedge = Approach A: subscribe 既有 regime engine 的 trend signal + 加 signed direction scalar（regime engine 唯一修改）
-  - 5 Stages: types → direction scalar + pairTradeAdapter → backtest runner → pass criteria + 6-month run → pass/fail 分支（開新 plan or retrospective）
-  - Pass criteria shape 已定（Sharpe / vs LP baseline / max DD / trade count / win rate），具體數字 Stage 4 mini-brainstorm 決定
-  - **依賴**：`i-position-tracking-alignment` Phase 2 已完成（matrix rule active + storage.ts 擴充）
-  - **下一步**：review 本 plan → `/plan-eng-review`（Path A 第 3 步必要）→ `superpowers:brainstorming` 定稿 → Phase 2 執行
+  - 13 個 Decisions，5 Stages / 36 Tasks，Pass criteria 全定案（Sharpe ≥ 0.3 / vs LP ≥ +0 pp / DD ≤ 20% / trades ≥ 10 / win rate ≥ 30%）
+  - **依賴**：PR 4 完成（backtest harness）
+  - **下一步**：Phase 2 執行（`superpowers:executing-plans`）
+
+**Tech debt 平行軌道（強化 regime engine 基座品質）**
+
+- 📋 **t-regime-engine-v2 · Regime Engine 全面升級**
+  - Plan: `.claude/plans/t-regime-engine-v2.md`（brainstorming 產出，2026-04-13）
+  - 解決 6 個結構性問題：collinearity / 暴跌延遲 / GIGO / heteroskedasticity / 策略偏見 hardcode / overfitting
+  - 核心改動：Kalman+EWMA 前處理 + 長短分離（CHOP 14h / Hurst 100h）+ 客觀 neutral scoring + consumer 端偏見 + two-phase evolution
+  - 10 個 Decisions，5 Stages / 28 Tasks
+  - Pass criteria：DefenseEV ≥ 1.0（Saved_IL / Missed_Fees）+ trendVsRangeRatio 改善
+  - **依賴**：PR 4 完成（`regimeSignalAudit.ts` 做 A/B baseline）
+  - **影響面**：改完後 P1 trend follow 的 backtest 需要在 V2 regime 上重跑
+  - **下一步**：`/plan-eng-review`（Path B 第 2 步必要）
 
 ### 關鍵依賴規則
 
@@ -208,15 +218,17 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 - **S0 — i-unify-storage Stage 1 (Paper reservation)** (2026-04-11, commit `6252c17` + `3e1275a`): P0 plan 路徑字串對齊 `storage/...`、P0 plan gap 補 `OpeningStrategy.mean/std`、R1 Railway volume rename PRE-FLIGHT 實測結果回填（可 rename 不需 delete+recreate → 採 migration state machine 4a 分支）
 - **S0.5 — i-unify-storage Stage 2 (Config module foundation)** (2026-04-11, commit `d1d6fee`): 新建 `src/config/storage.ts`（`STORAGE_ROOT` / `STORAGE_PATHS` 8 個領域 / `storageSubpath()` / `ensureStorageDir()`），8 個 TDD 測試全綠、tsc strict 零 error、整體 18 suites / 132 tests 全綠；純 additive util module 解除 PR 3 / 4 / 5 所有新 code hardcode 舊路徑的風險
 - **i-position-tracking-alignment brainstorm + rule + plan** (2026-04-12, commit `37ebadf`): `.claude/rules/position-tracking.md`（永久 4 層 × N 策略 matrix model rule，自動載入）+ `.claude/plans/i-position-tracking-alignment.md`（對齊 plan，plan-eng-review 已通過 3 個 issues inline resolved）
-- **p1-trend-follow-strategy office-hours brainstorm** (2026-04-12): `.claude/plans/p1-trend-follow-strategy.md`（Path A 第 1 步產出，取代 tasks.md P1 舊版 Phase 1 framework-first task list）。核心決策：trend follow = strategy class，BTC/ETH pair trade 是 instance #1，wedge 用 Approach A（subscribe regime signal + signed direction scalar）。551 行，9 個 Decisions，5 個 Stages。待 `/plan-eng-review`（Path A 第 3 步必要）
+- **p1-trend-follow-strategy Path A 完成** (2026-04-12/13): `.claude/plans/p1-trend-follow-strategy.md`（office-hours + eng-review + brainstorming 定稿全完成）。Trend follow via perp，BTC/ETH pair trade instance #1，Approach A（subscribe regime signal）。660 行，13 個 Decisions，0 個 Open Questions。Ready for Phase 2
+- **t-regime-engine-v2 brainstorm** (2026-04-13): `.claude/plans/t-regime-engine-v2.md`（戰略 review #1 深入討論 6 個 challenge → 收斂為 15 項改動）。Kalman/EWMA 前處理 + 長短分離 + 客觀 scoring + two-phase evolution。414 行，10 個 Decisions。待 `/plan-eng-review`
 - **PTA — i-position-tracking-alignment Phase 2 (Stage 2-6 全收工)** (GitHub PR #29, 2026-04-12, merge commit `1c13701`): Stage 2 CLAUDE.md 索引更新、Stage 3 `STORAGE_PATHS` 刪 `shadow`/`shadowAnalysis` 加 `shadowLp`/`shadowLpAnalysis`/`history`/`historyLp`（10 個 entries 含 inline JSDoc）、Stage 4 P0+p0-backtest plan 頂部加 Rule override notice pointer、Stage 5 tasks.md 新增 4 個 P3 follow-up、Stage 6 smoke test 全綠。一次性對齊 plan 依聲明刪除，rule doc 永存
 - **PR 4 Batch 1+2 partial (backtest harness)** (2026-04-12, commits `0e2a24c` / `39b0e42` / `f4e94a4` / `5e8082d` / `f54bf93`, branch `feature/backtest-harness` pushed origin): Pre-batch cleanup 移除 legacy `BacktestEngine.ts`；Batch 1 Group A 產 `src/types/replay.ts` + `walkForwardSplit` + `outcomeAggregator`（12 tests 含 polish 新增的 edge case）；Batch 2 Group B 產 `src/backtest/config.ts` + `featureExtractor` + 5 tests（含 polish 修 C1 critical `dailyFeesToken0 × 24` + I1 regime-failure test rework + I2 `currentPriceNorm: number | null` + I3 volume unit TODO）。全套 171/171 green、tsc strict 零 error。**Batch 3-6 待做，詳細恢復流程見「下次回來最自然的起點」段落**
-- **Phase 1 Planning Brainstorm（2026-04-10/11/12）**: 活躍中的 plans
+- **Phase 1 Planning（2026-04-10 ~ 13）**: 活躍中的 plans
   - `.claude/plans/p0-position-advice-system.md`（PR 3 已 ship，剩 Stage 3-5 for PR 5a）
   - `.claude/plans/p0-backtest-verification.md`（Stage 1 PR 4 進行中，Stage 2-3 for PR 5b）
   - `.claude/plans/i-unify-storage.md`（S0/S0.5 已 ship，剩 Stage 3 for PR 6）
-  - `.claude/plans/p1-trend-follow-strategy.md`（待 `/plan-eng-review`）
-  - ~~`.claude/plans/i-position-tracking-alignment.md`~~（已隨 PR #29 ship，依 Phase 2 規則 α 刪除）
+  - `.claude/plans/p1-trend-follow-strategy.md`（Path A 全流程完成，ready for Phase 2）
+  - `.claude/plans/t-regime-engine-v2.md`（brainstorming 完成，待 `/plan-eng-review`）← NEW 2026-04-13
+  - ~~`.claude/plans/i-position-tracking-alignment.md`~~（已隨 PR #29 ship，依 Phase 2 α 刪除）
   - ~~`.claude/plans/i-r2-backup.md`~~（已隨 v0.2.0 ship）
 
 ---
