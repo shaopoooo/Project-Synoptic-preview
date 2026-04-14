@@ -253,18 +253,7 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 
 ## 🛠️ Infrastructure
 
-> **Plan：** `.claude/plans/i-unify-storage.md`（Path B brainstorming + plan-eng-review 已通過，status: CLEAR）
-
-### 📦 i-unify-storage Stage 總覽
-
-| Stage | 內容 | 時機 | 依賴 |
-|---|---|---|---|
-| **Stage 1** | Paper reservation：更新 p0 plan 路徑字串 + Railway staging PRE-FLIGHT 實測 | **立即**（純 markdown/ops commit 到 dev，不開 branch） | 無 |
-| **Stage 2** | Config module foundation：新建 `src/config/storage.ts` + `ensureStorageDir()` + test | **Stage 1 之後立即**（獨立 merge 到 dev，**不受** D2 硬約束） | Stage 1 |
-| **Stage 3** | 既有服務路徑 refactor + Dockerfile/entrypoint + R2 結構收斂 + 測試重寫（**原 Config group 已併入 Stage 2**） | **與 P0 final PR 同 release window**（D2 硬約束） | P0 Stages 2-5 + backtest Stages 1-3 已全部 ship |
-| **Stage 4** | Migration day：停機 → insurance tarball → volume 切換 → deploy → smoke test → 48h 觀察 → T+7d 刪 insurance → T+30d 清 R2 legacy prefix | Stage 3 merge 後 | Stage 3 |
-
-**核心決策：** P2 flat 結構、`/app/storage/{shadow,backtest-results,ohlcv,diagnostics,debug,positions,bot}`、單 R2 prefix、γ 凍結 migration、roll-forward rollback、Stage 2 post-review 排序優化（避免 write-then-rewrite 浪費）
+- _（目前無待辦 infra，R2 Backup 已於 v0.2.0 ship）_
 
 ### 待啟動 infra feature
 
@@ -276,9 +265,53 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 
 > **Plan（主）：** `.claude/plans/p0-position-advice-system.md`
 > **Plan（獨立 feature，依寬鬆隔離原則並存）：** `.claude/plans/p0-backtest-verification.md`
->
-> 本 section 只保留 P0 專屬設計決策與 Stage 清單。**跨 plan 的 PR 切分、執行順序、依賴規則請見本檔案最上方的 🎯 當前執行路線圖**，不在此重複。
 
+### 📦 PR 切分對照表（執行時查閱）
+
+| 邏輯 PR | 內容 | 對應 Plan / Stage | 狀態 | 依賴 |
+|---------|------|------------------|------|------|
+| PR 1 | Cloudflare R2 Backup | ~~`i-r2-backup.md`~~（已刪） | ✅ v0.2.0 已 ship | — |
+| PR 2 | Sharpe scoring 重構 | P0 Stage 1 | ✅ GitHub PR #20 已合併 | — |
+| PR 3 | PositionAdvisor 純函數 | P0 Stage 2 | 📋 待啟動 | 無 |
+| PR 4 | Offline backtest harness | `p0-backtest-verification.md` Stage 1 | 📋 待啟動 | **PR 3** |
+| PR 5 | Cycle integration + Telegram + Shadow | P0 Stage 3-5 + backtest Stage 2 | 📋 待啟動 | **PR 3、PR 4** |
+
+### 🎯 建議執行順序
+
+```
+PR 1 (R2 Backup) ✅ v0.2.0 shipped 2026-04-11
+   │
+   ▼
+PR 3 (PositionAdvisor 純函數)
+   │
+   │ P0 主體的核心邏輯，純函數易 TDD
+   │ 完成後 backtest 才能呼叫這些函數
+   │
+   ▼
+PR 4 (Offline Backtest Harness)
+   │
+   │ 跑 5 個月歷史資料 × grid search
+   │ 產出 chosen thresholds（sharpeOpen / sharpeClose / atrMultiplier）
+   │ 通過 A>0 / D>0 / C≥50% 絕對底線才允許進 PR 5
+   │
+   ▼
+PR 5 (Cycle integration + Shadow infrastructure)
+   │
+   │ 把 chosen thresholds 寫入 config
+   │ 整合 advisor 到 3 個 cron + Telegram
+   │ 同時加入 shadow logger + 週分析 + Phase 5c trigger
+   │
+   ▼
+Phase 3：/cso → /ship → 手動 gh pr create → merge dev → 手動 dev→main
+```
+
+**關鍵依賴規則：**
+- PR 3 必須在 PR 4 之前完成（backtest 依賴 advisor 純函數）
+- PR 4 必須在 PR 5 之前完成（PR 5 需要 PR 4 產出的 thresholds）
+- PR 1 與 PR 3 之間**可並行**，但本專案採 P2 策略（sequential plans），實務上依序執行
+
+**下次回來最自然的起點 = PR 3（PositionAdvisor 純函數）**
+理由：PR 1（R2 Backup）已於 v0.2.0 shipped（2026-04-11），Phase 2 → Phase 3 workflow 驗證通過。PR 3 是 P0 主體核心邏輯，純函數易 TDD，完成後 backtest 才能呼叫這些函數。
 
 **核心痛點**：mcEngine 計算完只輸出原始數字，使用者不知道何時開倉、是否該 hold、何時該關倉。24h live test 發現 score > 0.5 有賺錢機會但缺乏可操作信號。
 
@@ -327,16 +360,9 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 
 > **完整設計：** `.claude/plans/p0-backtest-verification.md`
 >
-> - **Stage 1** (offline replay) → PR 4
->   - 跑 5 個月歷史 × grid search、產出 chosen thresholds
->   - 寫到 `./storage/backtest-results/<date>/`（paper-reserved 新路徑，來自 S0）
->   - 通過絕對底線（A>0, D>0, C≥50%）才允許進 PR 5a
-> - **Stage 2** (shadow mode) → PR 5b
->   - weekly analyzer + counterfactual 計算 + Telegram 週報
-> - **Stage 3** (manual tune trigger) → PR 5b
->   - 連續 2 週同方向紅標觸發 `checkManualTuneTrigger()`，**不**自動改 config
->
-> 60 個 RED 測試、framework/v3lp 兩層架構
+> Stage 1 (offline replay) + Stage 2 (shadow mode) + Stage 3 (manual tune trigger)
+> 60 個 RED 測試、framework/v3lp 兩層架構、連續 2 週同方向紅標 trigger
+> 通過絕對底線（A>0, D>0, C≥50%）才允許 P0 ship
 
 ---
 
@@ -445,6 +471,32 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 
 - [ ] **DEX Adapter 模式**：統一介面 `IDexAdapter`，消除 if-else 分支
 - [ ] **Strategy 模組重新評估**：`PnlCalculator`、`RiskManager`、`rebalance` 與 MC 引擎職責重疊
+
+### 原 P1 遺留
+
+- [ ] 質押倉位自動偵測：掃描 ERC-721 Transfer 事件
+- [ ] 穿倉即時告警 (Out-of-Range Alert)：`ChainEventScanner` 監聽 Swap event（注意：與 P0 Position Advice 場景 B 重疊，需評估）
+- [ ] Aerodrome Gauge Emissions APR
+- [ ] Aerodrome 質押 unclaimed fees 顯示修正
+- [ ] PnlCalculator 參數注入（消除對 `appState.userConfig` 的直接依賴）
+- [ ] GeckoTerminal 請求節流
+- [ ] `_fetchAerodromeTVL` RPC 失敗降級
+
+### 原 P2 遺留
+
+- [ ] BBEngine 帶寬優化
+- [ ] rebalance.ts 帶寬防護
+- [ ] 毒性交易流偵測 (Toxic Order Flow)
+- [ ] EOQ gas 成本乘數
+- [ ] APR 邏輯重構
+- [ ] 池子檢查嚴謹化
+
+### 原 P4
+
+- rebalance.ts 數學升級
+- IL 精算與財務模型重構
+- 回測策略模擬 (BacktestEngine)
+- 拆分 `PositionRecord`、統一 RPC Provider、強化枚舉型別
 
 ---
 

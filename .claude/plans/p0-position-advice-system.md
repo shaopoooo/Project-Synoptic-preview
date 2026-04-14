@@ -281,20 +281,6 @@ export function checkCooldown(
 // Score 公式從 mean/|cvar95| → mean/std
 // 影響欄位：MCSimResult 內的 score 計算
 // 影響 callers：mcEngine.ts:135, calcCommands.ts (任何讀 OpeningStrategy.score 的地方)
-
-// src/types/index.ts — OpeningStrategy 補兩個欄位
-// 原因：recommendOpen 需要 mean 計算 expectedReturnPct (mean × 100)，
-//       但 OpeningStrategy 目前只有 score/cvar95，沒 propagate mean/std。
-//       Stage 1 只改到 MCSimResult，沒把 mean/std 帶到 OpeningStrategy。
-// 修法：補 mean: number; std: number 兩個欄位，MonteCarloEngine 建構
-//       OpeningStrategy 時從最佳 σ 的 MCSimResult 複製這兩個值。
-// 影響 callers：只有 MC engine 的寫入點；讀取點僅 positionAdvisor 會用。
-// 決定於 2026-04-11 plan gap 修補，subagent 執行前回 Phase 1 補的。
-export interface OpeningStrategy {
-  // ... 既有欄位 ...
-  mean: number;    // NEW — from best-σ MCSimResult.mean
-  std: number;     // NEW — from best-σ MCSimResult.std
-}
 ```
 
 **Delete:**
