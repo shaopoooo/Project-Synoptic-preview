@@ -3,7 +3,7 @@
 > Path A brainstorming 產出，日期 2026-04-12。`/office-hours` → 下一步是 `/plan-eng-review`（可選 `/plan-ceo-review`）→ `superpowers:brainstorming` 定稿 → Phase 2 執行。
 > superpowers 執行階段**只讀不寫**；若需調整，必須退回 Phase 1 由本檔更新。
 >
-> **📐 對齊規則**：本 plan 遵守 `.claude/rules/position-tracking.md` 的 4 層 × N 策略矩陣 model。`trendFollow` 是新的 strategy class（新 column），跟既有 `lp` column 平行。檔案目錄 `src/services/strategy/trendFollow/`。
+> **📐 對齊規則**：本 plan 遵守 `.claude/rules/position-tracking.md` 的 4 層 × N 策略矩陣 model。`trendFollow` 是新的 strategy class（新 column），跟既有 `lp` column 平行。檔案目錄 `src/engine/trendFollow/`。
 >
 > **⚠ 取代 `tasks.md` P1 舊版 brainstorm**：`tasks.md` 的 P1 Universal Strategy Engine 段落（含 Phase 1-3 detailed task list）是 2026-04 前的舊流程遺產，有 disclaimer 明確說「不具執行合約效力」。本 plan 正式**取代**那個段落的 Phase 1 部分 — 舊 Phase 1 的 framework-first 思路被拒絕，改採 strangler fig + 單一策略 wedge。`tasks.md` 該段落啟動本 plan 後應改為一行 index 指向本檔。
 
@@ -12,8 +12,8 @@
 - **來源**：
   - `/office-hours` 2026-04-12：研究驅動 (d) + LP 漏洞痛點 (a 補強)，refuted 舊版 P1「通用框架 + 多策略插件」的 platform trap framing
   - 前置已 ship：Self-Learning Regime Engine (PR #19, 2026-04-10) — 提供 per-pool `regimeVector = { range, trend, neutral }`
-  - 前置已 ship：PR 3 PositionAdvisor 純函數 (PR #28, 2026-04-12) — LP 策略的 L1 advisor，對齊 matrix model 住 `src/services/strategy/lp/`
-  - 前置已 ship：`.claude/rules/position-tracking.md` matrix model rule (2026-04-12, commit `37ebadf`) — 定義新策略必須住 `src/services/strategy/<name>/`
+  - 前置已 ship：PR 3 PositionAdvisor 純函數 (PR #28, 2026-04-12) — LP 策略的 L1 advisor，對齊 matrix model 住 `src/engine/lp/`
+  - 前置已 ship：`.claude/rules/position-tracking.md` matrix model rule (2026-04-12, commit `37ebadf`) — 定義新策略必須住 `src/engine/<name>/`
 
 - **動機 — 真實痛點**：
   - V3 LP 本質上是 **short volatility on the BTC/ETH ratio**（range-bound 時賺 fees，穿 range 時被 IL 吃掉）
@@ -28,8 +28,8 @@
 
 ## Goal（「改完了」的定義）
 
-1. `src/services/strategy/trendFollow/` 目錄存在，含 `trendAdvisor.ts` (pool-agnostic pure logic) + `executionAdapter.ts` (interface) + `adapters/pairTradeAdapter.ts` (BTC/ETH 實作) + `instances/btcEthInstance.ts` (config)
-2. `src/services/strategy/MarketRegimeAnalyzer.ts` 加一個 signed trend direction scalar（由 `computeRegimeVector()` 輸出）
+1. `src/engine/trendFollow/` 目錄存在，含 `trendAdvisor.ts` (pool-agnostic pure logic) + `executionAdapter.ts` (interface) + `adapters/pairTradeAdapter.ts` (BTC/ETH 實作) + `instances/btcEthInstance.ts` (config)
+2. `src/engine/shared/MarketRegimeAnalyzer.ts` 加一個 signed trend direction scalar（由 `computeRegimeVector()` 輸出）
 3. **一份 backtest 報告** in `storage/backtest-results/<date>/trend-follow-btceth-summary.md`，包含：
    - 6 個月 BTC/ETH ratio 歷史 × 固定 entry/exit rules 的 P&L
    - Sharpe ratio / 勝率 / max drawdown / trade count
@@ -130,7 +130,7 @@
 - `perpPnlCalculator.ts` 加 `slippageBps: number` 參數（default 5）
 
 ### D13 — `STORAGE_PATHS.trendFollowState` 現在預留（brainstorming OQ5=b 定稿）
-- 在 `src/config/storage.ts` 新增 `trendFollowState: storage/trend-follow` entry
+- 在 `src/infra/storage.ts` 新增 `trendFollowState: storage/trend-follow` entry
 - Stage 3 backtest 不用（只用 `backtestResults`），但 live 階段（p1-trend-follow-production.md）會用
 - 預留成本 = 零，跟 i-unify-storage 的 paper reservation 精神一致
 - **注意**：此 entry 應在本 plan Stage 1 或前置步驟加入，因為 `i-position-tracking-alignment` Phase 2 的 storage.ts 擴充可能已跑完，需要另開一個 additive commit
@@ -173,16 +173,16 @@
 
 ## Constraints（必須遵守的專案規則）
 
-- **`.claude/rules/position-tracking.md`**：trendFollow 是新 strategy class column，必須住 `src/services/strategy/trendFollow/`。Matrix model 嚴格 boundary（L0 read-only truth、L1/L2 隔離、L3 append-only）適用
+- **`.claude/rules/position-tracking.md`**：trendFollow 是新 strategy class column，必須住 `src/engine/trendFollow/`。Matrix model 嚴格 boundary（L0 read-only truth、L1/L2 隔離、L3 append-only）適用
 - **`.claude/rules/architecture.md`**：`trendAdvisor` 是 pure function module，不是 class。參數注入，不修改全域 AppState
 - **`.claude/rules/pipeline.md`**：`trendAdvisor` 屬於 Phase 1 (compute)，不含 I/O。`executionAdapter` 屬於 Phase 0 (prefetch) 或 runner 層，所有 RPC 用 `rpcRetry`
-- **`.claude/rules/math.md`**：Perp P&L 計算必須用 BigInt 或精確數學，集中至 `utils/math.ts` 或本 module 的 pure math helper
+- **`.claude/rules/math.md`**：Perp P&L 計算必須用 BigInt 或精確數學，集中至 `infra/utils/math.ts` 或本 module 的 pure math helper
 - **`.claude/rules/naming.md`**：純函式 camelCase (`trendAdvisor.ts`)、Interface `IExecutionAdapter`、TypeScript strict 禁 `any`
 - **`.claude/rules/logging-errors.md`**：execution adapter 的 RPC 失敗必須 log + 寫入 `appState.cycleWarnings`
 - **`.claude/rules/security.md`**：Hyperliquid API key 只存 `.env`，禁止 commit
 - **CLAUDE.md 命名規則**：Stage 1 / Group 1.A / Task 1.A.1，**不**用 Stage A/B/C
 - **CLAUDE.md Plan 獨立性原則**：本 plan 只讀不寫其他 plan。**例外**：Stage 5 task 對 `tasks.md` P1 段落的 rewrite 屬於本 plan scope 內的合法操作
-- **i-position-tracking-alignment Phase 2 依賴**：本 plan 的 `src/services/strategy/trendFollow/` 路徑依賴該 plan 的 Stage 3 storage.ts 擴充（加 `STORAGE_PATHS.trendFollowState` 之類的 entry？ — 見 Open Question 2）
+- **i-position-tracking-alignment Phase 2 依賴**：本 plan 的 `src/engine/trendFollow/` 路徑依賴該 plan 的 Stage 3 storage.ts 擴充（加 `STORAGE_PATHS.trendFollowState` 之類的 entry？ — 見 Open Question 2）
 
 ## Interfaces（API 契約）
 
@@ -208,7 +208,7 @@
                      └──────────────┘
 ```
 
-### `src/services/strategy/trendFollow/types.ts` — NEW（含 PoolRef + IPerpClient）
+### `src/engine/trendFollow/types.ts` — NEW（含 PoolRef + IPerpClient）
 
 ```ts
 // PoolRef：最小 pool 識別型別（Eng review A2）
@@ -226,7 +226,7 @@ export interface IPerpClient {
 }
 ```
 
-### `src/services/strategy/trendFollow/trendAdvisor.ts` — NEW
+### `src/engine/trendFollow/trendAdvisor.ts` — NEW
 
 ```ts
 // Pool-agnostic pure function. 吃 regime signal + pool context 吐 decision。
@@ -255,7 +255,7 @@ export function recommendTrendAction(
 ): TrendDecision;
 ```
 
-### `src/services/strategy/trendFollow/executionAdapter.ts` — NEW
+### `src/engine/trendFollow/executionAdapter.ts` — NEW
 
 ```ts
 // Interface — NOT implementation. trendAdvisor 輸出 decision，adapter 翻成具體 trades。
@@ -300,7 +300,7 @@ export interface TrendClosedPosition extends TrendPosition {
 }
 ```
 
-### `src/services/strategy/trendFollow/adapters/pairTradeAdapter.ts` — NEW
+### `src/engine/trendFollow/adapters/pairTradeAdapter.ts` — NEW
 
 ```ts
 // BTC/ETH 專用 pair trade adapter
@@ -330,7 +330,7 @@ export class PairTradeAdapter implements IExecutionAdapter {
 }
 ```
 
-### `src/services/strategy/trendFollow/instances/btcEthInstance.ts` — NEW
+### `src/engine/trendFollow/instances/btcEthInstance.ts` — NEW
 
 ```ts
 // BTC/ETH instance 的 configuration — 獨立檔案方便未來加 solInstance.ts 等
@@ -348,7 +348,7 @@ export const BTC_ETH_POOL_REF: PoolRef = {
 };
 ```
 
-### `src/services/strategy/MarketRegimeAnalyzer.ts` — MODIFY（+ direction scalar）
+### `src/engine/shared/MarketRegimeAnalyzer.ts` — MODIFY（+ direction scalar）
 
 ```ts
 // 擴充 RegimeVector type (在 src/types/index.ts)
@@ -465,14 +465,14 @@ interface BacktestResult {
 
 **Group 1.A / Types & interfaces（sequential，blocking）**
 
-1. **NEW** `src/services/strategy/trendFollow/types.ts`：`TrendAdvisorParams` / `TrendDecision` / `TrendPosition` / `PerpLeg` / `TrendClosedPosition` type definitions
-2. **NEW** `src/services/strategy/trendFollow/executionAdapter.ts`：`IExecutionAdapter` interface definition（無實作）
+1. **NEW** `src/engine/trendFollow/types.ts`：`TrendAdvisorParams` / `TrendDecision` / `TrendPosition` / `PerpLeg` / `TrendClosedPosition` type definitions
+2. **NEW** `src/engine/trendFollow/executionAdapter.ts`：`IExecutionAdapter` interface definition（無實作）
 3. **VERIFY**：`tsc --noEmit` 零 error
 
 **Group 1.B / TrendAdvisor pure function（TDD）**
 
 4. **RED**：寫 `tests/services/strategy/trendFollow/trendAdvisor.test.ts` 8 個 cases（見 Test Plan）
-5. **GREEN**：實作 `src/services/strategy/trendFollow/trendAdvisor.ts` 純函數
+5. **GREEN**：實作 `src/engine/trendFollow/trendAdvisor.ts` 純函數
 6. **REFACTOR**：確認無 `any` / strict 通過 / 命名一致（camelCase）
 
 ### Stage 2 — Regime engine direction scalar + PairTradeAdapter
@@ -481,19 +481,19 @@ interface BacktestResult {
 
 7. **RED**：寫 `tests/services/strategy/MarketRegimeAnalyzer.test.ts` 新增 4 個 direction scalar cases
 8. **GREEN**：`src/types/index.ts` 的 `RegimeVector` interface 加 `trendDirection: number`
-9. **GREEN**：`src/services/strategy/MarketRegimeAnalyzer.ts` 的 `computeRegimeVector()` 加 direction 計算
+9. **GREEN**：`src/engine/shared/MarketRegimeAnalyzer.ts` 的 `computeRegimeVector()` 加 direction 計算
 10. **VERIFY**：既有 LP 相關 tests **全部仍綠**（特別是 `PositionAdvisor.test.ts` 21 個 cases）
 
 **Group 2.B / PairTradeAdapter（TDD）**
 
-11. **NEW**：`src/services/strategy/trendFollow/adapters/BacktestPerpSim.ts`（backtest mode 用 mock，不做 RPC）
+11. **NEW**：`src/engine/trendFollow/adapters/BacktestPerpSim.ts`（backtest mode 用 mock，不做 RPC）
 12. **RED**：寫 `tests/services/strategy/trendFollow/pairTradeAdapter.test.ts` 5 cases
-13. **GREEN**：實作 `src/services/strategy/trendFollow/adapters/pairTradeAdapter.ts`
+13. **GREEN**：實作 `src/engine/trendFollow/adapters/pairTradeAdapter.ts`
 14. **REFACTOR**：atomic rollback 邏輯、P&L 精度
 
 **Group 2.C / BTC/ETH instance config**
 
-15. **NEW**：`src/services/strategy/trendFollow/instances/btcEthInstance.ts`（配置常數 + pool ref）
+15. **NEW**：`src/engine/trendFollow/instances/btcEthInstance.ts`（配置常數 + pool ref）
 
 ### Stage 3 — Backtest runner（TDD + integration）
 

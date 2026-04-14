@@ -1,5 +1,5 @@
 ---
-paths: ["src/services/**"]
+paths: ["src/market/**", "src/engine/**"]
 alwaysApply: false
 description: "Service 開發規範"
 ---

@@ -1,5 +1,5 @@
 import type { UserConfig } from '../../types';
-import type { PositionScanner } from '../../services/position/PositionScanner';
+import type { PositionScanner } from '../../market/position/PositionScanner';
 
 /** 允許的排程間隔（分鐘）：10 的倍數且能整除 1440，起始對齊每日 00:00 */
 export const VALID_INTERVALS = [10, 20, 30, 60, 120, 180, 240, 360, 480, 720, 1440] as const;

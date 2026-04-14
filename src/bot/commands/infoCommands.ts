@@ -1,7 +1,7 @@
 import type { Bot } from 'grammy';
 import { config } from '../../config';
-import { appState } from '../../utils/AppState';
-import { fmtInterval } from '../../utils/formatter';
+import { appState } from '../../infra/AppState';
+import { fmtInterval } from '../formatter';
 import { VALID_INTERVALS } from './context';
 
 // dexList is needed for help text

@@ -4,9 +4,9 @@
  * Usage: npx ts-node src/scripts/backfillOhlcv.ts
  */
 
-import { syncHistoricalData, loadOhlcvStore } from '../services/market/HistoricalDataService';
+import { syncHistoricalData, loadOhlcvStore } from '../market/HistoricalDataService';
 import { config } from '../config';
-import { createServiceLogger } from '../utils/logger';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('Backfill');
 

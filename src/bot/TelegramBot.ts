@@ -1,8 +1,8 @@
 import { Bot } from 'grammy';
 import { config } from '../config';
 import { PoolStats, MarketSnapshot, PositionRecord, RiskAnalysis, UserConfig } from '../types';
-import { createServiceLogger } from '../utils/logger';
-import type { PositionScanner } from '../services/position/PositionScanner';
+import { createServiceLogger } from '../infra/logger';
+import type { PositionScanner } from '../market/position/PositionScanner';
 import { BotDeps } from './commands/context';
 import { registerInfoCommands } from './commands/infoCommands';
 import { registerConfigCommands } from './commands/configCommands';
@@ -61,7 +61,7 @@ export class TelegramBotService {
         registerRegimeCommands(this.bot);
     }
 
-    registerDiagnostics(diagnosticStore: import('../utils/diagnosticStore').DiagnosticStore) {
+    registerDiagnostics(diagnosticStore: import('../infra/diagnosticStore').DiagnosticStore) {
         registerDiagnosticCommands(this.bot, diagnosticStore);
     }
 

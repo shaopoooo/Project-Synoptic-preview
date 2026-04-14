@@ -1,7 +1,7 @@
 import type { Bot } from 'grammy';
 import { config } from '../../config';
-import { appState } from '../../utils/AppState';
-import { fmtInterval } from '../../utils/formatter';
+import { appState } from '../../infra/AppState';
+import { fmtInterval } from '../formatter';
 import { VALID_INTERVALS, minutesToCron, type BotDeps, type IntervalMinutes } from './context';
 
 /** 驗證快訊 / 完整報告間隔輸入。回傳錯誤說明字串，合法則回傳 null。 */

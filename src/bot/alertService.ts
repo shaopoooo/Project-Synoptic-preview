@@ -8,7 +8,7 @@ import { LRUCache } from 'lru-cache';
 import type { MarketSnapshot, PositionRecord, PoolStats } from '../types';
 import type { MirrorResult, ArchiveResult } from '../types/backup';
 import { config } from '../config';
-import { createServiceLogger } from '../utils/logger';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('AlertService');
 

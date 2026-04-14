@@ -40,7 +40,7 @@
  */
 
 import type { HypotheticalPosition, ReplayFeature, PositionOutcome } from '../../types/replay';
-import { computeL, computeLpValueToken0 } from '../../services/strategy/PositionCalculator';
+import { computeL, computeLpValueToken0 } from '../../engine/lp/PositionCalculator';
 
 /**
  * 計算單筆 hypothetical position 的 A / C / D 三指標結算。

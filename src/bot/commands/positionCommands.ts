@@ -1,7 +1,7 @@
 import type { Bot } from 'grammy';
 import { config } from '../../config';
-import { appState, ucTrackedPositions, ucUpsertPosition, ucFindWallet } from '../../utils/AppState';
-import { isValidWalletAddress } from '../../utils/validation';
+import { appState, ucTrackedPositions, ucUpsertPosition, ucFindWallet } from '../../infra/AppState';
+import { isValidWalletAddress } from '../../infra/utils/validation';
 import type { Dex } from '../../types';
 import type { BotDeps } from './context';
 

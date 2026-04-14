@@ -7,12 +7,12 @@
 > 本 plan 的所有 persist 路徑已對齊 `i-unify-storage.md` 的 P2 flat 結構。未來實作時：
 > - `data/shadow/...` → `storage/shadow/...`（由 `STORAGE_PATHS.shadow` 提供）
 > - `data/positions-cache/...`（若本 plan 未來需要）→ `storage/positions/...`
-> - 實作時一律 `import { STORAGE_PATHS } from '@/config/storage'`，**禁止** hardcode 字串路徑
+> - 實作時一律 `import { STORAGE_PATHS } from '@/infra/storage'`，**禁止** hardcode 字串路徑
 > - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 3 起即可 import
 > - Rejected 段落中保留的 `data/...` legacy 字串屬**歷史否決紀錄**，不需改動
 
 > **📐 Rule override notice (2026-04-12)**：本 plan 內文的路徑字串與命名以 `.claude/rules/position-tracking.md` 為**實際執行依據**，本 plan 文字保留為歷史 snapshot：
-> - `src/utils/positionStateTracker.ts` → 實際位置 `src/services/strategy/lp/positionStateTracker.ts`（LP column L1）
+> - `src/utils/positionStateTracker.ts` → 實際位置 `src/engine/lp/positionStateTracker.ts`（LP column L1）
 > - `tests/utils/positionStateTracker.test.ts` → 實際 `tests/services/positionStateTracker.test.ts`（tests flat）
 > - 其餘 LP-related 檔案以 rule doc 的「目錄 & 命名 convention」段落為準
 > - `STORAGE_PATHS.shadow` / `shadowAnalysis` 已於 `i-position-tracking-alignment` Stage 3 刪除，改用 `STORAGE_PATHS.shadowLp` / `shadowLpAnalysis`
@@ -44,7 +44,7 @@
 
 2. **PositionAdvisor = pure functions in module**（不是 service class）
    - 符合 `.claude/rules/math.md` 的 pure function 規範
-   - 模組路徑：`src/services/strategy/positionAdvisor.ts`
+   - 模組路徑：`src/engine/lp/positionAdvisor.ts`
    - 三個函數：`recommendOpen` / `classifyExit` / `shouldClose`
 
 3. **全部正規化空間計算**
@@ -71,7 +71,7 @@
    - 防止跨排程 race condition 導致同一倉位同時被 open + close
 
 7. **State persistence 整合 stateManager**
-   - 不新建獨立檔案，納入現有 `src/utils/stateManager.ts`
+   - 不新建獨立檔案，納入現有 `src/infra/stateManager.ts`
    - 持久化欄位：outOfRangeSince、scoreHistory（hysteresis）、alertCooldowns
 
 ### 場景決策邏輯
@@ -103,7 +103,7 @@
 
 8. **刪除 `RebalanceService` class**
    - 舊的 BB drift 三級策略（wait/DCA/withdrawSingleSide）邏輯刪除
-   - `calculateV3TokenValueRatio` 抽出為純函數，移到 `src/utils/math.ts`
+   - `calculateV3TokenValueRatio` 抽出為純函數，移到 `src/infra/utils/math.ts`
    - 確認所有 callers 已更新
 
 ## Rejected（已否決，subagent 不得再提）
@@ -135,9 +135,9 @@
 
 - **`.claude/rules/math.md`：**
   - 所有數學函式必須是 Pure Function（無副作用）
-  - 關鍵計算邏輯集中在 `utils/math.ts`
+  - 關鍵計算邏輯集中在 `infra/utils/math.ts`
   - 禁止 decimal.js，使用原生 BigInt 或 V3 SDK Math
-  - `calculateV3TokenValueRatio` 移到 `utils/math.ts`
+  - `calculateV3TokenValueRatio` 移到 `infra/utils/math.ts`
 
 - **`.claude/rules/naming.md`：**
   - 純函式模組：`camelCase.ts`（→ `positionAdvisor.ts`）
@@ -160,7 +160,7 @@
 
 - **`.claude/rules/telegram.md`：**
   - `src/bot/` 只能格式化文字 + 發送訊息
-  - 業務邏輯必須在 `src/services/`（PositionAdvisor）或 `src/runners/`
+  - 業務邏輯必須在 `src/engine/`（PositionAdvisor）或 `src/market/` / `src/engine/`
   - alertService 只能呼叫 PositionAdvisor 並格式化結果
 
 ## Interfaces（API 契約）
@@ -209,7 +209,7 @@ export interface CloseAdvice {
 }
 
 // ─────────────────────────────────────────────────────
-// src/services/strategy/positionAdvisor.ts (NEW)
+// src/engine/lp/positionAdvisor.ts (NEW)
 
 /** 開倉建議候選 — 不含 hysteresis 狀態判定 */
 export function recommendOpen(
@@ -238,7 +238,7 @@ export function shouldClose(
 ): CloseAdvice | null;
 
 // ─────────────────────────────────────────────────────
-// src/utils/positionStateTracker.ts (NEW, 屬於 stateManager 一部分)
+// src/engine/lp/positionStateTracker.ts (NEW, 屬於 stateManager 一部分)
 
 export interface PositionAdvisorState {
   /** key = poolId, value = score history (最近 N cycle) */
@@ -277,7 +277,7 @@ export function checkCooldown(
 **Modify (不新增介面，但更動既有型別):**
 
 ```ts
-// src/services/strategy/MonteCarloEngine.ts
+// src/engine/shared/MonteCarloEngine.ts
 // Score 公式從 mean/|cvar95| → mean/std
 // 影響欄位：MCSimResult 內的 score 計算
 // 影響 callers：mcEngine.ts:135, calcCommands.ts (任何讀 OpeningStrategy.score 的地方)
@@ -300,9 +300,9 @@ export interface OpeningStrategy {
 **Delete:**
 
 ```ts
-// src/services/strategy/rebalance.ts
+// src/engine/lp/rebalance.ts
 // - 刪除 RebalanceService class
-// - calculateV3TokenValueRatio 移到 src/utils/math.ts (保留為純函數)
+// - calculateV3TokenValueRatio 移到 src/infra/utils/math.ts (保留為純函數)
 ```
 
 ## Test Plan（TDD 起點，RED 階段的測試清單）
@@ -388,13 +388,13 @@ export interface OpeningStrategy {
 
 6. **RED**：寫 `tests/services/PositionAdvisor.test.ts` 19 個 cases（全部失敗）
 7. **GREEN**：建立 `src/types/positionAdvice.ts`（型別定義）；同時擴充 `src/types/index.ts` 的 `OpeningStrategy` 加 `mean: number; std: number` 兩個欄位
-8. **GREEN**：實作 `src/services/strategy/positionAdvisor.ts` 的 3 個函數逐一讓測試 GREEN；並在 `MonteCarloEngine.ts` 建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean`/`std`
+8. **GREEN**：實作 `src/engine/lp/positionAdvisor.ts` 的 3 個函數逐一讓測試 GREEN；並在 `MonteCarloEngine.ts` 建構 `OpeningStrategy` 時從 best-σ `MCSimResult` 複製 `mean`/`std`
 9. **REFACTOR**：抽出共用 helper（例如「穿出方向偵測」），保持純函數
 
 ### Stage 3 — State persistence（TDD）
 
 10. **RED**：寫 `tests/utils/positionStateTracker.test.ts` 8 個 cases
-11. **GREEN**：實作 `src/utils/positionStateTracker.ts`，整合到 `stateManager.ts`
+11. **GREEN**：實作 `src/engine/lp/positionStateTracker.ts`，整合到 `stateManager.ts`
 12. **VERIFY**：手動 restart 測試（寫狀態 → kill process → restart → 狀態還在）
 13. **REFACTOR**：確認 schema 清晰，欄位命名一致
 
@@ -404,7 +404,7 @@ export interface OpeningStrategy {
 15. **GREEN**：在 `src/index.ts` 新增 2 個獨立 cron job
     - 倉位狀態監控 (10min, 與主 cycle 錯開 5min)，含 isRunning guard
     - 新倉位探索 (1h)，含 isRunning guard
-16. **GREEN**：在 `src/runners/mcEngine.ts` 加 advisor call + hysteresis check + sendAlert
+16. **GREEN**：在 `src/engine/lp/mcEngine.ts` 加 advisor call + hysteresis check + sendAlert
 17. **GREEN**：實作 snapshot staleness guard（讀取 strategies.computedAt > 15min 跳過）
 17.5 **GREEN**：cycle 結尾組裝 ShadowSnapshot 並 fire-and-forget 呼叫 shadowLogger
     - 從 advisor 內部狀態取出當下的 hysteresis counters
@@ -418,8 +418,8 @@ export interface OpeningStrategy {
 19. **GREEN**：在 `src/bot/alertService.ts` 新增 advice alert 類型 + per-positionId LRU cooldown
     - 注意：alertService 的其他新方法（`sendShadowWeeklyReport`、`sendBackupFailure`、`sendPhase5cTrigger`）由各自的 plan 定義，本 task 不負責，但需保證 alertService 介面設計具備擴展性
 20. **GREEN**：Telegram 訊息格式（中文，註記「相對 HODL 基準」）
-21. **DELETE**：移除 `src/services/strategy/rebalance.ts` 的 `RebalanceService` class
-22. **MOVE**：把 `calculateV3TokenValueRatio` 移到 `src/utils/math.ts`（保留為純函數）
+21. **DELETE**：移除 `src/engine/lp/rebalance.ts` 的 `RebalanceService` class
+22. **MOVE**：把 `calculateV3TokenValueRatio` 移到 `src/infra/utils/math.ts`（保留為純函數）
 23. **VERIFY**：grep 確認沒有 RebalanceService callers 殘留
 24. **REFACTOR**：所有 advice 訊息共用同一個 Telegram formatter
 

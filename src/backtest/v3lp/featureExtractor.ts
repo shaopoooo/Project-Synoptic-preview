@@ -38,13 +38,13 @@
  */
 
 import seedrandom from 'seedrandom';
-import type { RawCandle, OhlcvStore } from '../../services/market/HistoricalDataService';
+import type { RawCandle, OhlcvStore } from '../../market/HistoricalDataService';
 import type { ReplayFeature } from '../../types/replay';
 import type { HourlyReturn, RegimeVector, Dex } from '../../types';
-import { runMCSimulation } from '../../services/strategy/MonteCarloEngine';
-import { computeRegimeVector, computeRangeGuards } from '../../services/strategy/MarketRegimeAnalyzer';
+import { runMCSimulation } from '../../engine/shared/MonteCarloEngine';
+import { computeRegimeVector, computeRangeGuards } from '../../engine/shared/MarketRegimeAnalyzer';
 import { config } from '../../config';
-import { createServiceLogger } from '../../utils/logger';
+import { createServiceLogger } from '../../infra/logger';
 import {
     MC_WINDOW_HOURS,
     MC_NUM_PATHS,

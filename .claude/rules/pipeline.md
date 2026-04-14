@@ -1,5 +1,5 @@
 ---
-paths: ["src/runners/**", "src/services/**"]
+paths: ["src/market/**", "src/engine/**", "src/infra/**"]
 alwaysApply: false
 description: "Phase 0 / Phase 1 Pipeline 原則"
 ---
