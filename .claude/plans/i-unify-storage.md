@@ -46,7 +46,7 @@
 
 ### D2 — Timing = β-tight（與 PR 5a + PR 5b 的較晚者同 release window）
 - Stage 1 paper reservation **現在做**（改 P0 plan 路徑字串 + Railway PRE-FLIGHT）
-- **Stage 2 config module foundation 也現在做**（post-review 優化 2026-04-11）：`src/config/storage.ts` + `ensureStorageDir()` + test 提前建立，讓 P0 Stage 2-5 + backtest Stage 1-3 的新 code 第一行起就 import `STORAGE_PATHS`，**消除 Stage 3 Group 3.A 對 P0 新檔的「write-then-rewrite」浪費**
+- **Stage 2 config module foundation 也現在做**（post-review 優化 2026-04-11）：`src/infra/storage.ts` + `ensureStorageDir()` + test 提前建立，讓 P0 Stage 2-5 + backtest Stage 1-3 的新 code 第一行起就 import `STORAGE_PATHS`，**消除 Stage 3 Group 3.A 對 P0 新檔的「write-then-rewrite」浪費**
 - Stage 3 實作 + deploy **與 PR 5a + PR 5b 的較晚者同天或緊鄰 1–2 天**（PR 5 後已拆分為 PR 5a P0 軌道 / PR 5b backtest 軌道）
 - **硬約束**：Stage 3 不得與 PR 5a / 5b 較晚者相隔超過 1 週，否則 γ 假設（歷史斷層可接受）失效，需回頭改寫 α migration script
 - Stage 2 **不受**硬約束限制 — 它是一個純 additive 的 util module，不碰 Railway、不碰 Dockerfile、不碰 R2 結構，可以**單獨**先 merge 到 dev，提前服務 P0 / backtest 的 code 寫作
@@ -82,7 +82,7 @@
 ### D9 — Entrypoint 每次啟動都跑 chown -R，但**不** mkdir（Eng review A3.α）
 - `chown -R app:app /app/storage` 就好，**不**在 entrypoint 建立領域骨架
 - 領域目錄的建立責任下放給**消費者 service**（logger / diagnosticStore / shadow writer 等），在 init 時各自呼叫 `fs.mkdirSync(dir, { recursive: true })`
-- 理由：避免 entrypoint shell 與 `STORAGE_PATHS` 常數兩份真相，保持 DRY — 新增領域時只改 `src/config/storage.ts` 一處
+- 理由：避免 entrypoint shell 與 `STORAGE_PATHS` 常數兩份真相，保持 DRY — 新增領域時只改 `src/infra/storage.ts` 一處
 - **不**用 marker 檔判斷首次 / redeploy，最簡單 worst-case safeguard
 - 接受 volume 大時啟動 +N 秒 chown 成本（見 Smoke Test Checklist boot-time baseline）
 
@@ -149,16 +149,16 @@
 ## Constraints（必須遵守的專案規則）
 
 - **CLAUDE.md Plan 獨立性原則**（2026-04-11 生效）：本 plan 只能 read-only reference 其他 plan 的 Interfaces / Decisions，不得修改他 plan 的內容。**例外**：Stage 1 task 1 + task 2 對 P0 plans 的 paper reservation 字串修改**屬於本 plan scope 內的直接操作**，並在本 plan 的 Decision D2 授權下執行。
-- **`.claude/rules/architecture.md`**：重構涉及 `src/services/` 與 `src/runners/`，必須維持 AppState 注入原則。新建的 `src/config/storage.ts` 屬 util 層，無副作用。
+- **`.claude/rules/architecture.md`**：重構涉及 `src/market/`、`src/engine/` 與 `src/infra/`，必須維持 AppState 注入原則。新建的 `src/infra/storage.ts` 屬 util 層，無副作用。
 - **`.claude/rules/logging-errors.md`**：winston transport 路徑改動必須通過 `createServiceLogger` 集中點，禁止散落 logger 建立。
 - **`.claude/rules/security.md`**：entrypoint chown 指令不得暴露 env var，Dockerfile 不得 `ADD .env`。`app` user 的 UID 1001 屬於可接受範圍（避開 root 0 與常見 daemon UID < 1000）。
-- **`.claude/rules/naming.md`**：`src/config/storage.ts` 採 camelCase，exported constant `STORAGE_PATHS` 採 UPPER_SNAKE。
+- **`.claude/rules/naming.md`**：`src/infra/storage.ts` 採 camelCase，exported constant `STORAGE_PATHS` 採 UPPER_SNAKE。
 - **TypeScript strict + 禁 `any`**：路徑 helper function 必須 typed。
 - **禁止 `console.log`**：所有路徑錯誤必須透過 `createServiceLogger` 或 `appState.cycleWarnings` 回報。
 
 ## Interfaces（API 契約）
 
-### `src/config/storage.ts` — NEW
+### `src/infra/storage.ts` — NEW
 
 ```ts
 // 單一事實來源，所有 persist 路徑都從這裡取
@@ -186,7 +186,7 @@ export function storageSubpath(domain: keyof typeof STORAGE_PATHS, ...parts: str
 export function ensureStorageDir(domain: keyof typeof STORAGE_PATHS): void;
 ```
 
-### `src/services/backup/r2Mirror.ts` — MODIFY
+### `src/infra/backup/r2Mirror.ts` — MODIFY
 
 ```ts
 // 舊: MIRROR_PATHS = ['data/', 'logs/']
@@ -196,7 +196,7 @@ export const MIRROR_PATHS = ['storage/'] as const;
 // 刪除: ANALYSIS_FLATTEN_RULES（不再需要，原生結構直接 mirror）
 ```
 
-### `src/services/backup/r2Archive.ts` — MODIFY
+### `src/infra/backup/r2Archive.ts` — MODIFY
 
 ```ts
 // tar root 從 [data, logs] 改為 storage
@@ -205,7 +205,7 @@ export const MIRROR_PATHS = ['storage/'] as const;
 export const ARCHIVE_TAR_ROOT = 'storage';
 ```
 
-### `src/services/backup/r2Restore.ts` — MODIFY
+### `src/infra/backup/r2Restore.ts` — MODIFY
 
 ```ts
 // 刪除所有 'data/' + 'logs/' 分支解析
@@ -329,7 +329,7 @@ exec "$@"
 
 ### Stage 2 — Config module foundation（post-review 優化，獨立 merge 到 dev）
 
-**目的**：把 `src/config/storage.ts` 的建立從 Stage 3 拉出來提前做，讓 P0 Stage 2-5 + backtest Stage 1-3 的新 code 從第一行起就 import `STORAGE_PATHS`，消除 Stage 3 Group 3.A 對 P0 新檔的 write-then-rewrite 浪費。
+**目的**：把 `src/infra/storage.ts` 的建立從 Stage 3 拉出來提前做，讓 P0 Stage 2-5 + backtest Stage 1-3 的新 code 從第一行起就 import `STORAGE_PATHS`，消除 Stage 3 Group 3.A 對 P0 新檔的 write-then-rewrite 浪費。
 
 **特性**：
 - 純 additive TS util module，不碰 Railway / Dockerfile / R2 / 現有 service
@@ -339,7 +339,7 @@ exec "$@"
 **Group 2.A / Config module（sequential, TDD）**
 
 7. **RED**：寫 `tests/config/storage.test.ts`，涵蓋 `STORAGE_ROOT` fallback、`STORAGE_PATHS` 7 個領域、`storageSubpath()`、`ensureStorageDir()` 冪等 + 中間層建立
-8. **GREEN**：新建 `src/config/storage.ts`，export `STORAGE_ROOT`、`STORAGE_PATHS`、`storageSubpath()`、`ensureStorageDir()`（interface 見 Interfaces 段落）
+8. **GREEN**：新建 `src/infra/storage.ts`，export `STORAGE_ROOT`、`STORAGE_PATHS`、`storageSubpath()`、`ensureStorageDir()`（interface 見 Interfaces 段落）
 9. **REFACTOR**：確認 TypeScript strict 通過、無 `any`、`STORAGE_PATHS` 所有 entry 皆為目錄（無檔案路徑，CQ1）
 10. **COMMIT**：single commit `feat(config): add storage path module for i-unify-storage Stage 2`
 11. **Merge 到 dev**：獨立 PR 或直接 commit（由你決定），目的是讓 P0 / backtest plan 的執行階段 subagent 可以 import 這個 module
@@ -352,9 +352,9 @@ exec "$@"
 
 因 A3.α entrypoint 不再建立領域骨架，每個消費者 service 必須在 init 時呼叫 `ensureStorageDir(<domain>)`。
 
-12. **MODIFY** `src/utils/logger.ts`：winston file transport 路徑改用 `STORAGE_PATHS.debug`；init 時呼叫 `ensureStorageDir('debug')`
-13. **MODIFY** `src/utils/diagnosticStore.ts`：寫入路徑改用 `path.join(STORAGE_PATHS.diagnostics, 'diagnostics.jsonl')`；init 時呼叫 `ensureStorageDir('diagnostics')`
-14. **MODIFY** OHLCV 相關（`src/runners/prefetch.ts` / `src/scripts/backfillOhlcv.ts` / 其他）：路徑改用 `STORAGE_PATHS.ohlcv`；加 `ensureStorageDir('ohlcv')`
+12. **MODIFY** `src/infra/logger.ts`：winston file transport 路徑改用 `STORAGE_PATHS.debug`；init 時呼叫 `ensureStorageDir('debug')`
+13. **MODIFY** `src/infra/diagnosticStore.ts`：寫入路徑改用 `path.join(STORAGE_PATHS.diagnostics, 'diagnostics.jsonl')`；init 時呼叫 `ensureStorageDir('diagnostics')`
+14. **MODIFY** OHLCV 相關（`src/market/prefetch.ts` / `src/scripts/backfillOhlcv.ts` / 其他）：路徑改用 `STORAGE_PATHS.ohlcv`；加 `ensureStorageDir('ohlcv')`
 15. **VERIFY**：`rg "'/app/data'|'/app/logs'|\"data/|\"logs/" src/` 為空；`rg "STORAGE_PATHS" src/services/shadow src/backtest` 應看到 P0 / backtest 新檔從第一行就使用新常數（若無則代表 Stage 2 未服務到執行階段）
 
 **Group 3.A 縮減的原因**：原 task 13（MODIFY Shadow observer）與 task 14（MODIFY Backtest-results writer）已消失，因為 P0 / backtest 的執行階段 subagent 在 Stage 2 merge 後寫 code 時**直接使用** `STORAGE_PATHS`，不存在需要 refactor 的 hardcoded string。
@@ -378,10 +378,10 @@ exec "$@"
 
 **Group 3.D / R2 結構收斂**
 
-27. **MODIFY** `src/services/backup/r2Mirror.ts`：`MIRROR_PATHS = ['storage/']`、**刪除** `ANALYSIS_FLATTEN_RULES` 常數與所有引用
-28. **MODIFY** `src/services/backup/r2Archive.ts`：`ARCHIVE_SOURCES` / tar 指令改用 `storage/` 單根
-29. **MODIFY** `src/services/backup/r2Restore.ts`：刪除 legacy 分支、`RESTORE_ROOTS = ['storage/']`、`isSafeRelativePath` 白名單收斂
-30. **MODIFY** `src/services/backup/backupCron.ts`（若有路徑 log）：對齊新常數
+27. **MODIFY** `src/infra/backup/r2Mirror.ts`：`MIRROR_PATHS = ['storage/']`、**刪除** `ANALYSIS_FLATTEN_RULES` 常數與所有引用
+28. **MODIFY** `src/infra/backup/r2Archive.ts`：`ARCHIVE_SOURCES` / tar 指令改用 `storage/` 單根
+29. **MODIFY** `src/infra/backup/r2Restore.ts`：刪除 legacy 分支、`RESTORE_ROOTS = ['storage/']`、`isSafeRelativePath` 白名單收斂
+30. **MODIFY** `src/infra/backup/backupCron.ts`（若有路徑 log）：對齊新常數
 31. **VERIFY**：所有 backup 測試 GREEN
 
 **Group 3.E / Docs**
@@ -480,7 +480,7 @@ BOT STATE          VOLUME STATE            ACTION
 
 當未來需要新增持久化領域（例如 `storage/telemetry/`）：
 
-1. 在 `src/config/storage.ts` 的 `STORAGE_PATHS` 加一個 entry（**唯一需要改的**程式碼檔案）
+1. 在 `src/infra/storage.ts` 的 `STORAGE_PATHS` 加一個 entry（**唯一需要改的**程式碼檔案）
 2. 消費者 service init 時呼叫 `ensureStorageDir('telemetry')`
 3. 在本 plan 的本段下方登記（只為了追蹤成長）
 
@@ -537,7 +537,7 @@ BOT STATE          VOLUME STATE            ACTION
 - **R7**：新增 risk — `ensureStorageDir` 漏呼叫的 fail-mode，由 path-guard 靜態檢查防禦
 
 **Post-review 排序優化（2026-04-11，User approved option A）：**
-- **Stage 2 提前執行**：原 Stage 3 的 config module group（`src/config/storage.ts` + `ensureStorageDir()`）拉出來成為獨立 Stage 2，獨立 merge 到 dev branch，**不受** D2 硬約束
+- **Stage 2 提前執行**：原 Stage 3 的 config module group（`src/infra/storage.ts` + `ensureStorageDir()`）拉出來成為獨立 Stage 2，獨立 merge 到 dev branch，**不受** D2 硬約束
 - **動機**：原 ordering 下 P0 Stage 4（PR 5a）寫 shadow observer 會 hardcode `./storage/shadow/...` 字串，PR 6 再把它 refactor 成 `STORAGE_PATHS.shadow` — 這是 write-then-rewrite 浪費，違反 DRY
 - **效果**：P0 Stage 2-5 + backtest Stage 1-3 的新 code 從第一行就 import `STORAGE_PATHS`，Stage 3 Group 3.A scope 從 6 個 task 縮到 4 個（只改既有服務 logger / diagnosticStore / OHLCV，不再需要改 shadow observer / backtest writer）
 - **代價**：Stage 3 敘事純度下降（原「Config 常數集中」group 被拆出），需要在 D2 加一條 exception

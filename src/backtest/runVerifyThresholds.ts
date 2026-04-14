@@ -19,7 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { STORAGE_PATHS, ensureStorageDir } from '../config/storage';
+import { STORAGE_PATHS, ensureStorageDir } from '../infra/storage';
 import { extractFeatures } from './v3lp/featureExtractor';
 import { V3LpReplayDriver } from './v3lp/replayDriver';
 import { runCoarseGrid, selectTopCandidates, runFineGrid } from './framework/gridSearcher';
@@ -34,10 +34,10 @@ import {
     TRAIN_START_TS, VAL_START_TS, TEST_START_TS, TEST_END_TS,
     COARSE_GRID, FINE_GRID_TOP_N,
 } from './config';
-import type { OhlcvStore } from '../services/market/HistoricalDataService';
+import type { OhlcvStore } from '../market/HistoricalDataService';
 import type { ReplayFeature } from '../types/replay';
 import type { ThresholdSet } from '../types/replay';
-import { createServiceLogger } from '../utils/logger';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('BacktestVerify');
 

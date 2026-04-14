@@ -31,7 +31,7 @@ import type {
     RegimeVector,
 } from '../../types';
 import type { CloseReason, ExitDecision } from '../../types/positionAdvice';
-import { recommendOpen } from '../../services/strategy/lp/positionAdvisor';
+import { recommendOpen } from '../../engine/lp/positionAdvisor';
 import { computeOutcome } from './outcomeCalculator';
 import { INITIAL_CAPITAL } from '../config';
 

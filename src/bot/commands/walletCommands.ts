@@ -1,6 +1,6 @@
 import type { Bot } from 'grammy';
-import { appState } from '../../utils/AppState';
-import { isValidWalletAddress } from '../../utils/validation';
+import { appState } from '../../infra/AppState';
+import { isValidWalletAddress } from '../../infra/utils/validation';
 import type { UserConfig } from '../../types';
 import type { BotDeps } from './context';
 

@@ -14,7 +14,7 @@
 
 import { extractFeatures } from '../../../src/backtest/v3lp/featureExtractor';
 import { MC_WINDOW_HOURS } from '../../../src/backtest/config';
-import type { OhlcvStore, RawCandle } from '../../../src/services/market/HistoricalDataService';
+import type { OhlcvStore, RawCandle } from '../../../src/market/HistoricalDataService';
 import type { Dex } from '../../../src/types';
 
 // 測試 fixture 故意只比 MC_WINDOW_HOURS (720) 多 3 根，讓跑 MC 引擎的 late cycle
@@ -148,9 +148,9 @@ describe('extractFeatures', () => {
         // featureExtractor 的 `normFactor <= 0` guard 而走 null-feature 捷徑，
         // 根本觸發不到 safeComputeRegime，防禦路徑等於沒被測試到（code review I1）。
         jest.isolateModules(() => {
-            jest.doMock('../../../src/services/strategy/MarketRegimeAnalyzer', () => {
+            jest.doMock('../../../src/engine/shared/MarketRegimeAnalyzer', () => {
                 const actual = jest.requireActual(
-                    '../../../src/services/strategy/MarketRegimeAnalyzer',
+                    '../../../src/engine/shared/MarketRegimeAnalyzer',
                 );
                 return {
                     ...actual,

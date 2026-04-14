@@ -8,7 +8,7 @@
 > - `storage/backtest-results/<date>/...`（由 `STORAGE_PATHS.backtestResults` 提供）
 > - `storage/shadow/<YYYY-MM>.jsonl`（由 `STORAGE_PATHS.shadow` 提供）
 > - `storage/shadow/analysis/<weekIso>.md`（由 `STORAGE_PATHS.shadowAnalysis` 提供）
-> - 實作時一律 `import { STORAGE_PATHS } from '@/config/storage'`，**禁止** hardcode 字串路徑
+> - 實作時一律 `import { STORAGE_PATHS } from '@/infra/storage'`，**禁止** hardcode 字串路徑
 > - `STORAGE_PATHS` 由 `i-unify-storage` Stage 2 提前建立，PR 4 起即可 import
 >
 > **⚠ `ANALYSIS_FLATTEN_RULES` 將被廢除**：本 plan 下文提到的 `analysis/backtest-<date>-summary.md` / `analysis/shadow-<weekIso>.md` 扁平索引層會被 `i-unify-storage` Stage 3 的 D6 決策**完全廢除**。未來 R2 裡只有原生 `storage/...` 樹，沒有 top-level `analysis/` prefix。本 plan 保留該段落作為歷史設計 context，但執行階段**不要**實作 flatten 規則。
@@ -336,7 +336,7 @@
 
 - **`.claude/rules/math.md`**：
   - Outcome calculator、grid searcher、walk-forward split 全部 pure function
-  - 共用數學工具集中在 `utils/math.ts`
+  - 共用數學工具集中在 `infra/utils/math.ts`
   - 禁用 decimal.js，使用原生 BigInt 或既有 V3 SDK Math
 
 - **`.claude/rules/naming.md`**：
@@ -681,7 +681,7 @@ sendShadowWeeklyReport(analysis: WeeklyAnalysis): Promise<void>;
 sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 ```
 
-### `src/runners/mcEngine.ts`（MODIFY）
+### `src/engine/lp/mcEngine.ts`（MODIFY）
 
 在 cycle 結尾、advisor 判斷完成後，組裝 ShadowSnapshot[] 並 fire-and-forget 呼叫 shadowLogger。**這個整合屬於 P0 plan Stage 4 task 17.5 的範疇**。
 
@@ -900,7 +900,7 @@ sendManualTuneAlert(decision: ManualTuneDecision): Promise<void>;
 #### Group K: Cron 整合與 alertService
 
 32. **MODIFY**: `src/bot/alertService.ts` 新增 `sendShadowWeeklyReport()` + `sendManualTuneAlert()` 方法
-33. **MODIFY**: `src/runners/mcEngine.ts` cycle 結尾新增「組裝 ShadowSnapshot[] + fire-and-forget shadowLogger」邏輯（**這個動作已在 P0 plan Stage 4 task 17.5 列出**）
+33. **MODIFY**: `src/engine/lp/mcEngine.ts` cycle 結尾新增「組裝 ShadowSnapshot[] + fire-and-forget shadowLogger」邏輯（**這個動作已在 P0 plan Stage 4 task 17.5 列出**）
 34. **MODIFY**: `src/index.ts` 啟動流程新增「週日 23:00 (Asia/Taipei) cron 觸發 weeklyAnalyzer」+ `isShadowAnalyzeRunning` guard
 35. **VERIFY**: 手動觸發 weeklyAnalyzer（暫時改 cron expression），確認完整流程：讀 log → 跑 analyze → 寫 markdown → 推 Telegram
 

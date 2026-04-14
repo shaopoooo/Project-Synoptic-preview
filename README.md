@@ -2,7 +2,7 @@
 
 > Regime-driven 量化 DeFi 交易系統 — 以自演化 Regime Engine 為決策核心，衍生多種市場策略
 
-DexBot 是一個運行於 Railway 的長駐 bot。核心理念：**Regime Engine 是唯一的「氣象中心」，所有交易策略都是這份天氣預報的消費者**。Regime Engine 判斷市場處於「震盪（range）」、「趨勢（trend）」還是「中立（neutral）」，各策略根據自己的風險偏好解讀這份客觀報告，做出不同的交易決策。
+核心理念：**Regime Engine 是唯一的「氣象中心」，所有交易策略都是這份天氣預報的消費者**。Regime Engine 判斷市場處於「震盪（range）」、「趨勢（trend）」還是「中立（neutral）」，各策略根據自己的風險偏好解讀這份客觀報告，做出不同的交易決策。
 
 ## 🏛️ 系統架構（Regime 為核心的資料流）
 
@@ -60,7 +60,7 @@ OHLCV (1H K 線，per-pool)
 | **Self-Learning Regime Engine** | #19 | Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap |
 | **Sharpe-like MC Scoring** | #20 | `mean/std` 取代 `mean/|cvar95|` |
 | **Cloudflare R2 Backup** | v0.2.0 | Daily mirror + weekly archive + manual CLI restore |
-| **PositionAdvisor 純函數** | #28 | `recommendOpen` / `classifyExit` / `shouldClose`，住 `src/services/strategy/lp/` |
+| **PositionAdvisor 純函數** | #28 | `recommendOpen` / `classifyExit` / `shouldClose`，住 `src/engine/lp/` |
 
 ### 進行中
 
@@ -202,15 +202,15 @@ DynamicBandEngine (Kalman + EWMA)    ← 新增前處理層
 - Two-Phase Evolution（引擎 4 維 + 交易邏輯 11 維），防 15 維 overfitting
 - Pass/fail：DefenseEV（Saved_IL / Missed_Fees）≥ 1.0
 
-相關檔案：`src/services/strategy/MarketRegimeAnalyzer.ts`、`src/types/index.ts`、`src/runners/mcEngine.ts`、`src/services/strategy/MonteCarloEngine.ts`
+相關檔案：`src/engine/shared/MarketRegimeAnalyzer.ts`、`src/types/index.ts`、`src/engine/lp/mcEngine.ts`、`src/engine/shared/MonteCarloEngine.ts`
 
 ### 核心設計原則
 
 - **AppState 注入式**：所有 Service 透過參數注入 AppState，禁止直接修改全域狀態
-- **Pure Functions**：所有計算邏輯集中在 `utils/math.ts`，使用原生 BigInt（禁用 decimal.js）
+- **Pure Functions**：所有計算邏輯集中在 `infra/utils/math.ts`，使用原生 BigInt（禁用 decimal.js）
 - **TypeScript strict**：禁止 `any`
 - **錯誤處理**：所有 RPC 呼叫包 `rpcRetry`，API 失敗 fallback 到本地快取並記錄 `appState.cycleWarnings`
-- **Telegram 解耦**：`src/bot/` 只能格式化文字 + 發送，業務邏輯在 `src/services/`
+- **Telegram 解耦**：`src/bot/` 只能格式化文字 + 發送，業務邏輯在 `src/market/`、`src/engine/`
 
 ## 🛠️ Tech Stack
 

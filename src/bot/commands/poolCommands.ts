@@ -1,7 +1,7 @@
 import type { Bot } from 'grammy';
 import { config } from '../../config';
-import { appState, ucPoolList } from '../../utils/AppState';
-import { isValidPoolAddress, isValidPoolV4Id } from '../../utils/validation';
+import { appState, ucPoolList } from '../../infra/AppState';
+import { isValidPoolAddress, isValidPoolV4Id } from '../../infra/utils/validation';
 import type { Dex, PoolConfig } from '../../types';
 import type { BotDeps } from './context';
 

@@ -10,9 +10,9 @@
  * 原地等 admin 手動清理。
  */
 
-import { createR2Client } from '../services/backup/r2Client';
-import { restoreMirror } from '../services/backup/r2Restore';
-import { createServiceLogger } from '../utils/logger';
+import { createR2Client } from '../infra/backup/r2Client';
+import { restoreMirror } from '../infra/backup/r2Restore';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('BackupRestoreMirror');
 

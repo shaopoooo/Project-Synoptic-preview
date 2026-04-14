@@ -1,5 +1,5 @@
 ---
-paths: ["src/services/strategy/**", "src/services/position/**", "src/services/shadow/**", "src/bot/**"]
+paths: ["src/engine/shared/**", "src/engine/lp/**", "src/market/position/**", "src/bot/**"]
 alwaysApply: false
 description: "Position tracking mental model — 4 layer × N strategy 矩陣"
 ---
@@ -52,12 +52,15 @@ Options (P3+)   │ 留給未來 brainstorm                                     
 
 ## 目錄 & 命名 convention
 
-**Strategy plugin 檔案住在 `src/services/strategy/<strategy>/`**：
+**Strategy plugin 檔案分布在 `src/engine/` 下**：
 
 ```
-src/services/strategy/
-├── BollingerBands.ts / MonteCarloEngine.ts / ...   ← grandfathered，跨策略共用工具 + 舊既有程式
-├── lp/                                              ← LP strategy plugin
+src/engine/
+├── shared/                                          ← 跨策略共用工具
+│   ├── BollingerBands.ts / WalkForwardValidator.ts  ← 共用引擎元件
+│   └── ...
+├── lp/                                              ← LP strategy plugin + MC Engine
+│   ├── MonteCarloEngine.ts                          ← LP 策略引擎
 │   ├── positionAdvisor.ts                           ← L1 純函數集（PR 3 已建）
 │   ├── positionStateTracker.ts                      ← L1 state machine（P0 Stage 3 待建）
 │   └── lpShadowDriver.ts                            ← L2 shadow driver（backtest Stage 2 待建）
@@ -65,9 +68,9 @@ src/services/strategy/
 │   └── ...
 ```
 
-**既有檔案 grandfathered**：`MonteCarloEngine.ts` / `BollingerBands.ts` / `PnlCalculator.ts` / `rebalance.ts` 等留在 `src/services/strategy/` root。語意為「跨策略共用工具」或「舊既有程式碼」。未來 P1 refactor 可能會搬，但**本 rule 不要求立即搬**。
+**既有檔案 grandfathered**：`PnlCalculator.ts` / `rebalance.ts` 等跨策略共用工具移至 `src/engine/shared/`。未來 P1 refactor 可能會再調整，但**本 rule 不要求立即搬**。
 
-**測試位置**：`tests/services/` flat（既有慣例），**不**鏡射 source 的 `lp/` 巢狀結構。測試檔名含策略關鍵字即可（例如 `PositionAdvisor.test.ts`）。
+**測試位置**：`tests/` flat（既有慣例），**不**鏡射 source 的巢狀結構。測試檔名含策略關鍵字即可（例如 `PositionAdvisor.test.ts`）。
 
 ## Plugin contract (conceptual)
 
@@ -93,7 +96,7 @@ interface IStrategyTrackingPlugin {
 
 ## Persistence 路徑約束
 
-所有路徑**必須**經過 `src/config/storage.ts` 的 `STORAGE_PATHS` 常數，**禁止** hardcode 字串：
+所有路徑**必須**經過 `src/infra/storage.ts` 的 `STORAGE_PATHS` 常數，**禁止** hardcode 字串：
 
 | Layer | 策略 | 路徑 |
 |---|---|---|

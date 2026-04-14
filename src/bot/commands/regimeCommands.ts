@@ -1,9 +1,9 @@
 import type { Bot } from 'grammy';
-import { appState } from '../../utils/AppState';
-import { currentConstantsToGenome, randomGenome } from '../../services/strategy/ParameterGenome';
-import { runOneGeneration, type EvaluatedGenome } from '../../services/strategy/EvolutionEngine';
-import { walkForwardValidate } from '../../runners/WalkForwardValidator';
-import { loadOhlcvStore } from '../../services/market/HistoricalDataService';
+import { appState } from '../../infra/AppState';
+import { currentConstantsToGenome, randomGenome } from '../../engine/shared/ParameterGenome';
+import { runOneGeneration, type EvaluatedGenome } from '../../engine/shared/EvolutionEngine';
+import { walkForwardValidate } from '../../engine/shared/WalkForwardValidator';
+import { loadOhlcvStore } from '../../market/HistoricalDataService';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { rename } from 'fs/promises';

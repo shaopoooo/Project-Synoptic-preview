@@ -141,7 +141,7 @@
 
 ## Interfaces（API 契約）
 
-### `src/services/strategy/DynamicBandEngine.ts` — NEW
+### `src/engine/shared/DynamicBandEngine.ts` — NEW
 
 ```ts
 export interface BandState {
@@ -275,7 +275,7 @@ export interface RegimeGenome {
 **Group 1.A / Engine（TDD）**
 
 1. **RED**：寫 `tests/services/strategy/DynamicBandEngine.test.ts` 5 cases
-2. **GREEN**：新建 `src/services/strategy/DynamicBandEngine.ts`
+2. **GREEN**：新建 `src/engine/shared/DynamicBandEngine.ts`
 3. **REFACTOR**：確認 pure math（無 I/O）、TypeScript strict、no any
 
 ### Stage 2 — deriveMarketStats 升級 + Z-score + smoothedCandles
@@ -288,7 +288,7 @@ export interface RegimeGenome {
 
 **Group 2.B / 下游適配**
 
-7. **MODIFY**：`src/runners/mcEngine.ts` 中 `runMCEngine()` 呼叫 `deriveMarketStats()` 的 call site，接收新 interface
+7. **MODIFY**：`src/engine/lp/mcEngine.ts` 中 `runMCEngine()` 呼叫 `deriveMarketStats()` 的 call site，接收新 interface
 8. **VERIFY**：tsc --noEmit 零 error、既有 tests 全綠
 
 ### Stage 3 — Regime scoring 改造 + consumer 偏見
@@ -304,7 +304,7 @@ export interface RegimeGenome {
 **Group 3.B / LP consumer 端（TDD）**
 
 14. **RED**：寫 `tests/services/strategy/lp/lpRegimeInterpreter.test.ts` 3 cases
-15. **GREEN**：新建 `src/services/strategy/lp/lpRegimeInterpreter.ts`（CHOP panic shortcut + sensitivity multiplier）
+15. **GREEN**：新建 `src/engine/lp/lpRegimeInterpreter.ts`（CHOP panic shortcut + sensitivity multiplier）
 16. **MODIFY**：LP advisor call chain 整合 lpRegimeInterpreter
 
 ### Stage 4 — Two-Phase Genome Evolution

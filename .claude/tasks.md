@@ -49,7 +49,7 @@
   - 8 個 TDD 測試全綠
 - ✅ **PR 3 · P0 Stage 2 PositionAdvisor 純函數** (PR #28, 2026-04-12)
   - `recommendOpen` / `classifyExit` / `shouldClose` 三個純函數 + 21 個 tests
-  - Rebase commit `ade8f44` 把檔案搬到 `src/services/strategy/lp/` 對齊 matrix model
+  - Rebase commit `ade8f44` 把檔案搬到 `src/engine/lp/` 對齊 matrix model
 - ✅ **i-position-tracking-alignment brainstorm + rule + plan** (2026-04-12, `37ebadf`)
   - `.claude/rules/position-tracking.md` 永久 matrix model rule（4 層 × N 策略）
   - `.claude/plans/i-position-tracking-alignment.md` 對齊 plan（plan-eng-review 已通過）
@@ -80,7 +80,7 @@
   - **Gap 決策已鎖定（詳見各 Batch commit message）**：
     - Gap A: legacy BacktestEngine 已移除
     - Gap B: OHLCV 實體路徑 `data/ohlcv/` vs `STORAGE_PATHS.ohlcv` — code 用後者，Task 19 執行時 env var override
-    - Gap C: featureExtractor 絕不 import `src/runners/mcEngine.ts`，直接用 `runMCSimulation` pure function
+    - Gap C: featureExtractor 絕不 import `src/engine/lp/mcEngine.ts`，直接用 `runMCSimulation` pure function
     - Gap D/E/F/G: 全部 placeholder，Task 19 跑過後由 tasks.md follow-up 調真實值
   - **通過 A>0 / D>0 / C≥50% 絕對底線才允許進 PR 5a**
   - **依賴**：PR 3 ✅、PTA ✅
@@ -211,7 +211,7 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 - **Cloudflare R2 Backup** (v0.2.0, 2026-04-11): Daily mirror + weekly archive + analysis flatten + 手動 CLI restore + Telegram failure alert；prod/dev 雙 bucket + 兩組 token；CSO audit 修復 path traversal + tar.x hardening
 - **Self-Learning Regime Engine** (PR #19, 2026-04-10): Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap + Telegram `/regime` 指令
 - **P0 Stage 1 — Sharpe scoring 重構** (PR #20, 2026-04-11): MC score 從 `mean/|cvar95|` 改為 `mean/std`（Sharpe-like），含 seedrandom 固定 seed canary regression test
-- **PR 3 — P0 Stage 2 PositionAdvisor 純函數** (PR #28, 2026-04-12, merge commit `34acf68`): `recommendOpen` / `classifyExit` / `shouldClose` 三個純函數 + 21 個 TDD tests，含 rebase commit `ade8f44` 把檔案搬到 `src/services/strategy/lp/positionAdvisor.ts` 對齊 matrix model
+- **PR 3 — P0 Stage 2 PositionAdvisor 純函數** (PR #28, 2026-04-12, merge commit `34acf68`): `recommendOpen` / `classifyExit` / `shouldClose` 三個純函數 + 21 個 TDD tests，含 rebase commit `ade8f44` 把檔案搬到 `src/engine/lp/positionAdvisor.ts` 對齊 matrix model
 
 ### Planning artifacts（plans 已寫 / brainstorm 已完成）
 
@@ -360,23 +360,23 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 > - 5 Stages（Stage 1 純邏輯 → 2 adapter + regime mod → 3 backtest runner → 4 pass criteria + 6-month run → 5.A/5.B pass/fail 分支）
 > - Path A 進度：`/office-hours` ✅，下一步 `/plan-eng-review`（必要）
 >
-> ~~**舊版 Phase 1 task list**（MC 三層拆分 / PricePathGenerator / IStrategy interface / V3LPStrategy plugin / MC engine refactor）**已被拒絕**~~ — 理由：當前只有 1 個 strategy class，framework-first 抽象沒有 data 支撐（違反 strangler fig / rule of three）。正確做法是先 ship trend follow module（`src/services/strategy/trendFollow/`），等未來有 2-3 個 strategies 才 brainstorm framework 抽象。詳見 `p1-trend-follow-strategy.md` 的 Rejected 段落。
+> ~~**舊版 Phase 1 task list**（MC 三層拆分 / PricePathGenerator / IStrategy interface / V3LPStrategy plugin / MC engine refactor）**已被拒絕**~~ — 理由：當前只有 1 個 strategy class，framework-first 抽象沒有 data 支撐（違反 strangler fig / rule of three）。正確做法是先 ship trend follow module（`src/engine/trendFollow/`），等未來有 2-3 個 strategies 才 brainstorm framework 抽象。詳見 `p1-trend-follow-strategy.md` 的 Rejected 段落。
 
 ### Phase 2a — FundingRateStrategy
 
 - [ ] FundingRate 數據源（preferred: 真實 perp DEX API；fallback: synthetic 基於歷史 vol）
-- [ ] `src/services/strategy/FundingRateStrategy.ts`：實作 IStrategy
+- [ ] `src/engine/fundingRate/FundingRateStrategy.ts`：實作 IStrategy
 - [ ] 跑演化驗證：trend regime 是否自動偏好 perp 策略
 
 ### Phase 2b — StrategyAllocator + 視覺化
 
-- [ ] `src/services/strategy/StrategyAllocator.ts`：regime vector → 策略權重向量（softmax）
+- [ ] `src/engine/shared/StrategyAllocator.ts`：regime vector → 策略權重向量（softmax）
 - [ ] Regime Transition Alert：regime vector 24h 變化 > 20% → Telegram 通知 + 策略切換建議
 - [ ] Historical regime-strategy backtest 視覺化：Telegram 文字圖表（非 Web）
 
 ### Phase 2c — LLM Strategy Advisor
 
-- [ ] `src/services/strategy/LLMStrategyAdvisor.ts`：Phase 0 模組
+- [ ] `src/engine/shared/LLMStrategyAdvisor.ts`：Phase 0 模組
 - [ ] 輸入：regime vector + 市場數據摘要（限 ~500 tokens）+ 現有策略 score
 - [ ] 輸出：自然語言策略建議 + pseudocode
 - [ ] LLM 選擇：Claude API（claude-api skill），成本 ~$0.01/次
@@ -386,7 +386,7 @@ npx tsc --noEmit && npm test                # 應該 171/171 green
 
 ### Phase 2d — Paper Trading + 績效歸因
 
-- [ ] `src/services/paper/PaperTradingService.ts`：用真實市場數據追蹤模擬倉位 PnL（取代舊的 Mirror 概念）
+- [ ] `src/engine/paper/PaperTradingService.ts`：用真實市場數據追蹤模擬倉位 PnL（取代舊的 Mirror 概念）
 - [ ] Strategy Performance Attribution：每個策略對總 PnL 的貢獻
 - [ ] Telegram 報告：「這週 V3 LP +X%，FundingRate +Y%，總計 +Z%」
 - [ ] One-click adoption：LLM 建議 → 按鈕 → 自動啟動 paper trading

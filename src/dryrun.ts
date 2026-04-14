@@ -3,10 +3,10 @@
  *
  * Usage: npm run dryrun
  */
-import { prefetchAll } from './runners/prefetch';
-import { runMCEngine } from './runners/mcEngine';
-import { appState } from './utils/AppState';
-import { createServiceLogger } from './utils/logger';
+import { prefetchAll } from './market/prefetch';
+import { runMCEngine } from './engine/lp/mcEngine';
+import { appState } from './infra/AppState';
+import { createServiceLogger } from './infra/logger';
 
 const log = createServiceLogger('Dryrun');
 

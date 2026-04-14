@@ -1,5 +1,5 @@
 import type { Bot } from 'grammy';
-import type { DiagnosticStore } from '../../utils/diagnosticStore';
+import type { DiagnosticStore } from '../../infra/diagnosticStore';
 import type { CycleDiagnostic } from '../../types';
 
 function formatDiagnostic(diag: CycleDiagnostic): string {

@@ -29,10 +29,10 @@
 | 規則 | 適用範圍 |
 |------|----------|
 | `architecture.md` | 整體目錄結構、AppState 注入原則 |
-| `pipeline.md` | `src/runners/`、`src/services/` — Phase 0/1 分離 |
-| `services.md` | `src/services/` — Service 層約束 |
-| `position-tracking.md` | `src/services/strategy/**` — 4 層 × N 策略矩陣（position tracking mental model） |
-| `math.md` | `src/utils/math.ts` — Pure Function + BigInt |
+| `pipeline.md` | `src/market/`、`src/engine/`、`src/infra/` — Phase 0/1 分離 |
+| `services.md` | `src/market/`、`src/engine/` — Service 層約束 |
+| `position-tracking.md` | `src/engine/**`、`src/market/position/**` — 4 層 × N 策略矩陣（position tracking mental model） |
+| `math.md` | `src/infra/utils/math.ts` — Pure Function + BigInt |
 | `naming.md` | 全專案 — PascalCase / camelCase / UPPER_SNAKE |
 | `logging-errors.md` | 全專案 — `createServiceLogger`、`rpcRetry`、fallback |
 | `security.md` | 全專案 — 私鑰管理、npm 供應鏈 |
