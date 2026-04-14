@@ -1,20 +1,128 @@
 # DexBot
 
-> 量化 DeFi LP 機器人 — Base 鏈上的 V3 流動性倉位管理 + Monte Carlo 開倉建議 + 自演化 regime engine
+> Regime-driven 量化 DeFi 交易系統 — 以自演化 Regime Engine 為決策核心，衍生多種市場策略
 
-DexBot 是一個運行於 Cloudflare Railway 的長駐 bot，負責監控 Uniswap V3 / Aerodrome 等 DEX 上的 LP 倉位，週期性跑 Monte Carlo 模擬、偵測市場 regime（trend / range / neutral），並透過 Telegram 推送開倉、持有、rebalance、關倉等操作建議。
+核心理念：**Regime Engine 是唯一的「氣象中心」，所有交易策略都是這份天氣預報的消費者**。Regime Engine 判斷市場處於「震盪（range）」、「趨勢（trend）」還是「中立（neutral）」，各策略根據自己的風險偏好解讀這份客觀報告，做出不同的交易決策。
+
+## 🏛️ 系統架構（Regime 為核心的資料流）
+
+```
+OHLCV (1H K 線，per-pool)
+│
+▼
+┌─────────────────────────────────────────────────────────┐
+│  Regime Engine（氣象中心，客觀）                          │
+│                                                         │
+│  Stage 1: deriveMarketStats                             │
+│    └─ Kalman Filter (零滯後中軌) + EWMA (快速波動率)     │
+│    └─ → normalizedReturns (Z-score) + smoothedCandles    │
+│                                                         │
+│  Stage 2: computeRegimeVector                            │
+│    ├─ CHOP(14h) 短期震盪度 ← smoothedCandles            │
+│    ├─ Hurst(100h) 長期趨勢持續性 ← normalizedReturns    │
+│    └─ → RegimeVector { range, trend, neutral }           │
+│         (客觀機率，無策略偏見)                            │
+│                                                         │
+│  Genome: 15 維可演化參數                                  │
+│    └─ 演化搜索 + walk-forward validation 自動調參        │
+└─────────────────────────────────────────────────────────┘
+         │
+         │ RegimeVector (天氣預報廣播)
+         │
+    ┌────┴────┬──────────────┬──────────────────────┐
+    ▼         ▼              ▼                      ▼
+┌────────┐ ┌──────────┐ ┌─────────────┐    ┌──────────────┐
+│Strategy│ │ MC Engine │ │ Strategy #2 │    │ Future       │
+│ #1     │ │           │ │ Trend Follow│    │ Strategies   │
+│ V3 LP  │ │ Bootstrap │ │ (研究中)    │    │ (SOL / Grid  │
+│        │ │ + scoring │ │             │    │  / Options)  │
+│ short  │ │ regime-   │ │ long vol    │    │              │
+│  vol   │ │ weighted  │ │ pair trade  │    │              │
+└───┬────┘ └─────┬─────┘ └──────┬──────┘    └──────────────┘
+    │            │               │
+    ▼            ▼               ▼
+ LP open/     Score /         Perp entry/
+ close/hold   range calc      exit decisions
+    │            │               │
+    └──────┬─────┘               │
+           ▼                     ▼
+    Telegram Alerts         (未來: 自動執行)
+```
+
+**設計原則**：Regime Engine 輸出**中性機率**（P(range), P(trend), P(neutral)），各策略自己決定怎麼解讀。LP 策略放大 trend 恐懼（快出慢進），Trend Follow 策略需要更強確認才進場。氣象中心不帶情緒。
 
 ## ✨ Features
 
-| 狀態 | 功能 | 說明 |
-|------|------|------|
-| ✅ | **Self-Learning Regime Engine** (PR #19) | Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap，含 Telegram `/regime` 指令 |
-| ✅ | **Sharpe-like MC Scoring** (PR #20) | MC score 從 `mean/|cvar95|` 改為 `mean/std`，避免 cvar→0 時公式爆炸 |
-| 📋 | **Position Advice System** | open / hold / rebalance / close 四場景建議，3-gate hysteresis 防 spam，per-positionId LRU cooldown |
-| 📋 | **Backtest Verification** | offline replay grid search + shadow mode counterfactual + Phase 5c manual tune trigger |
-| 📋 | **Cloudflare R2 Backup** | daily mirror sync + weekly tar.gz archive + 手動 CLI restore，搭配 analysis 攤平索引層 |
+### 已 Ship
 
-📋 = Phase 1 規劃完成，待 Phase 2 實作。完整 plan 見 `.claude/plans/`。
+| 功能 | PR | 說明 |
+|------|-----|------|
+| **Self-Learning Regime Engine** | #19 | Continuous regime vector + evolutionary search + walk-forward validation + blended bootstrap |
+| **Sharpe-like MC Scoring** | #20 | `mean/std` 取代 `mean/|cvar95|` |
+| **Cloudflare R2 Backup** | v0.2.0 | Daily mirror + weekly archive + manual CLI restore |
+| **PositionAdvisor 純函數** | #28 | `recommendOpen` / `classifyExit` / `shouldClose`，住 `src/engine/lp/` |
+
+### 進行中
+
+| 功能 | PR | 狀態 |
+|------|-----|------|
+| **Backtest Verification Harness** | PR 4 | Batch 1+2 完成，Batch 3 進行中。含 `regimeSignalAudit` side-output |
+| **Storage 統一結構** | PR 6 (待) | `i-unify-storage` Stage 3-4 |
+
+### 已規劃（`.claude/plans/` 完整 plan 已寫）
+
+| 功能 | Plan | 說明 |
+|------|------|------|
+| **P0 Position Advice System** | `p0-position-advice-system.md` | LP 四場景建議 + 3-gate hysteresis + shadow mode |
+| **P1 Trend Follow Strategy** | `p1-trend-follow-strategy.md` | BTC/ETH pair trade (long vol wing)，regime-driven entry/exit，research-first backtest validation |
+| **Regime Engine V2** | `t-regime-engine-v2.md` | Kalman+EWMA 前處理 + 長短分離 + 客觀 scoring + two-phase evolution |
+
+## 🧠 Strategy #1: V3 LP（short volatility）
+
+DexBot 目前唯一在 production 的策略。在 BTC/ETH 池子提供 V3 concentrated liquidity。
+
+**經濟特性**：LP 本質上是 **short volatility on BTC/ETH ratio** — price 待在 range 內時賺手續費（= 收 vol premium），穿出 range 時被 IL 吃掉（= short vol 爆虧）。
+
+**Regime Engine 的角色**：
+- Range regime → LP 友善，推薦開倉
+- Trend regime → LP 危險，推薦關倉或 hold
+- LP Advisor 讀 `regimeVector.trend` × **sensitivity multiplier 1.5**（放大恐懼，快出慢進）
+- 另有 **CHOP panic shortcut**：raw CHOP < 35 → 直接 exit（不等 regime vector，零延遲防禦暴跌）
+
+**MC Engine 整合**：regime vector 的三分量（range / trend / neutral）作為 blended bootstrap 的抽樣權重。如果 regime 偏 trend，MC 模擬的未來路徑會有更多「趨勢延續型」的 returns。
+
+## 📈 Strategy #2: Trend Follow（long volatility，研究中）
+
+計畫中的第二策略。在 BTC/ETH ratio 上做 **perp pair trade**（long BTC-USD + short ETH-USD，或反向），由 regime engine 的 trend signal 驅動進出場。
+
+**跟 LP 的 barbell 關係**：
+- LP = short vol on ratio（range 賺、trend 虧）
+- Trend Follow = long vol on ratio（trend 賺、range 不動）
+- 合計 = 結構性 hedge，覆蓋所有 regime
+
+**目前狀態**：Plan 完成（Path A 全流程 + eng review + brainstorming 定稿），0 個 Open Questions。Backtest-first，pass criteria gated（Sharpe ≥ 0.3 / DefenseEV ≥ 1.0）。
+
+## 🔬 Backtest Engine
+
+DexBot 採用 **research-first 紀律**：任何新策略或 regime engine 改動都必須先通過 backtest validation，才允許進 production。
+
+**架構**（`src/backtest/`）：
+
+```
+src/backtest/
+├── framework/                    # 策略無關的通用骨架
+│   ├── walkForwardSplit.ts       # temporal train/val/test split
+│   ├── outcomeAggregator.ts      # A/C/D 三指標 + 加權總分
+│   └── regimeSignalAudit.ts      # regime signal quality side-output
+├── v3lp/                         # Strategy #1 專用
+│   └── featureExtractor.ts       # OHLCV → ReplayFeature[]（per-cycle 特徵）
+└── trendFollow/                  # Strategy #2 專用（P1 plan scope）
+    ├── runTrendFollowBacktest.ts  # 入口 script
+    ├── perpPnlCalculator.ts      # per-leg P&L + funding rate model
+    └── baselineCalculator.ts     # LP-alone / 50-50 hold / cash baselines
+```
+
+**Regime Signal Quality Audit**：每次 backtest 都附帶 regime engine 的分類品質報告（`trendVsRangeRatio` / `flipFlopRate` / `DefenseEV`），確保決策基座可靠。
 
 ## 🏗️ Architecture
 
@@ -35,13 +143,74 @@ DexBot 是一個運行於 Cloudflare Railway 的長駐 bot，負責監控 Uniswa
 | R2 weekly archive | 週日 04:00 | tar.gz → R2 archives/ |
 | Shadow analyze | 週日 23:00 | counterfactual + Telegram 週報 |
 
+### Regime Engine — 當前 V1 + 規劃中 V2
+
+Regime engine 是整個系統的決策核心。所有策略（LP / Trend Follow / 未來策略）都消費它的輸出。
+
+#### V1 — 當前 production（PR #19）
+
+**輸入**：per-pool 的 `HourlyReturn[]`（1h K 線）
+
+**指標**：
+
+| 指標 | 公式 | 意義 |
+|------|------|------|
+| **CHOP(14)** | `100 × log10(Σ(high-low) / totalRange) / log10(n)` | > 55 震盪、< 45 趨勢 |
+| **Hurst(20)** | R/S 回歸斜率 H | < 0.5 均值回歸、> 0.5 趨勢延續 |
+| **ATR(14)** | `avg(high-low)` | 開倉區間半寬下限 |
+
+**輸出**：`RegimeVector { range, trend, neutral }` — 連續機率向量（softmax），三分量總和 = 1
+
+**已知問題**（戰略 review 2026-04-13 發現，詳見 `t-regime-engine-v2.md`）：
+- CHOP(14) 跟 Hurst(20) 高度共線性（看同一段時間同一件事）→ score 被雙重放大
+- 直接吃 raw OHLCV → 插針 / 假突破 / 歷史波動殘留全部灌入分類器
+- Walk-forward validation 驗的是「穩定性」不是「正確性」
+
+#### V2 — 規劃中（`t-regime-engine-v2.md`，待 eng review）
+
+```
+Raw OHLCV
+    │
+    ▼
+DynamicBandEngine (Kalman + EWMA)    ← 新增前處理層
+    ├── kalmanCenter (零滯後中軌)
+    ├── ewmaStdDev (快速波動率)
+    ├── effectiveVol = max(ewma, baselineVol)  ← 防 heteroskedasticity
+    │
+    ├──► Z-score → normalizedReturns[]  ← 餵 Hurst (vol-normalized)
+    └──► 3σ 削峰 → smoothedCandles[]    ← 餵 CHOP (抗插針)
+              │
+              ▼
+    CHOP(14h) 短期    ×    Hurst(100h) 長期    ← 長短分離 decorrelate
+              │                    │
+              └──── 客觀乘法 ──────┘
+                       │
+                       ▼
+              RegimeVector (中性機率，零策略偏見)
+                       │
+              ┌────────┼────────┐
+              ▼        ▼        ▼
+           LP (×1.5)  TF (×0.8) Future strategies
+           + CHOP     + delay   (各自解讀)
+             panic
+```
+
+**核心改進**：
+- Kalman+EWMA 過濾雜訊後再餵入分類器（GIGO → clean data）
+- CHOP(14) 看「現在」+ Hurst(100) 看「長期特性」→ 消除共線性
+- Engine 輸出客觀中性機率，策略偏見放在 consumer 端
+- Two-Phase Evolution（引擎 4 維 + 交易邏輯 11 維），防 15 維 overfitting
+- Pass/fail：DefenseEV（Saved_IL / Missed_Fees）≥ 1.0
+
+相關檔案：`src/engine/shared/MarketRegimeAnalyzer.ts`、`src/types/index.ts`、`src/engine/lp/mcEngine.ts`、`src/engine/shared/MonteCarloEngine.ts`
+
 ### 核心設計原則
 
 - **AppState 注入式**：所有 Service 透過參數注入 AppState，禁止直接修改全域狀態
-- **Pure Functions**：所有計算邏輯集中在 `utils/math.ts`，使用原生 BigInt（禁用 decimal.js）
+- **Pure Functions**：所有計算邏輯集中在 `infra/utils/math.ts`，使用原生 BigInt（禁用 decimal.js）
 - **TypeScript strict**：禁止 `any`
 - **錯誤處理**：所有 RPC 呼叫包 `rpcRetry`，API 失敗 fallback 到本地快取並記錄 `appState.cycleWarnings`
-- **Telegram 解耦**：`src/bot/` 只能格式化文字 + 發送，業務邏輯在 `src/services/`
+- **Telegram 解耦**：`src/bot/` 只能格式化文字 + 發送，業務邏輯在 `src/market/`、`src/engine/`
 
 ## 🛠️ Tech Stack
 
@@ -227,13 +396,18 @@ exit
 
 ## 📊 Project Status
 
-| 區塊 | 狀態 |
-|------|------|
-| Self-Learning Regime Engine | ✅ Shipped (PR #19) |
-| Sharpe-like MC Scoring | ✅ Shipped (PR #20) |
-| Cloudflare R2 Backup | ✅ Shipped (v0.2.0) |
-| Position Advice System | 📋 Plan 完成，待實作 |
-| Backtest Verification | 📋 Plan 完成，待實作 |
+| 區塊 | 狀態 | Plan |
+|------|------|------|
+| Self-Learning Regime Engine | ✅ Shipped (PR #19) | — |
+| Sharpe-like MC Scoring | ✅ Shipped (PR #20) | — |
+| Cloudflare R2 Backup | ✅ Shipped (v0.2.0) | — |
+| PositionAdvisor 純函數 | ✅ Shipped (PR #28) | — |
+| Position Tracking Matrix Model | ✅ Shipped (PR #29) | `.claude/rules/position-tracking.md` |
+| Backtest Verification Harness | 🔧 PR 4 進行中 | `p0-backtest-verification.md` |
+| Position Advice System (cycle integration) | 📋 Plan 完成 | `p0-position-advice-system.md` |
+| Storage 統一結構 | 📋 Plan 完成 | `i-unify-storage.md` |
+| **Trend Follow Strategy (P1)** | 📋 Plan 定稿 (Path A 全完成) | `p1-trend-follow-strategy.md` |
+| **Regime Engine V2** | 📋 Plan 完成 (待 eng review) | `t-regime-engine-v2.md` |
 
 詳細路線圖見 [`.claude/tasks.md`](./.claude/tasks.md)。
 

@@ -1,6 +1,6 @@
 import type { Bot } from 'grammy';
-import { appState } from '../../utils/AppState';
-import { buildStrategyReport } from '../../utils/formatter';
+import { appState } from '../../infra/AppState';
+import { buildStrategyReport } from '../formatter';
 
 export function registerCalcCommands(bot: Bot): void {
     bot.command('calc', async (ctx) => {

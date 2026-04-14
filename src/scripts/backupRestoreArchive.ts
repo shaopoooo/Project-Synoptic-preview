@@ -9,9 +9,9 @@
  * backup，失敗自動 rollback，成功後留在原地等 admin 手動清理。
  */
 
-import { createR2Client } from '../services/backup/r2Client';
-import { restoreArchive } from '../services/backup/r2Restore';
-import { createServiceLogger } from '../utils/logger';
+import { createR2Client } from '../infra/backup/r2Client';
+import { restoreArchive } from '../infra/backup/r2Restore';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('BackupRestoreArchive');
 

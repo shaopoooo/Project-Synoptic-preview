@@ -7,15 +7,15 @@
 import cron from 'node-cron';
 import * as path from 'path';
 import { TelegramBotService, minutesToCron, VALID_INTERVALS } from './bot/TelegramBot';
-import { createServiceLogger } from './utils/logger';
-import { appState } from './utils/AppState';
+import { createServiceLogger } from './infra/logger';
+import { appState } from './infra/AppState';
 import { config, validateEnv } from './config';
-import { prefetchAll } from './runners/prefetch';
-import { runMCEngine } from './runners/mcEngine';
-import { DiagnosticStore } from './utils/diagnosticStore';
-import { runStartup } from './runners/startup';
-import { createR2Client } from './services/backup/r2Client';
-import { startBackupCron } from './services/backup/backupCron';
+import { prefetchAll } from './market/prefetch';
+import { runMCEngine } from './engine/lp/mcEngine';
+import { DiagnosticStore } from './infra/diagnosticStore';
+import { runStartup } from './infra/startup';
+import { createR2Client } from './infra/backup/r2Client';
+import { startBackupCron } from './infra/backup/backupCron';
 import type { CycleDiagnostic, MCEngineDiagnostic } from './types';
 
 const log = createServiceLogger('Main');

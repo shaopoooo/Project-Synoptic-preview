@@ -15,9 +15,9 @@
  * 生產 bucket 請不要跑，只在 dev bucket 驗證。
  */
 
-import { createR2Client, R2_BUCKET } from '../services/backup/r2Client';
-import { runMirrorSync } from '../services/backup/r2Mirror';
-import { createServiceLogger } from '../utils/logger';
+import { createR2Client, R2_BUCKET } from '../infra/backup/r2Client';
+import { runMirrorSync } from '../infra/backup/r2Mirror';
+import { createServiceLogger } from '../infra/logger';
 
 const log = createServiceLogger('BackupSmokeMirror');
 

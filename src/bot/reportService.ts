@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { PoolStats, MarketSnapshot, PositionRecord, RiskAnalysis, FullReportSnapshot } from '../types';
-import { getTokenPrices } from '../services/market/TokenPriceService';
+import { getTokenPrices } from '../market/TokenPriceService';
 import {
     buildTelegramPositionBlock,
     buildSummaryBlock,
@@ -9,11 +9,11 @@ import {
     buildFlashReport,
     FlashAlert,
     PoolRankingRow,
-} from '../utils/formatter';
-import { normalizeRawAmount, calculateCapitalEfficiency } from '../utils/math';
-import { TOKEN_DECIMALS } from '../utils/tokenInfo';
-import { appState } from '../utils/AppState';
-import { isValidWalletAddress } from '../utils/validation';
+} from './formatter';
+import { normalizeRawAmount, calculateCapitalEfficiency } from '../infra/utils/math';
+import { TOKEN_DECIMALS } from '../infra/utils/tokenInfo';
+import { appState } from '../infra/AppState';
+import { isValidWalletAddress } from '../infra/utils/validation';
 
 // ── 快訊 snapshot（每次送快訊後更新，不持久化）──────────────────────────────
 // key = tokenId, value = unclaimedFeesUSD at last flash
